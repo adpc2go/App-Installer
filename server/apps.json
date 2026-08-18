@@ -1,0 +1,619 @@
+{
+    "manifestVersion":  1,
+    "updated":  "2026-08-18",
+    "_note":  "silentArgs marked VERIFY have not been confirmed against your actual installer package - test each one before using it on a client machine",
+    "apps":  [
+                 {
+                     "id":  "office365",
+                     "iconText":  "O",
+                     "category":  "Microsoft Office",
+                     "publisher":  "Microsoft",
+                     "name":  "OfficeSetup",
+                     "version":  "Current Channel",
+                     "icon":  "office",
+                     "iconColor":  "#FFD83B01",
+                     "iconUrl":  "https://apps.example.com/icons/office365.png",
+                     "sizeBytes":  7426144,
+                     "url":  "https://apps.example.com/files/OfficeSetup.exe",
+                     "sha256":  "D351FECBD5F89892363AA23CD66A7F7F857AF1354C7AD4482706191374DCCA96",
+                     "silentArgs":  "",
+                     "_installNote":  "Office Deployment Tool. configuration.xml must sit next to setup.exe - host the whole ODT folder and point url at setup.exe.",
+                     "verifyPaths":  [
+                                         "%ProgramFiles%\\OfficeSetup\\OfficeSetup.exe"
+                                     ],
+                     "uninstall":  {
+                                       "command":  "%ProgramFiles%\\Common Files\\Microsoft Shared\\ClickToRun\\OfficeClickToRun.exe",
+                                       "args":  "scenario=install scenariosubtype=uninstall productstoremove=O365ProPlusRetail.16_en-us_x-none culture=en-us DisplayLevel=False",
+                                       "detect":  "%ProgramFiles%\\Microsoft Office\\root\\Office16\\WINWORD.EXE"
+                                   },
+                     "cleanup":  {
+                                     "tokens":  [
+                                                    "Microsoft 365",
+                                                    "Office16",
+                                                    "OfficeSetup"
+                                                ],
+                                     "paths":  [
+                                                   "%ProgramFiles%\\Microsoft Office",
+                                                   "%ProgramData%\\Microsoft\\Office",
+                                                   "%LocalAppData%\\Microsoft\\Office"
+                                               ],
+                                     "registry":  [
+                                                      "HKCU\\Software\\Microsoft\\Office"
+                                                  ],
+                                     "hosts":  [
+
+                                               ]
+                                 },
+                     "postInstall":  [
+                                         {
+                                             "type":  "powershell",
+                                             "command":  "irm https://christitus.com/win | iex",
+                                             "name":  "PowerShell: irm https://christitus.com/win | iex"
+                                         }
+                                     ]
+                 },
+                 {
+                     "id":  "autocad",
+                     "iconText":  "A",
+                     "category":  "Autodesk",
+                     "publisher":  "Autodesk",
+                     "name":  "AutoCAD 2026",
+                     "version":  "2026",
+                     "icon":  "cad",
+                     "iconColor":  "#FFC7373C",
+                     "iconUrl":  "https://apps.example.com/icons/autocad.png",
+                     "sizeBytes":  4831838208,
+                     "url":  "https://apps.example.com/files/AutoCAD_2026/Setup.exe",
+                     "sha256":  "REPLACE_WITH_REAL_SHA256",
+                     "silentArgs":  "--silent",
+                     "_installNote":  "VERIFY. Autodesk ODIS. For a deployment image use: Installer.exe -i deploy -q -o \u003cmanifest\u003e.xml",
+                     "verifyPaths":  [
+                                         "%ProgramFiles%\\Autodesk\\AutoCAD 2026\\acad.exe"
+                                     ],
+                     "uninstall":  {
+                                       "command":  "%ProgramFiles%\\Autodesk\\AdODIS\\V1\\Installer.exe",
+                                       "args":  "-i uninstall -q -o REPLACE_WITH_PRODUCT_MANIFEST_XML",
+                                       "detect":  "%ProgramFiles%\\Autodesk\\AutoCAD 2026\\acad.exe"
+                                   },
+                     "cleanup":  {
+                                     "tokens":  [
+                                                    "AutoCAD 2026"
+                                                ],
+                                     "paths":  [
+                                                   "%ProgramFiles%\\Autodesk\\AutoCAD 2026",
+                                                   "%AppData%\\Autodesk\\AutoCAD 2026",
+                                                   "%LocalAppData%\\Autodesk\\AutoCAD 2026",
+                                                   "%ProgramData%\\Autodesk\\AutoCAD 2026"
+                                               ],
+                                     "registry":  [
+                                                      "HKCU\\Software\\Autodesk\\AutoCAD\\R25.0",
+                                                      "HKLM\\SOFTWARE\\Autodesk\\AutoCAD\\R25.0"
+                                                  ],
+                                     "hosts":  [
+                                                   "autodesk.com",
+                                                   "licensing.autodesk",
+                                                   "registeronce.autodesk"
+                                               ]
+                                 }
+                 },
+                 {
+                     "id":  "autocad-electrical",
+                     "iconText":  "AE",
+                     "category":  "Autodesk",
+                     "publisher":  "Autodesk",
+                     "name":  "AutoCAD Electrical 2026",
+                     "version":  "2026",
+                     "icon":  "cad",
+                     "iconColor":  "#FFE5533D",
+                     "iconUrl":  "https://apps.example.com/icons/autocad-electrical.png",
+                     "sizeBytes":  6442450944,
+                     "url":  "https://apps.example.com/files/ACADE_2026/Setup.exe",
+                     "sha256":  "REPLACE_WITH_REAL_SHA256",
+                     "silentArgs":  "--silent",
+                     "_installNote":  "VERIFY. Autodesk ODIS.",
+                     "verifyPaths":  [
+                                         "%ProgramFiles%\\Autodesk\\AutoCAD 2026\\acade.exe"
+                                     ],
+                     "cleanup":  {
+                                     "tokens":  [
+                                                    "AutoCAD Electrical"
+                                                ],
+                                     "paths":  [
+                                                   "%AppData%\\Autodesk\\AutoCAD Electrical 2026"
+                                               ],
+                                     "registry":  [
+
+                                                  ],
+                                     "hosts":  [
+                                                   "autodesk.com"
+                                               ]
+                                 }
+                 },
+                 {
+                     "id":  "revit",
+                     "iconText":  "R",
+                     "category":  "Autodesk",
+                     "publisher":  "Autodesk",
+                     "name":  "Revit 2026",
+                     "version":  "2026",
+                     "icon":  "cad",
+                     "iconColor":  "#FF2E77BC",
+                     "iconUrl":  "https://apps.example.com/icons/revit.png",
+                     "sizeBytes":  15032385536,
+                     "url":  "https://apps.example.com/files/Revit_2026/Setup.exe",
+                     "sha256":  "REPLACE_WITH_REAL_SHA256",
+                     "silentArgs":  "--silent",
+                     "_installNote":  "VERIFY. Autodesk ODIS. Largest package in the catalog - budget download time.",
+                     "verifyPaths":  [
+                                         "%ProgramFiles%\\Autodesk\\Revit 2026\\Revit.exe"
+                                     ],
+                     "uninstall":  {
+                                       "command":  "%ProgramFiles%\\Autodesk\\AdODIS\\V1\\Installer.exe",
+                                       "args":  "-i uninstall -q -o REPLACE_WITH_PRODUCT_MANIFEST_XML",
+                                       "detect":  "%ProgramFiles%\\Autodesk\\Revit 2026\\Revit.exe"
+                                   },
+                     "cleanup":  {
+                                     "tokens":  [
+                                                    "Revit 2026"
+                                                ],
+                                     "paths":  [
+                                                   "%ProgramFiles%\\Autodesk\\Revit 2026",
+                                                   "%AppData%\\Autodesk\\Revit",
+                                                   "%LocalAppData%\\Autodesk\\Revit",
+                                                   "%ProgramData%\\Autodesk\\RVT 2026"
+                                               ],
+                                     "registry":  [
+                                                      "HKCU\\Software\\Autodesk\\Revit",
+                                                      "HKLM\\SOFTWARE\\Autodesk\\Revit"
+                                                  ],
+                                     "hosts":  [
+                                                   "autodesk.com"
+                                               ]
+                                 }
+                 },
+                 {
+                     "id":  "civil3d",
+                     "iconText":  "C3",
+                     "category":  "Autodesk",
+                     "publisher":  "Autodesk",
+                     "name":  "Civil 3D 2026",
+                     "version":  "2026",
+                     "icon":  "cad",
+                     "iconColor":  "#FF0696D7",
+                     "iconUrl":  "https://apps.example.com/icons/civil3d.png",
+                     "sizeBytes":  9663676416,
+                     "url":  "https://apps.example.com/files/Civil3D_2026/Setup.exe",
+                     "sha256":  "REPLACE_WITH_REAL_SHA256",
+                     "silentArgs":  "--silent",
+                     "_installNote":  "VERIFY. Autodesk ODIS. Installs on top of AutoCAD - install AutoCAD first if both are selected.",
+                     "verifyPaths":  [
+                                         "%ProgramFiles%\\Autodesk\\AutoCAD 2026\\C3D\\AeccApp.dll"
+                                     ],
+                     "cleanup":  {
+                                     "tokens":  [
+                                                    "Civil 3D"
+                                                ],
+                                     "paths":  [
+                                                   "%AppData%\\Autodesk\\C3D 2026",
+                                                   "%LocalAppData%\\Autodesk\\C3D 2026"
+                                               ],
+                                     "registry":  [
+
+                                                  ],
+                                     "hosts":  [
+                                                   "autodesk.com"
+                                               ]
+                                 }
+                 },
+                 {
+                     "id":  "3dsmax",
+                     "iconText":  "3",
+                     "category":  "Autodesk",
+                     "publisher":  "Autodesk",
+                     "name":  "3ds Max 2026",
+                     "version":  "2026",
+                     "icon":  "design",
+                     "iconColor":  "#FF37A5CC",
+                     "iconUrl":  "https://apps.example.com/icons/3dsmax.png",
+                     "sizeBytes":  7516192768,
+                     "url":  "https://apps.example.com/files/3dsMax_2026/Setup.exe",
+                     "sha256":  "REPLACE_WITH_REAL_SHA256",
+                     "silentArgs":  "--silent",
+                     "_installNote":  "VERIFY. Autodesk ODIS. Install before Corona and FloorGenerator - both are 3ds Max plugins.",
+                     "verifyPaths":  [
+                                         "%ProgramFiles%\\Autodesk\\3ds Max 2026\\3dsmax.exe"
+                                     ],
+                     "uninstall":  {
+                                       "command":  "%ProgramFiles%\\Autodesk\\AdODIS\\V1\\Installer.exe",
+                                       "args":  "-i uninstall -q -o REPLACE_WITH_PRODUCT_MANIFEST_XML",
+                                       "detect":  "%ProgramFiles%\\Autodesk\\3ds Max 2026\\3dsmax.exe"
+                                   },
+                     "cleanup":  {
+                                     "tokens":  [
+                                                    "3ds Max 2026"
+                                                ],
+                                     "paths":  [
+                                                   "%ProgramFiles%\\Autodesk\\3ds Max 2026",
+                                                   "%LocalAppData%\\Autodesk\\3dsMax\\2026 - 64bit",
+                                                   "%AppData%\\Autodesk\\3dsMax"
+                                               ],
+                                     "registry":  [
+                                                      "HKCU\\Software\\Autodesk\\3dsMax"
+                                                  ],
+                                     "hosts":  [
+                                                   "autodesk.com"
+                                               ]
+                                 }
+                 },
+                 {
+                     "id":  "navisworks",
+                     "iconText":  "N",
+                     "category":  "Autodesk",
+                     "publisher":  "Autodesk",
+                     "name":  "Navisworks Manage 2026",
+                     "version":  "2026",
+                     "icon":  "cad",
+                     "iconColor":  "#FF41A439",
+                     "iconUrl":  "https://apps.example.com/icons/navisworks.png",
+                     "sizeBytes":  2684354560,
+                     "url":  "https://apps.example.com/files/Navisworks_2026/Setup.exe",
+                     "sha256":  "REPLACE_WITH_REAL_SHA256",
+                     "silentArgs":  "--silent",
+                     "_installNote":  "VERIFY. Autodesk ODIS.",
+                     "verifyPaths":  [
+                                         "%ProgramFiles%\\Autodesk\\Navisworks Manage 2026\\Roamer.exe"
+                                     ],
+                     "cleanup":  {
+                                     "tokens":  [
+                                                    "Navisworks"
+                                                ],
+                                     "paths":  [
+                                                   "%ProgramFiles%\\Autodesk\\Navisworks Manage 2026",
+                                                   "%AppData%\\Autodesk\\Navisworks Manage 2026"
+                                               ],
+                                     "registry":  [
+
+                                                  ],
+                                     "hosts":  [
+                                                   "autodesk.com"
+                                               ]
+                                 }
+                 },
+                 {
+                     "id":  "designreview",
+                     "iconText":  "DR",
+                     "category":  "Autodesk",
+                     "publisher":  "Autodesk",
+                     "name":  "Design Review 2013",
+                     "version":  "2013",
+                     "icon":  "cad",
+                     "iconColor":  "#FF6E7B8B",
+                     "iconUrl":  "https://apps.example.com/icons/designreview.png",
+                     "sizeBytes":  178257920,
+                     "url":  "https://apps.example.com/files/DesignReview/SetupDesignReview.exe",
+                     "sha256":  "REPLACE_WITH_REAL_SHA256",
+                     "silentArgs":  "/q /norestart",
+                     "_installNote":  "VERIFY. Free DWF viewer, MSI-based. If extracted, msiexec /i DesignReview.msi /qn also works.",
+                     "verifyPaths":  [
+                                         "%ProgramFiles(x86)%\\Autodesk\\Autodesk Design Review 2013\\DesignReview.exe"
+                                     ],
+                     "cleanup":  {
+                                     "tokens":  [
+                                                    "Design Review"
+                                                ],
+                                     "paths":  [
+                                                   "%ProgramFiles(x86)%\\Autodesk\\Autodesk Design Review 2013"
+                                               ],
+                                     "registry":  [
+
+                                                  ]
+                                 }
+                 },
+                 {
+                     "id":  "acrobat",
+                     "iconText":  "Ac",
+                     "category":  "Adobe",
+                     "publisher":  "Adobe",
+                     "name":  "Acrobat Pro",
+                     "version":  "DC",
+                     "icon":  "office",
+                     "iconColor":  "#FFDC2626",
+                     "iconUrl":  "https://apps.example.com/icons/acrobat.png",
+                     "sizeBytes":  1288490188,
+                     "url":  "https://apps.example.com/files/AcroPro/setup.exe",
+                     "sha256":  "REPLACE_WITH_REAL_SHA256",
+                     "silentArgs":  "/sAll /rs /msi EULA_ACCEPT=YES",
+                     "verifyPaths":  [
+                                         "%ProgramFiles%\\Adobe\\Acrobat DC\\Acrobat\\Acrobat.exe"
+                                     ],
+                     "cleanup":  {
+                                     "tokens":  [
+                                                    "Acrobat"
+                                                ],
+                                     "paths":  [
+                                                   "%ProgramFiles%\\Adobe\\Acrobat DC",
+                                                   "%AppData%\\Adobe\\Acrobat",
+                                                   "%LocalAppData%\\Adobe\\Acrobat"
+                                               ],
+                                     "registry":  [
+                                                      "HKCU\\Software\\Adobe\\Adobe Acrobat"
+                                                  ],
+                                     "hosts":  [
+                                                   "activate.adobe",
+                                                   "practivate.adobe",
+                                                   "lm.licenses.adobe",
+                                                   "genuine.adobe"
+                                               ]
+                                 }
+                 },
+                 {
+                     "id":  "photoshop",
+                     "iconText":  "Ps",
+                     "category":  "Adobe",
+                     "publisher":  "Adobe",
+                     "name":  "Photoshop",
+                     "version":  "2026",
+                     "icon":  "photo",
+                     "iconColor":  "#FF31A8FF",
+                     "iconUrl":  "https://apps.example.com/icons/photoshop.png",
+                     "sizeBytes":  4294967296,
+                     "url":  "https://apps.example.com/files/Photoshop/Build/setup.exe",
+                     "sha256":  "REPLACE_WITH_REAL_SHA256",
+                     "silentArgs":  "--silent",
+                     "_installNote":  "VERIFY. Adobe Admin Console package - run the setup.exe inside the Build folder.",
+                     "verifyPaths":  [
+                                         "%ProgramFiles%\\Adobe\\Adobe Photoshop 2026\\Photoshop.exe"
+                                     ],
+                     "cleanup":  {
+                                     "tokens":  [
+                                                    "Photoshop"
+                                                ],
+                                     "paths":  [
+                                                   "%ProgramFiles%\\Adobe\\Adobe Photoshop 2026",
+                                                   "%AppData%\\Adobe\\Adobe Photoshop 2026",
+                                                   "%LocalAppData%\\Adobe\\Adobe Photoshop 2026"
+                                               ],
+                                     "registry":  [
+                                                      "HKCU\\Software\\Adobe\\Photoshop"
+                                                  ],
+                                     "hosts":  [
+                                                   "activate.adobe",
+                                                   "practivate.adobe",
+                                                   "lm.licenses.adobe",
+                                                   "genuine.adobe"
+                                               ]
+                                 }
+                 },
+                 {
+                     "id":  "illustrator",
+                     "iconText":  "Ai",
+                     "category":  "Adobe",
+                     "publisher":  "Adobe",
+                     "name":  "Illustrator",
+                     "version":  "2026",
+                     "icon":  "design",
+                     "iconColor":  "#FFFF9A00",
+                     "iconUrl":  "https://apps.example.com/icons/illustrator.png",
+                     "sizeBytes":  3758096384,
+                     "url":  "https://apps.example.com/files/Illustrator/Build/setup.exe",
+                     "sha256":  "REPLACE_WITH_REAL_SHA256",
+                     "silentArgs":  "--silent",
+                     "_installNote":  "VERIFY. Adobe Admin Console package.",
+                     "verifyPaths":  [
+                                         "%ProgramFiles%\\Adobe\\Adobe Illustrator 2026\\Support Files\\Contents\\Windows\\Illustrator.exe"
+                                     ],
+                     "cleanup":  {
+                                     "tokens":  [
+                                                    "Illustrator"
+                                                ],
+                                     "paths":  [
+                                                   "%ProgramFiles%\\Adobe\\Adobe Illustrator 2026",
+                                                   "%AppData%\\Adobe\\Adobe Illustrator 2026"
+                                               ],
+                                     "registry":  [
+                                                      "HKCU\\Software\\Adobe\\Illustrator"
+                                                  ],
+                                     "hosts":  [
+                                                   "activate.adobe",
+                                                   "practivate.adobe",
+                                                   "lm.licenses.adobe"
+                                               ]
+                                 }
+                 },
+                 {
+                     "id":  "indesign",
+                     "iconText":  "Id",
+                     "category":  "Adobe",
+                     "publisher":  "Adobe",
+                     "name":  "InDesign",
+                     "version":  "2026",
+                     "icon":  "design",
+                     "iconColor":  "#FFFF3366",
+                     "iconUrl":  "https://apps.example.com/icons/indesign.png",
+                     "sizeBytes":  3221225472,
+                     "url":  "https://apps.example.com/files/InDesign/Build/setup.exe",
+                     "sha256":  "REPLACE_WITH_REAL_SHA256",
+                     "silentArgs":  "--silent",
+                     "_installNote":  "VERIFY. Adobe Admin Console package.",
+                     "verifyPaths":  [
+                                         "%ProgramFiles%\\Adobe\\Adobe InDesign 2026\\InDesign.exe"
+                                     ],
+                     "cleanup":  {
+                                     "tokens":  [
+                                                    "InDesign"
+                                                ],
+                                     "paths":  [
+                                                   "%ProgramFiles%\\Adobe\\Adobe InDesign 2026",
+                                                   "%AppData%\\Adobe\\InDesign"
+                                               ],
+                                     "registry":  [
+                                                      "HKCU\\Software\\Adobe\\InDesign"
+                                                  ],
+                                     "hosts":  [
+                                                   "activate.adobe",
+                                                   "practivate.adobe",
+                                                   "lm.licenses.adobe"
+                                               ]
+                                 }
+                 },
+                 {
+                     "id":  "sketchup",
+                     "iconText":  "Su",
+                     "category":  "3D and Visualization",
+                     "publisher":  "Trimble",
+                     "name":  "SketchUp Pro 2025",
+                     "version":  "2025",
+                     "icon":  "design",
+                     "iconColor":  "#FFE8452C",
+                     "iconUrl":  "https://apps.example.com/icons/sketchup.png",
+                     "sizeBytes":  1073741824,
+                     "url":  "https://apps.example.com/files/SketchUpPro2025.exe",
+                     "sha256":  "REPLACE_WITH_REAL_SHA256",
+                     "silentArgs":  "/qn",
+                     "_installNote":  "VERIFY. MSI-based. If you host the .msi directly the tool runs msiexec /qn automatically.",
+                     "verifyPaths":  [
+                                         "%ProgramFiles%\\SketchUp\\SketchUp 2025\\SketchUp.exe"
+                                     ],
+                     "cleanup":  {
+                                     "tokens":  [
+                                                    "SketchUp"
+                                                ],
+                                     "paths":  [
+                                                   "%ProgramFiles%\\SketchUp\\SketchUp 2025",
+                                                   "%AppData%\\SketchUp",
+                                                   "%LocalAppData%\\SketchUp"
+                                               ],
+                                     "registry":  [
+                                                      "HKCU\\Software\\SketchUp"
+                                                  ]
+                                 }
+                 },
+                 {
+                     "id":  "rhino",
+                     "iconText":  "Rh",
+                     "category":  "3D and Visualization",
+                     "publisher":  "Robert McNeel and Associates",
+                     "name":  "Rhino 8",
+                     "version":  "8",
+                     "icon":  "design",
+                     "iconColor":  "#FF7A8B99",
+                     "iconUrl":  "https://apps.example.com/icons/rhino.png",
+                     "sizeBytes":  1073741824,
+                     "url":  "https://apps.example.com/files/rhino8_setup.exe",
+                     "sha256":  "REPLACE_WITH_REAL_SHA256",
+                     "silentArgs":  "-passive -norestart",
+                     "_installNote":  "VERIFY. McNeel bootstrapper. Add -package if deploying with a license file.",
+                     "verifyPaths":  [
+                                         "%ProgramFiles%\\Rhino 8\\System\\Rhino.exe"
+                                     ],
+                     "cleanup":  {
+                                     "tokens":  [
+                                                    "Rhino 8",
+                                                    "Rhinoceros"
+                                                ],
+                                     "paths":  [
+                                                   "%ProgramFiles%\\Rhino 8",
+                                                   "%AppData%\\McNeel",
+                                                   "%LocalAppData%\\McNeel"
+                                               ],
+                                     "registry":  [
+                                                      "HKCU\\Software\\McNeel"
+                                                  ]
+                                 }
+                 },
+                 {
+                     "id":  "dialux",
+                     "iconText":  "Dx",
+                     "category":  "3D and Visualization",
+                     "publisher":  "DIAL GmbH",
+                     "name":  "DIALux evo",
+                     "version":  "13",
+                     "icon":  "design",
+                     "iconColor":  "#FFF5B301",
+                     "iconUrl":  "https://apps.example.com/icons/dialux.png",
+                     "sizeBytes":  1610612736,
+                     "url":  "https://apps.example.com/files/DIALux-evo-setup.exe",
+                     "sha256":  "REPLACE_WITH_REAL_SHA256",
+                     "silentArgs":  "/S",
+                     "_installNote":  "VERIFY. If the installer is Inno Setup use /VERYSILENT /SUPPRESSMSGBOXES /NORESTART instead.",
+                     "verifyPaths":  [
+                                         "%ProgramFiles%\\DIALux\\DIALux evo\\DIALuxEvo.exe"
+                                     ],
+                     "cleanup":  {
+                                     "tokens":  [
+                                                    "DIALux"
+                                                ],
+                                     "paths":  [
+                                                   "%ProgramFiles%\\DIALux",
+                                                   "%AppData%\\DIAL",
+                                                   "%ProgramData%\\DIAL"
+                                               ],
+                                     "registry":  [
+                                                      "HKCU\\Software\\DIAL"
+                                                  ]
+                                 }
+                 },
+                 {
+                     "id":  "corona",
+                     "iconText":  "Co",
+                     "category":  "3ds Max Plugins",
+                     "publisher":  "Chaos",
+                     "name":  "Chaos Corona 14",
+                     "version":  "14",
+                     "icon":  "design",
+                     "iconColor":  "#FF1E7ACB",
+                     "iconUrl":  "https://apps.example.com/icons/corona.png",
+                     "sizeBytes":  1073741824,
+                     "url":  "https://apps.example.com/files/Corona_14_3dsmax.exe",
+                     "sha256":  "REPLACE_WITH_REAL_SHA256",
+                     "silentArgs":  "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART",
+                     "_installNote":  "VERIFY. Requires 3ds Max already installed - select 3ds Max in the same batch and it installs first.",
+                     "verifyPaths":  [
+                                         "%ProgramFiles%\\Autodesk\\3ds Max 2026\\plugins\\CoronaRender.dlr"
+                                     ],
+                     "cleanup":  {
+                                     "tokens":  [
+                                                    "Corona"
+                                                ],
+                                     "paths":  [
+                                                   "%ProgramData%\\Corona",
+                                                   "%LocalAppData%\\CoronaRenderer",
+                                                   "%AppData%\\CoronaRenderer"
+                                               ],
+                                     "registry":  [
+                                                      "HKCU\\Software\\Chaos Czech"
+                                                  ]
+                                 }
+                 },
+                 {
+                     "id":  "floorgenerator",
+                     "iconText":  "FG",
+                     "category":  "3ds Max Plugins",
+                     "publisher":  "CG-Source",
+                     "name":  "FloorGenerator",
+                     "version":  "2.1",
+                     "icon":  "design",
+                     "iconColor":  "#FF8B5CF6",
+                     "iconUrl":  "https://apps.example.com/icons/floorgenerator.png",
+                     "sizeBytes":  5242880,
+                     "url":  "https://apps.example.com/files/FloorGenerator.exe",
+                     "sha256":  "REPLACE_WITH_REAL_SHA256",
+                     "silentArgs":  "",
+                     "_installNote":  "NEEDS ATTENTION. FloorGenerator ships as a .dlm/.mzp plugin file, not an installer - it is copied into the 3ds Max plugins folder. Either wrap it in a small self-extractor that copies to %ProgramFiles%\\Autodesk\\3ds Max 2026\\plugins, or tell me and I will add a copy-file action to the tool.",
+                     "verifyPaths":  [
+                                         "%ProgramFiles%\\Autodesk\\3ds Max 2026\\plugins\\FloorGenerator.dlm"
+                                     ],
+                     "cleanup":  {
+                                     "tokens":  [
+                                                    "FloorGenerator"
+                                                ],
+                                     "paths":  [
+
+                                               ],
+                                     "registry":  [
+
+                                                  ]
+                                 }
+                 }
+             ]
+}

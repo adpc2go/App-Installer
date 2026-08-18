@@ -1,0 +1,35 @@
+name = "pc2go-edge"
+main = "worker.js"
+compatibility_date = "2026-08-01"
+
+# Multi-GB installers stream through the Worker, so keep the bucket close to the clients.
+# R2 has no Middle East location; for Kuwait, eeur and weur both ride Cloudflare's
+# backbone into the Kuwait City PoP. Measure both before committing - see README.md.
+[[r2_buckets]]
+binding = "BUCKET"
+bucket_name = "pc2go-apps"
+
+[vars]
+# Set to "false" to serve /files/* unauthenticated. Only do that if you are comfortable
+# with anyone who learns the hostname pulling every licensed installer you host.
+GATE_FILES = "true"
+
+# 48h. Sized to outlive a BITS resume across a dropped link or an overnight reboot,
+# not because the token wants to live that long.
+TOKEN_TTL_SECONDS = "172800"
+
+# Leave empty to use the request origin. Set it only if the Worker is reached through
+# a hostname you do not want echoed into go.ps1 (e.g. behind another proxy).
+PUBLIC_BASE_URL = ""
+
+# SHA-256 of the AppDeploy.ps1 currently in the bucket. Written by
+# tools\Publish-Release.ps1 - do not edit by hand.
+#
+# This is a var and not a secret on purpose: the value is public the moment go.ps1 is
+# served, and keeping it in version control makes "which build is live?" answerable
+# from git rather than from the dashboard.
+APPDEPLOY_SHA256 = ""
+
+# SIGNING_KEY is a secret, never a var. Set it once with:
+#   wrangler secret put SIGNING_KEY
+# Rotating it invalidates every outstanding download token immediately.
