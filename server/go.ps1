@@ -1,4 +1,4 @@
-# PC2Go bootstrap - served at https://apps.pc2go.ca/go
+﻿# PC2Go bootstrap - served at https://apps.pc2go.ca/go
 #
 # Universal launch line (works pasted into cmd, Windows PowerShell 5.1, or PowerShell 7):
 #   powershell -NoP -EP Bypass -C "irm https://apps.pc2go.ca/go | iex"
@@ -28,7 +28,7 @@ Invoke-WebRequest -Uri "$BaseUrl/AppDeploy.ps1" -OutFile $ps1 -UseBasicParsing
 # Integrity pin: after each release, paste the SHA-256 of AppDeploy.ps1 here.
 # Defends against tampering of the large script even if only this tiny
 # bootstrap is delivered over a trusted channel.
-$PinnedHash = 'PINNED_SHA256_GOES_HERE'
+$PinnedHash = '5EAAB1A5567CEF8D0699534A5B0D4E91B6CB167F10ACE6707E7CC8FAF4CA422F'
 if ($PinnedHash -ne 'PINNED_SHA256_GOES_HERE') {
     $actual = (Get-FileHash -LiteralPath $ps1 -Algorithm SHA256).Hash
     if ($actual -ne $PinnedHash.ToUpper()) {
