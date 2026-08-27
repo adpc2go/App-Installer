@@ -12486,8 +12486,68 @@ function Set-ForceRemoveOutcome([string]$Why) {
     }
 }
 
+<#
+    Ask the machine whether the batch actually did what it just said it did.
+
+    "Applied" has meant "the write returned without throwing", which is not the same thing and on
+    Windows 11 25H2 came badly apart: Start, File Explorer Privacy, Home and Gallery and the
+    Widgets button all reported Applied, verified green on the next run, and changed nothing a
+    person could see - because the settings had moved and the tool was writing addresses nobody
+    reads any more. Every one of them was found by a human looking at the screen, which is not a
+    quality process.
+
+    So each row that claims Applied is now re-checked against its OWN detector - the same probe
+    the pre-apply check uses to decide whether a row needs running at all. A detector that still
+    says "not applied" immediately after applying means the write did not land where the check
+    looks, and that is worth more than any amount of green.
+
+    Deliberately NOT counted as a failure. The row did everything it was asked to; what is in
+    doubt is whether this build of Windows agrees. Some rows also cannot confirm honestly - the
+    Power Plan row only changes the AC profile on a laptop and never claims the active scheme -
+    so the wording is "could not confirm", not "failed", and the log names them so a technician
+    can judge rather than being handed a verdict the tool cannot support.
+#>
+function Confirm-AppliedRows {
+    $unconfirmed = @()
+    foreach ($p in @($script:Pending)) {
+        if ("$($p.Status)" -notlike 'Applied*') { continue }
+        $probe = $null
+        if ($p.Publisher -eq 'Preference') {
+            $d = @($script:PrefDefs | Where-Object { $_.id -eq $p.UnArgs })[0]
+            # A preference turned OFF is confirmed by its test being FALSE, so the expected
+            # answer follows the tick rather than always being $true.
+            if ($d -and $d.test) {
+                $want = [bool]$p.IsSelected
+                $got = $null
+                try { $got = Test-Pref $d.test } catch { $got = $null }
+                if ($null -ne $got -and $got -ne $want) { $unconfirmed += $p }
+            }
+            continue
+        }
+        $probe = $script:TweakTests[[string]$p.UnArgs]
+        # No probe means nothing to check against - a restore point and every cleanup row are
+        # events, not states, and silence is the honest answer for them.
+        if (-not $probe) { continue }
+        $ok = $null
+        try { $ok = & $probe } catch { $ok = $null }
+        if ($ok -eq $false) { $unconfirmed += $p }
+    }
+    if (-not $unconfirmed.Count) { return }
+    foreach ($p in $unconfirmed) {
+        Set-Status $p 'Applied - could not confirm on this machine' 'warn'
+        Set-Ring $p 'warn'
+        Add-Log "$($p.Name) -> applied, but this machine does not report it as applied afterwards."
+    }
+    Add-Log ("$($unconfirmed.Count) row(s) applied without confirmation: " +
+             (@($unconfirmed | ForEach-Object { $_.Name }) -join ', ') +
+             ' - the change was written but this build of Windows does not read it back.')
+}
+
 function Finish-Batch {
     $script:Phase = 'Done'
+    # Before anything is counted, so the totals describe what the machine confirms rather than
+    # what the writes returned.
+    try { Confirm-AppliedRows } catch { Add-Log "Post-apply confirmation failed: $($_.Exception.Message)" }
     # every batch, however it ended, comes through here - so this is the one place the
     # strip has to be told that nothing can be pulled out any more
     $script:BatchLive = $false
