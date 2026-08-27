@@ -5100,6 +5100,15 @@ $script:TweakDefs = @(
     @{ id = 'gamedvr';         name = 'Game DVR Background Recording - Disable'; hint = 'registry' }
     @{ id = 'hibernation';     name = 'Hibernation - Disable';             hint = 'power' }
     @{ id = 'location';        name = 'Location Tracking - Disable';       hint = 'policy' }
+    # --- the four that came up from the old Preferences tab. They are here rather than there
+    #     because a tick in Tweaks means "I will apply this" while a tick in Preferences meant
+    #     "this is how the machine already is" - the same control with opposite meanings, which
+    #     is how an unticked preference silently LEFT-ALIGNED a taskbar nobody asked it to move.
+    #     A tweak only ever acts in one direction; Undo is what goes back.
+    @{ id = 'lockscreen';      name = 'Lock Screen - Disable';             hint = 'policy' }
+    @{ id = 'logonverbose';    name = 'Logon Verbose Mode - Enable';       hint = 'registry' }
+    @{ id = 'mouseaccel';      name = 'Mouse Acceleration - Disable';      hint = 'registry' }
+    @{ id = 'settingshome';    name = 'Settings Home Page - Hide';         hint = 'policy' }
     @{ id = 'debloatmsapps';   name = 'Microsoft Apps - Remove';           hint = 'removes' }
     @{ id = 'edgedebloat';     name = 'Microsoft Edge - Debloat';          hint = 'policy' }
     @{ id = 'storesearch';     name = 'Microsoft Store Recommended Search Results - Disable'; hint = 'policy' }
@@ -5130,6 +5139,13 @@ $script:TweakDefs = @(
     @{ id = 'dnsresolver';     name = 'DNS - Fast Public Resolvers';       hint = 'network';  caution = $true }
     @{ id = 'onedriveremove';  name = 'Microsoft OneDrive - Remove';       hint = 'removes';  caution = $true }
     @{ id = 'razerdisable';    name = 'Razer Software Auto-Install - Disable'; hint = 'policy'; caution = $true }
+    # CAUTION and unticked on purpose, because the cost lands on somebody else. Removed apps
+    # come back on their own - a machine here had Xbox Game Bar and Gaming App reinstalled by
+    # Windows Update hours after they were removed, which wiped the gaming settings with them -
+    # and this is the only thing that stops it. But it stops EVERY Store update, including the
+    # codecs, WebView2 and runtimes a customer's own software depends on. That is a decision for
+    # the technician who knows the machine, not a default buried in a 42-row batch.
+    @{ id = 'storeupdates';    name = 'Microsoft Store - Stop Automatic App Updates'; hint = 'policy'; caution = $true }
     @{ id = 'windowsai';       name = 'Windows AI - Disable And Remove';   hint = 'removes';  caution = $true }
     # --- Cleanup sub-tab: one-time disk actions, each reports reclaimed space (5).
     #     componentstore is the DISM half SPLIT OUT of the old diskcleanup row - never
@@ -6168,74 +6184,24 @@ function Build-MigrateList {
 #              which is what makes "default is on" settings report correctly on a fresh PC.
 $script:PrefTableSource = @'
 $script:PrefDefs = @(
-    # 11 former toggles were removed because a tweak row now owns the same registry value
-    # (sysdefaults, storesearch, startclean, taskbarclean) - two controls driving one value
-    # makes detection unreliable. 2 more (mpo, s3sleep) moved to Tools > Fixes: they are
-    # repairs, not preferences. What survives is genuinely per-client.
-    @{ id='darktheme'; name='Dark Theme for Windows'
-       on =@(@{p='HKCU\SOFTWARE\Microsoft\Windows\CurrentVersion\Themes\Personalize'; n='AppsUseLightTheme'; v=0},
-             @{p='HKCU\SOFTWARE\Microsoft\Windows\CurrentVersion\Themes\Personalize'; n='SystemUsesLightTheme'; v=0})
-       off=@(@{p='HKCU\SOFTWARE\Microsoft\Windows\CurrentVersion\Themes\Personalize'; n='AppsUseLightTheme'; v=1},
-             @{p='HKCU\SOFTWARE\Microsoft\Windows\CurrentVersion\Themes\Personalize'; n='SystemUsesLightTheme'; v=1})
-       test=@{p='HKCU\SOFTWARE\Microsoft\Windows\CurrentVersion\Themes\Personalize'; n='AppsUseLightTheme'; v=0} }
-
-    @{ id='hiddenfiles'; name='File Explorer Hidden Files'
-       on =@(@{p='HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced'; n='Hidden'; v=1})
-       off=@(@{p='HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced'; n='Hidden'; v=2})
-       test=@{p='HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced'; n='Hidden'; v=1} }
-
-    # Game Mode moved to the Gaming sub-tab (gamingmode row) - same absorption rule as
-    # sysdefaults: a tweak row now owns AutoGameModeEnabled, so the toggle is gone.
-    @{ id='lockscreen'; name='Lock Screen - Disable'
-       on =@(@{p='HKLM\SOFTWARE\Policies\Microsoft\Windows\Personalization'; n='NoLockScreen'; v=1})
-       off=@(@{p='HKLM\SOFTWARE\Policies\Microsoft\Windows\Personalization'; n='NoLockScreen'; v=$null})
-       test=@{p='HKLM\SOFTWARE\Policies\Microsoft\Windows\Personalization'; n='NoLockScreen'; v=1} }
-
-    @{ id='logonverbose'; name='Logon Verbose Mode'
-       on =@(@{p='HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System'; n='VerboseStatus'; v=1})
-       off=@(@{p='HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System'; n='VerboseStatus'; v=0})
-       test=@{p='HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System'; n='VerboseStatus'; v=1} }
-
-    @{ id='newoutlook'; name='Microsoft Outlook New Version'
-       on =@(@{p='HKCU\Software\Microsoft\Office\16.0\Outlook\Preferences'; n='UseNewOutlook'; v=1})
-       off=@(@{p='HKCU\Software\Microsoft\Office\16.0\Outlook\Preferences'; n='UseNewOutlook'; v=0})
-       test=@{p='HKCU\Software\Microsoft\Office\16.0\Outlook\Preferences'; n='UseNewOutlook'; v=1} }
-
-    @{ id='mouseaccel'; name='Mouse Acceleration'
-       on =@(@{p='HKCU\Control Panel\Mouse'; n='MouseSpeed'; v='1'; t='String'},
-             @{p='HKCU\Control Panel\Mouse'; n='MouseThreshold1'; v='6'; t='String'},
-             @{p='HKCU\Control Panel\Mouse'; n='MouseThreshold2'; v='10'; t='String'})
-       off=@(@{p='HKCU\Control Panel\Mouse'; n='MouseSpeed'; v='0'; t='String'},
-             @{p='HKCU\Control Panel\Mouse'; n='MouseThreshold1'; v='0'; t='String'},
-             @{p='HKCU\Control Panel\Mouse'; n='MouseThreshold2'; v='0'; t='String'})
-       test=@{p='HKCU\Control Panel\Mouse'; n='MouseSpeed'; v='1'; abs=$true} }
-
-    @{ id='s0network'; name='S0 Sleep Network Connectivity'
-       on =@(@{p='HKLM\SYSTEM\CurrentControlSet\Control\Power\PowerSettings\F15576E8-98B7-4186-B944-EAFA664402D9'; n='ACSettingIndex'; v=1},
-             @{p='HKLM\SYSTEM\CurrentControlSet\Control\Power\PowerSettings\F15576E8-98B7-4186-B944-EAFA664402D9'; n='DCSettingIndex'; v=1})
-       off=@(@{p='HKLM\SYSTEM\CurrentControlSet\Control\Power\PowerSettings\F15576E8-98B7-4186-B944-EAFA664402D9'; n='ACSettingIndex'; v=0},
-             @{p='HKLM\SYSTEM\CurrentControlSet\Control\Power\PowerSettings\F15576E8-98B7-4186-B944-EAFA664402D9'; n='DCSettingIndex'; v=0})
-       test=@{p='HKLM\SYSTEM\CurrentControlSet\Control\Power\PowerSettings\F15576E8-98B7-4186-B944-EAFA664402D9'; n='ACSettingIndex'; v=1; abs=$true} }
-
-    @{ id='scrollbars'; name='Scrollbars Always Visible'
-       on =@(@{p='HKCU\Control Panel\Accessibility'; n='DynamicScrollbars'; v=0})
-       off=@(@{p='HKCU\Control Panel\Accessibility'; n='DynamicScrollbars'; v=1})
-       test=@{p='HKCU\Control Panel\Accessibility'; n='DynamicScrollbars'; v=0} }
-
-    @{ id='settingshome'; name='Settings Home Page'
-       on =@(@{p='HKCU\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer'; n='SettingsPageVisibility'; v=$null})
-       off=@(@{p='HKCU\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer'; n='SettingsPageVisibility'; v='hide:home'; t='String'})
-       test=@{p='HKCU\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer'; n='SettingsPageVisibility'; v=$null; abs=$true} }
-
-    @{ id='taskbarcenter'; name='Taskbar Centered Icons'
-       on =@(@{p='HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced'; n='TaskbarAl'; v=1})
-       off=@(@{p='HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced'; n='TaskbarAl'; v=0})
-       test=@{p='HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced'; n='TaskbarAl'; v=1; abs=$true} }
-
-    @{ id='windowsnap'; name='Window Snapping'
-       on =@(@{p='HKCU\Control Panel\Desktop'; n='WindowArrangementActive'; v='1'; t='String'})
-       off=@(@{p='HKCU\Control Panel\Desktop'; n='WindowArrangementActive'; v='0'; t='String'})
-       test=@{p='HKCU\Control Panel\Desktop'; n='WindowArrangementActive'; v='1'; abs=$true} }
+    # EMPTY, deliberately, and this table is kept rather than deleted so the shape of what was
+    # here stays on the record.
+    #
+    # There were eleven toggles. Four were promoted to Tweaks rows - Lock Screen - Disable,
+    # Logon Verbose Mode - Enable, Mouse Acceleration - Disable, Settings Home Page - Hide -
+    # because each has one right answer on a machine handed back to a customer. S0 Sleep
+    # Network Connectivity moved to Tools > Fixes, where the repairs live. The remaining six
+    # were dropped: Dark Theme, Scrollbars and Taskbar Centered Icons are per-customer taste
+    # that takes two clicks in Settings; File Explorer Hidden Files is a technician's own
+    # preference and the wrong default for a client machine; New Outlook is an application
+    # decision that would rot; Window Snapping targets the Windows default and so would have
+    # been a row that changes nothing.
+    #
+    # The tab went with them because a tick meant two different things in two places. In Tweaks
+    # a tick means "apply this". Here it meant "this is how the machine already is", mirrored
+    # from the live state by Sync-Prefs - so applying with a box UNTICKED wrote the OFF state
+    # and, in one observed case, left-aligned a taskbar nobody had asked to move. A tweak never
+    # writes an off state; not ticking it means leave it alone.
 )
 
 # ---------- store debloat groups ----------
@@ -6623,6 +6589,16 @@ $script:TweakTests = @{
                                    (Join-Path ${env:ProgramFiles(x86)} 'Microsoft OneDrive\OneDrive.exe'))
                         return -not (@($paths | Where-Object { $_ -and (Test-Path -LiteralPath $_) }).Count) }
     razerdisable    = { Test-RegVal 'HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\DriverSearching' 'SearchOrderConfig' 0 }
+    storeupdates    = { Test-RegVal 'HKLM\SOFTWARE\Policies\Microsoft\WindowsStore' 'AutoDownload' 2 }
+    # Promoted from Preferences. Each of these acts in ONE direction, so absent simply means not
+    # applied - none of them needs the "absent counts as already-correct" rule the preferences
+    # carried, because none of them targets a Windows default. That rule is why Window Snapping
+    # was dropped instead of promoted: its target value IS the default, so as a tweak it would
+    # have been a row that changes nothing on a healthy machine.
+    lockscreen      = { Test-RegVal 'HKLM\SOFTWARE\Policies\Microsoft\Windows\Personalization' 'NoLockScreen' 1 }
+    logonverbose    = { Test-RegVal 'HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System' 'VerboseStatus' 1 }
+    mouseaccel      = { Test-RegVal 'HKCU\Control Panel\Mouse' 'MouseSpeed' '0' }
+    settingshome    = { Test-RegVal 'HKCU\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer' 'SettingsPageVisibility' 'hide:home' }
     rightclickmenu  = { Test-Path -LiteralPath 'HKCU:\Software\Classes\CLSID\{86ca1aa0-34aa-4e8b-a509-50c905bae2a2}\InprocServer32' }
     # newest value: transparency, added after the original row
     visualeffects   = { (Test-RegVal 'HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\VisualEffects' 'VisualFXSetting' 2) -and
@@ -10774,6 +10750,48 @@ function Apply-Tweak($app) {
             Set-Reg 'HKLM\SOFTWARE\Policies\Microsoft\Windows\OneDrive' 'DisableFileSyncNGSC' 1
             $detail = "$done OneDrive uninstaller(s) run; sync disabled by policy and sidebar entry hidden"
         }
+        # ---------------- promoted from the old Preferences tab ----------------
+        'lockscreen' {
+            # A policy, so the sign-in screen is skipped for every account on the machine.
+            Set-Reg 'HKLM\SOFTWARE\Policies\Microsoft\Windows\Personalization' 'NoLockScreen' 1
+            $detail = 'lock screen skipped - sign-in goes straight to the password prompt'
+        }
+        'logonverbose' {
+            # Names what Windows is actually doing during a long sign-in instead of a spinner.
+            # A diagnostic aid on a machine somebody has to support, which is why it is standard
+            # here rather than a matter of taste.
+            Set-Reg 'HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System' 'VerboseStatus' 1
+            $detail = 'sign-in and shutdown say what they are waiting on instead of showing a spinner'
+        }
+        'mouseaccel' {
+            # "Enhance pointer precision" off. REG_SZ, not DWORD - Control Panel\Mouse has always
+            # stored these as strings and writing them as numbers leaves a value Windows ignores.
+            Set-Reg 'HKCU\Control Panel\Mouse' 'MouseSpeed'      '0' 'String'
+            Set-Reg 'HKCU\Control Panel\Mouse' 'MouseThreshold1' '0' 'String'
+            Set-Reg 'HKCU\Control Panel\Mouse' 'MouseThreshold2' '0' 'String'
+            $detail = 'pointer acceleration off - the mouse moves the same distance for the same hand movement every time'
+        }
+        'settingshome' {
+            # hide:home leaves every other Settings page reachable - this is not a lockdown, it
+            # just stops Settings opening on a page of advertisements and account nags.
+            Set-Reg 'HKCU\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer' 'SettingsPageVisibility' 'hide:home' 'String'
+            $detail = 'Settings opens on System instead of the Home page of suggestions'
+        }
+        'storeupdates' {
+            # 2 is "never" for the Store's own update check. This is the only thing that keeps a
+            # debloat done: the removals are already correct - Remove-AppxByName removes for all
+            # users AND deprovisions - and the apps still came back, because Windows Update
+            # re-acquired them through the Store channel. Observed on a 25H2 machine: Xbox Game
+            # Bar and Gaming App reinstalled within hours, taking the gaming settings with them.
+            #
+            # The price is every other Store app freezing too, which is why this row is CAUTION
+            # and unticked. Note what survived that reinstall: a policy-disabled FEATURE stays
+            # disabled even when its app returns - Widgets through AllowNewsAndInterests, Game
+            # DVR through AllowGameDVR. The policies are the durable half of a debloat; this row
+            # only decides whether the packages themselves stay gone.
+            Set-Reg 'HKLM\SOFTWARE\Policies\Microsoft\WindowsStore' 'AutoDownload' 2
+            $detail = 'Store will not update or reinstall apps by itself - removed apps stay removed, and nothing else updates either'
+        }
         'razerdisable' {
             # Razer Synapse arrives as a device 'companion app' through Windows Update
             Set-Reg 'HKLM\SOFTWARE\Policies\Microsoft\Windows\Device Metadata' 'PreventDeviceMetadataFromNetwork' 1
@@ -10917,12 +10935,12 @@ function Apply-Tweak($app) {
         # Six grouped rows; patterns live in $script:DebloatPacks, shared with the GUI's
         # detection probes. Remove-AppxByName removes -AllUsers AND deprovisions, so the
         # apps do not return for new profiles. Everything here reinstalls from the Store.
-        'debloatweb'    { $n = Remove-AppxSet $script:DebloatPacks['debloatweb'];    $detail = "$n package(s) removed - Store can restore any of them" }
-        'debloatdev'    { $n = Remove-AppxSet $script:DebloatPacks['debloatdev'];    $detail = "$n package(s) removed - Store can restore any of them" }
-        'debloatxbox'   { $n = Remove-AppxSet $script:DebloatPacks['debloatxbox'];   $detail = "$n package(s) removed - Xbox sign-in goes too (accepted: business machines); Store can restore" }
-        'debloatmsapps' { $n = Remove-AppxSet $script:DebloatPacks['debloatmsapps']; $detail = "$n package(s) removed - Store can restore any of them" }
-        'debloatmobile' { $n = Remove-AppxSet $script:DebloatPacks['debloatmobile']; $detail = "$n package(s) removed - Store can restore any of them" }
-        'debloatutil'   { $n = Remove-AppxSet $script:DebloatPacks['debloatutil'];   $detail = "$n package(s) removed - Store can restore any of them" }
+        'debloatweb'    { $n = Remove-AppxSet $script:DebloatPacks['debloatweb'];    $detail = "$n package(s) removed - Windows Update can reinstall these on its own; the Store row under CAUTION is what stops that" }
+        'debloatdev'    { $n = Remove-AppxSet $script:DebloatPacks['debloatdev'];    $detail = "$n package(s) removed - Windows Update can reinstall these on its own; the Store row under CAUTION is what stops that" }
+        'debloatxbox'   { $n = Remove-AppxSet $script:DebloatPacks['debloatxbox'];   $detail = "$n package(s) removed - Xbox sign-in goes too (accepted: business machines); Windows Update can reinstall these on its own" }
+        'debloatmsapps' { $n = Remove-AppxSet $script:DebloatPacks['debloatmsapps']; $detail = "$n package(s) removed - Windows Update can reinstall these on its own; the Store row under CAUTION is what stops that" }
+        'debloatmobile' { $n = Remove-AppxSet $script:DebloatPacks['debloatmobile']; $detail = "$n package(s) removed - Windows Update can reinstall these on its own; the Store row under CAUTION is what stops that" }
+        'debloatutil'   { $n = Remove-AppxSet $script:DebloatPacks['debloatutil'];   $detail = "$n package(s) removed - Windows Update can reinstall these on its own; the Store row under CAUTION is what stops that" }
 
         # ---------------- post-format setup ----------------
         'taskbarclean' {
@@ -11429,6 +11447,34 @@ function Undo-Tweak($app) {
                 try { Set-Reg $clsid 'System.IsPinnedToNameSpaceTree' 1 } catch {}
             }
             $detail = 'sync policy lifted - OneDrive is NOT reinstalled'
+        }
+        'storeupdates' {
+            Remove-RegVal 'HKLM\SOFTWARE\Policies\Microsoft\WindowsStore' 'AutoDownload'
+            $detail = 'Store app updates are automatic again - removed apps may return on their own'
+        }
+        # ---------------- promoted from the old Preferences tab ----------------
+        # Each undo DELETES rather than writing the opposite, so Windows goes back to deciding
+        # for itself. Writing 0 would leave the machine carrying our opinion of the default,
+        # which is not the same as not having been touched.
+        'lockscreen' {
+            Remove-RegVal 'HKLM\SOFTWARE\Policies\Microsoft\Windows\Personalization' 'NoLockScreen'
+            $detail = 'lock screen restored'
+        }
+        'logonverbose' {
+            Remove-RegVal 'HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System' 'VerboseStatus'
+            $detail = 'sign-in messages back to the default spinner'
+        }
+        'mouseaccel' {
+            # The Windows defaults, not zeroes - this row's whole point is that the stock values
+            # are 1/6/10, so restoring means writing those back explicitly.
+            Set-Reg 'HKCU\Control Panel\Mouse' 'MouseSpeed'      '1'  'String'
+            Set-Reg 'HKCU\Control Panel\Mouse' 'MouseThreshold1' '6'  'String'
+            Set-Reg 'HKCU\Control Panel\Mouse' 'MouseThreshold2' '10' 'String'
+            $detail = 'pointer acceleration back on (Windows default)'
+        }
+        'settingshome' {
+            Remove-RegVal 'HKCU\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer' 'SettingsPageVisibility'
+            $detail = 'Settings Home page visible again'
         }
         'razerdisable' {
             # COLLISION with devicecompanion (see that undo): only what is UNIQUE to this
