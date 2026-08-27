@@ -1,4 +1,19 @@
-﻿packages/
+packages/
 *.bak
 .wrangler/
 payload.dat
+.push-state.json
+.push-state.json.tmp
+.push-state.lock
+
+# wrangler's cache, the local push sidecar, and editor backups
+tools/.push-state.json
+
+# The Management Console's rolling catalog history - twenty timestamped copies, one every ten
+# minutes, written beside apps.json. Local undo, not something to version: git already holds
+# the committed history of this file, and these would only be noise beside it.
+server/.apps-history/
+
+# Icons of removed applications, set aside rather than deleted so a hand-made one is never
+# destroyed by a click that was about the catalog entry.
+icons/.removed/

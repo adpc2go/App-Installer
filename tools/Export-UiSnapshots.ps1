@@ -108,6 +108,57 @@ try {
     if ($script:Items.Count -ge 4) { $script:Items[0].IsSelected = $true; $script:Items[3].IsSelected = $true }
     Save-Visual $window.Content (Join-Path $OutDir '1-install-tab.png') $Width $Height
 
+    # ---- the batch strip, holding one row in every state it can show.
+    #
+    # This is the shot that exists because property tests cannot take it. Whether the 150px
+    # cap is right, whether the name column is wide enough for real product names, whether the
+    # strip crowds the buttons under a full catalog - none of that fails an assertion, and all
+    # of it is obvious in a picture.
+    #
+    # Note which rows carry the remove button and which do not: that is Test-Removable being
+    # shown rather than described. Failed, Installed and Installing cannot be pulled out.
+    if ($script:Items.Count -ge 8) {
+        $batch = @($script:Items[0..7])
+        foreach ($b in $batch) { $b.IsSelected = $true }
+        $script:Pending = $batch
+        Show-BatchStrip
+        Set-Status $batch[0] 'Failed: installer returned 1603' 'fail';   Set-Ring $batch[0] 'fail'
+        Set-Status $batch[1] 'Installed'                       'ok';     Set-Ring $batch[1] 'ok'
+        Set-Status $batch[2] 'Installing'                      'active'; Set-Ring $batch[2] 'busy'
+        Set-Status $batch[3] 'Downloading 47%  8.1 MB/s  -  9m 48s left' 'active'; Set-Ring $batch[3] 'download'
+        $batch[3].Progress = 47
+        Set-Status $batch[4] 'Removed from batch'              'warn';   Set-Ring $batch[4] 'warn'
+        Set-Status $batch[5] 'Removing - waiting for the installer to skip it' 'warn'
+        Set-Ring $batch[5] 'busy'
+        foreach ($q in $batch[6..7]) { Set-Status $q 'Queued' 'neutral'; Set-Ring $q 'queued' }
+        Sync-BatchStrip
+        $RowNow.Visibility = 'Visible'; $RowProgress.Visibility = 'Visible'
+        $TxtNow.Text = "Downloading $($batch[3].Name) - 47%  at 8.1 MB/s  -  9m 48s left   (app 4 of 8)"
+        $DotNow.Fill = '#FF4C8DFF'
+        $BarOverall.Value = 41; $TxtOverall.Text = '41%   -   app 4 of 8'
+        $BtnPause.Visibility = 'Visible'; $BtnCancel.Visibility = 'Visible'
+        $TxtInstallBtn.Text = 'Add to Batch'
+        $TxtStatus.Text = 'Downloading...'
+        Save-Visual $window.Content (Join-Path $OutDir '1b-batch-strip.png') $Width $Height
+
+        # and folded away to its header - the state the catalog gets its space back in.
+        # Both are worth a picture: the whole argument for collapse over dismiss is that the
+        # collapsed state still tells you where the batch got to.
+        Switch-BatchFold
+        Save-Visual $window.Content (Join-Path $OutDir '1c-batch-strip-folded.png') $Width $Height
+        Switch-BatchFold
+
+        # put the window back to rest, or every later shot carries a batch that is not running
+        $BatchStrip.Visibility = 'Collapsed'
+        $script:BatchLive = $false
+        $script:Pending = @()
+        foreach ($b in $batch) { Set-Status $b '' 'neutral'; Set-Ring $b 'none'
+                                 $b.IsSelected = $false; $b.ProgressVis = 'Collapsed' }
+        $RowNow.Visibility = 'Collapsed'; $RowProgress.Visibility = 'Collapsed'
+        $BtnPause.Visibility = 'Collapsed'; $BtnCancel.Visibility = 'Collapsed'
+        $TxtInstallBtn.Text = 'Install Selected'
+    }
+
     Select-Tab 'Un'
     Select-UnTab 'Desktop'
     Write-Host ("  uninstall list: {0} program(s)" -f $script:UnItems.Count) -ForegroundColor DarkGray
@@ -115,6 +166,73 @@ try {
 
     Select-Tab 'Log'
     Save-Visual $window.Content (Join-Path $OutDir '3-activity-log.png') $Width $Height
+
+    # ============================================================ the Data Backup tab
+    #
+    # Three modes sharing two columns, and the folder picker MOVES between them - it is the
+    # destination for a drive backup and the SOURCE for a restore. Nothing asserts that the
+    # column it lands in still has room for what was already there; a picture settles it.
+    Write-Host 'Rendering the Data Backup tab...' -ForegroundColor Cyan
+    Select-Tab 'Migrate'
+    Select-BackupMode 'profile'
+    Save-Visual $window.Content (Join-Path $OutDir '4a-backup-profile.png') $Width $Height
+
+    Select-BackupMode 'folder'
+    Set-BackupFolder 'E:\PC2Go-Backup' '' ''
+    Save-Visual $window.Content (Join-Path $OutDir '4b-backup-drive.png') $Width $Height
+
+    Select-BackupMode 'restore'
+    Save-Visual $window.Content (Join-Path $OutDir '4c-backup-restore.png') $Width $Height
+
+    # ---- Find a PC, with both lists filled. An empty dialog says nothing about whether two
+    #      side-by-side lists and a manual path box actually fit in 640px.
+    #
+    #      The host names here are DELIBERATELY not machines on this network. Setting SelectedIndex
+    #      fires the real handler, which really does try to connect - and against a PC that answers
+    #      and then refuses, that raises Windows own credential prompt and blocks this renderer on
+    #      a modal dialog nobody is sitting there to answer. An unreachable name comes back "could
+    #      not be reached" without prompting, which is exactly the guard being relied on. The
+    #      staged values are written AFTERWARDS so the picture comes out the same every time.
+    Select-BackupMode 'folder'
+    $NetOverlay.Visibility = 'Visible'
+    foreach ($h in @(@{ n = 'OFFICE-PC'; i = '10.0.20.14' }, @{ n = 'RECEPTION-PC'; i = '10.0.20.24' })) {
+        [void]$ListNetHosts.Items.Add([pscustomobject]@{ Title = $h.n; Sub = $h.i; Name = $h.n; Ip = $h.i })
+    }
+    $ListNetHosts.SelectedIndex = 0
+    $TreeNetShares.Items.Clear()
+    # a shared DRIVE and two shared folders, so both glyphs land in the picture - and one of them
+    # opened, because the whole point of the tree is that a share is a door rather than a target
+    $troot = New-NetNode ([string][char]0xE977) ($window.FindResource('Lift')) 'OFFICE-PC' '' '' $false
+    foreach ($sh in @(@{ n = 'C'; d = $true }, @{ n = 'Backups'; d = $false }, @{ n = 'Scans'; d = $false })) {
+        $unc = '\\OFFICE-PC\' + $sh.n
+        $node = New-NetNode ([string][char]$(if ($sh.d) { 0xEDA2 } else { 0xE8B7 })) '#FFE3B341' $sh.n $unc $unc $true
+        if ($sh.n -eq 'Backups') {
+            $node.Items.Clear()
+            foreach ($f in 'Reception', 'Workshop') {
+                [void]$node.Items.Add((New-NetNode ([string][char]0xE8B7) '#FFE3B341' $f '' ($unc + '\' + $f) $true))
+            }
+            $node.IsExpanded = $true
+            $node.Items[0].IsSelected = $true
+        }
+        [void]$troot.Items.Add($node)
+    }
+    $troot.IsExpanded = $true
+    [void]$TreeNetShares.Items.Add($troot)
+    $TxtNetStatus.Text = '2 PC(s) found'
+    Show-NetNote ('Signed in as OFFICE-PC\technician.  3 share(s). Open one to pick a folder inside it - a share ' +
+                  'is often a whole drive, and the root of somebody drive is rarely where a backup belongs.') 'Dim'
+    Save-Visual $window.Content (Join-Path $OutDir '4d-backup-find-a-pc.png') $Width $Height
+
+    # ---- and the answer that is NOT a failure. Discovery finding nothing is the normal outcome
+    #      on a network of phones and printers, and it must not read like something went wrong.
+    $ListNetHosts.Items.Clear(); $TreeNetShares.Items.Clear()
+    $TxtNetStatus.Text = 'No PCs answered'
+    Show-NetNote ('Nothing on this network accepted a file-sharing connection. That is normal if the other PC ' +
+                  'is asleep, is on a different network, or has not shared a folder yet. You can still type ' +
+                  'its name in below.') 'Muted'
+    Save-Visual $window.Content (Join-Path $OutDir '4e-backup-found-nothing.png') $Width $Height
+    $NetOverlay.Visibility = 'Collapsed'
+    Select-BackupMode 'profile'
 
     # ============================================================ the catalog editor dialog
     Write-Host 'Rendering the catalog editor dialog...' -ForegroundColor Cyan
@@ -163,7 +281,12 @@ try {
     # the dialog declares its own size; render at that size so clipping shows up honestly
     $dw = [int]$(if ($dlg.Width -gt 0) { $dlg.Width } else { 620 })
     $dh = [int]$(if ($dlg.Height -gt 0) { $dlg.Height } else { 740 })
-    Save-Visual $dlg.Content (Join-Path $OutDir '4-catalog-editor-dialog.png') $dw $dh
+    # The editor's dialog used to be a Window, and a Window has .Content. The drawer refactor
+    # made its root a Border - which has a Child, not a Content - so this handed Save-Visual a
+    # $null and the whole run died at the last shot with "cannot call a method on a null-valued
+    # expression". Render whatever the root actually is instead of assuming which it is.
+    $dlgVisual = $(if ($dlg -is [Windows.Window]) { $dlg.Content } else { $dlg })
+    Save-Visual $dlgVisual (Join-Path $OutDir '5-catalog-editor-dialog.png') $dw $dh
 
     Write-Host ''
     Write-Host "Snapshots in: $OutDir" -ForegroundColor Cyan
