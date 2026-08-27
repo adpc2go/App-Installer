@@ -1583,8 +1583,13 @@ function Invoke-R2Upload {
     $depTxt = Get-Content -LiteralPath (Join-Path $repo 'server\AppDeploy.ps1') -Raw
     Assert-True 'the tool still self-elevates when launched directly' `
         ($depTxt -match 'NoSelfElevate -and \(Test-IsAdminMember\)')
-    Assert-True 'go.ps1 still has a plain launch to fall through to' `
-        ($goTxt -match 'Start-Process -FilePath \$winPS -WindowStyle Hidden -ArgumentList \$launch')
+    # Asserted by what the line DOES, not by how its parameters happen to be spelled. The exact
+    # literal was pinned here and broke the moment -PassThru was added between two of the
+    # existing switches - reporting a missing fallback that had never gone anywhere. A test that
+    # fails on a reordering it does not care about trains people to ignore it.
+    $plainLaunch = @($goTxt -split "`r?`n" | Where-Object {
+        $_ -match 'Start-Process' -and $_ -match '\$winPS' -and $_ -match '\$launch' -and $_ -notmatch 'RunAs' })
+    Assert-True 'go.ps1 still has a plain launch to fall through to' ($plainLaunch.Count -ge 1)
 
     # Both implementations must reach the same verdict on this machine. They are separate code
     # by design - the tool keeps an ADSI fallback the bootstrap deliberately does not copy - so
