@@ -1,4 +1,4 @@
-﻿<#
+<#
 .SYNOPSIS
     Installs three REAL products on this machine, then removes them with the tool's own code.
 
@@ -28,7 +28,7 @@
     then says so if any survived.
 
 .EXAMPLE
-    powershell -NoProfile -ExecutionPolicy Bypass -File tools\Test-RealUninstall.ps1
+    powershell -NoProfile -ExecutionPolicy Bypass -File tests\Test-RealUninstall.ps1
 #>
 [CmdletBinding()]
 param(
@@ -117,8 +117,11 @@ try {
     }
     # AsText before Clean-DisplayName: a registry value can come back as a char[] or an
     # array, and Clean-DisplayName leans on it for every name it reads
+    # Test-ProtectedPath is what Scan-Leftovers calls to decide whether a path is one of the
+    # protected roots; lifting the caller without it throws CommandNotFound on the first target
     foreach ($n in 'Format-Size', 'Get-FolderSize', 'ConvertTo-PSRegPath', 'AsText', 'Clean-DisplayName',
-                   'Parse-UninstallString', 'Get-InstalledPrograms', 'Scan-Leftovers') {
+                   'Parse-UninstallString', 'ConvertTo-Int', 'Get-InstalledPrograms',
+                   'Test-ProtectedPath', 'Scan-Leftovers') {
         . ([scriptblock]::Create((Get-Fn $n)))
     }
     # the real AppItem / WipeItem, so a renamed field breaks this rather than passing on a stand-in

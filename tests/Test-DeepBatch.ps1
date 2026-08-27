@@ -27,7 +27,7 @@
     PC2GoDeploy folder is never touched, and everything created is removed.
 
 .EXAMPLE
-    powershell -NoProfile -ExecutionPolicy Bypass -File tools\Test-DeepBatch.ps1
+    powershell -NoProfile -ExecutionPolicy Bypass -File tests\Test-DeepBatch.ps1
 #>
 [CmdletBinding()]
 param(
@@ -57,6 +57,14 @@ function Assert-Equal([string]$What, $Expected, $Actual) {
     }
 }
 function Assert-True([string]$What, $Condition) { Assert-Equal $What $true ([bool]$Condition) }
+# Install Selected and Uninstall Selected now open the pre-flight sheet first, so a press is two
+# steps. Guarded rather than unconditional: pressing Install DURING a running batch still extends
+# it directly and shows no sheet, and both paths have to keep working.
+function Invoke-Commit($Button) {
+    Invoke-Click $Button
+    if ($PreflightOverlay -and "$($PreflightOverlay.Visibility)" -eq 'Visible') { Invoke-Click $BtnPfGo }
+}
+
 function Write-Section([string]$Title) {
     Write-Host ''; Write-Host $Title -ForegroundColor Cyan
     Write-Host ('-' * $Title.Length) -ForegroundColor DarkGray
@@ -324,11 +332,13 @@ try {
     foreach ($it in $script:Items) { $byId[$it.Id] = $it }
     foreach ($id in 'ok', 'reboot', 'ucancel', 'badpkg', 'liar') { $byId[$id].IsSelected = $true }
 
-    Invoke-Click $BtnInstall
+    Invoke-Commit $BtnInstall
     Assert-Equal 'the batch is downloading' 'Download' $script:Phase
     # nothing was pre-placed, so this can only complete by actually transferring bytes
+    # files\<id>\<name>, not the cache root: downloads are keyed on the app id now, because
+    # vendors reuse filenames and nine of the nineteen real applications all ship "Setup.exe"
     Assert-True 'BITS really fetched a package over HTTP' `
-                (Wait-For { Test-Path -LiteralPath (Join-Path $script:CacheDir 'ok.zip') } 120000)
+                (Wait-For { Test-Path -LiteralPath (Join-Path (Join-Path (Join-Path $script:CacheDir 'files') 'ok') 'ok.zip') } 120000)
 
     $done = Wait-For { $script:Phase -in 'Done', 'Idle' -or "$($WipeOverlay.Visibility)" -eq 'Visible' } 300000
     if (-not $done) {
@@ -361,7 +371,7 @@ try {
     Remove-BitsJobs
     foreach ($it in $script:Items) { $it.IsSelected = $false }
     $byId['big'].IsSelected = $true
-    Invoke-Click $BtnInstall
+    Invoke-Commit $BtnInstall
 
     Assert-True 'the big download started' (Wait-For { $byId['big'].Status -match '(?i)download|%' } 60000)
     Invoke-Click $BtnPause
@@ -397,7 +407,7 @@ try {
     foreach ($it in $script:Items) { $it.IsSelected = $false }
     $byId['ok'].IsSelected = $true
     Remove-Item -LiteralPath "$dirOk\app.exe" -Force -ErrorAction SilentlyContinue
-    Invoke-Click $BtnInstall
+    Invoke-Commit $BtnInstall
     Assert-True 'a refused UAC prompt ends the batch instead of hanging' `
                 (Wait-For { $script:Phase -in 'Done', 'Idle' } 180000)
     Assert-True 'and nothing was installed behind the technician''s back' `

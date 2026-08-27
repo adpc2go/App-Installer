@@ -24,7 +24,7 @@
     downloaded or executed, and nothing outside $env:TEMP is written to.
 
 .EXAMPLE
-    powershell -NoProfile -ExecutionPolicy Bypass -File tools\Test-DirtyCleanup.ps1
+    powershell -NoProfile -ExecutionPolicy Bypass -File tests\Test-DirtyCleanup.ps1
 #>
 [CmdletBinding()]
 param(
@@ -91,8 +91,12 @@ try {
     Set-Content -LiteralPath $workerPath -Value ($workerBody -replace '#__PREFTABLE__', '') -Encoding UTF8
 
     $ast = [System.Management.Automation.Language.Parser]::ParseInput($src, [ref]$null, [ref]$null)
-    $want = 'Format-Size', 'Get-FolderSize', 'ConvertTo-PSRegPath', 'Scan-Leftovers',
-            'Set-Status', 'Set-Ring', 'Read-WorkerStatus'
+    # Test-ProtectedPath is what Scan-Leftovers now calls to decide whether a path is one of the
+    # protected roots - it used to be an inline -contains on the string exactly as written,
+    # which a relative segment walked straight past. Lifting the caller without the helper
+    # leaves the scan throwing CommandNotFound on its very first file target.
+    $want = 'Format-Size', 'Get-FolderSize', 'ConvertTo-PSRegPath', 'Test-ProtectedPath',
+            'Scan-Leftovers', 'Set-Status', 'Set-Ring', 'Read-WorkerStatus'
     foreach ($name in $want) {
         $fn = $ast.FindAll({ param($n)
             $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq $name }, $true) |
@@ -233,9 +237,16 @@ try {
     # Where did it land? The worker snapshots top-level directories under a set of roots
     # before and after the installer, and reports what appeared. Pointing those roots at the
     # sandbox is the only way to test it without installing something real - which is what the
-    # PC2GO_WATCH_ROOTS seam exists for.
+    # -TestWatchRoots seam exists for.
     $watchRoot = Join-Path $root 'roots'
     New-Item -ItemType Directory -Force -Path $watchRoot | Out-Null
+    # Canonicalise, or every comparison below is against the wrong string. $root descends from
+    # $env:TEMP, which on this account is the 8.3 short form "C:\Users\LEGION~1\..."; the
+    # worker's snapshot reports Get-ChildItem's FullName, which is the LONG form
+    # "C:\Users\Legion-T7\...". The two never match, so "the new folder was observed" failed
+    # while the worker was in fact observing it perfectly well. The product is right to report
+    # canonical paths - it is the fixture that has to speak the same dialect.
+    $watchRoot = (Get-Item -LiteralPath $watchRoot).FullName.TrimEnd('\')
     New-Item -ItemType Directory -Force -Path (Join-Path $watchRoot 'AlreadyHere') | Out-Null
     $watchExe = Join-Path $root 'fake-watched.cmd'
     Set-Content -LiteralPath $watchExe -Encoding ASCII -Value (@(
@@ -362,13 +373,14 @@ try {
     Add-Content -LiteralPath $queue -Value '{"end":true}' -Encoding UTF8
 
     Write-Section 'Running the real elevated worker against the injected faults'
-    # inherited by the worker process this launches
-    $env:PC2GO_WATCH_ROOTS = $watchRoot
+    # On the worker's COMMAND LINE, not in the environment. An inherited env var was an
+    # outside handle on where an elevated process looks; the seam is passed explicitly now.
     $psExe = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
     $t0 = Get-Date
     $proc = Start-Process -FilePath $psExe -Wait -PassThru -WindowStyle Hidden -ArgumentList @(
         '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "`"$workerPath`"",
-        '-QueueFile', "`"$queue`"", '-StatusFile', "`"$status`"", '-CancelFile', "`"$cancel`"")
+        '-QueueFile', "`"$queue`"", '-StatusFile', "`"$status`"", '-CancelFile', "`"$cancel`"",
+        '-TestWatchRoots', "`"$watchRoot`"")
     Write-Host ("  worker exited {0} after {1:N1}s" -f $proc.ExitCode, ((Get-Date) - $t0).TotalSeconds) -ForegroundColor DarkGray
 
     $reported = @(Get-Content -LiteralPath $status -ErrorAction SilentlyContinue |

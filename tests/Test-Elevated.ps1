@@ -28,7 +28,7 @@
 
 .EXAMPLE
     Right-click PowerShell -> Run as administrator, then:
-    powershell -NoProfile -ExecutionPolicy Bypass -File tools\Test-Elevated.ps1
+    powershell -NoProfile -ExecutionPolicy Bypass -File tests\Test-Elevated.ps1
 #>
 [CmdletBinding()]
 param(
@@ -54,6 +54,14 @@ function Assert-Equal([string]$What, $Expected, $Actual) {
         Write-Host ("  FAIL  {0}`n          expected [{1}]`n          actual   [{2}]" -f $What, $Expected, $Actual) -ForegroundColor Red }
 }
 function Assert-True([string]$What, $Condition) { Assert-Equal $What $true ([bool]$Condition) }
+# Install Selected and Uninstall Selected now open the pre-flight sheet first, so a press is two
+# steps. Guarded rather than unconditional: pressing Install DURING a running batch still extends
+# it directly and shows no sheet, and both paths have to keep working.
+function Invoke-Commit($Button) {
+    Invoke-Click $Button
+    if ($PreflightOverlay -and "$($PreflightOverlay.Visibility)" -eq 'Visible') { Invoke-Click $BtnPfGo }
+}
+
 function Skip-Test([string]$What) { $script:Skip++; Write-Host ("  SKIP  {0}" -f $What) -ForegroundColor Yellow }
 function Write-Section([string]$Title) {
     Write-Host ''; Write-Host $Title -ForegroundColor Cyan; Write-Host ('-' * $Title.Length) -ForegroundColor DarkGray
@@ -203,10 +211,17 @@ try {
 
     # NO STUB. This is the real Start-Worker, with -Verb RunAs.
     Load-Catalog
-    Copy-Item -LiteralPath $zip -Destination (Join-Path $script:CacheDir 'package.zip') -Force
+    # Per-app cache folder, NOT the cache root. The pump resolves this app to
+    # files\elev\package.zip (Get-AppCachePath); staged at the root it finds nothing, tries to
+    # download the catalog's example.invalid URL, and the batch hangs until the timeout - which
+    # read exactly like a broken elevated worker. Same fix Test-GuiBatch's Set-StagedPackage got
+    # when the cache went per-app.
+    $elevCache = Join-Path (Join-Path $script:CacheDir 'files') 'elev'
+    New-Item -ItemType Directory -Force -Path $elevCache | Out-Null
+    Copy-Item -LiteralPath $zip -Destination (Join-Path $elevCache 'package.zip') -Force
     $script:Items[0].IsSelected = $true
     Write-Host '  clicking Install - approve the UAC prompt if one appears...' -ForegroundColor Yellow
-    Invoke-Click $BtnInstall
+    Invoke-Commit $BtnInstall
     $done = Wait-For { $script:Phase -in 'Done', 'Idle' -or "$($WipeOverlay.Visibility)" -eq 'Visible' } 300000
     Assert-True 'the batch completed with the real worker' $done
     Assert-True 'the row reports Installed'                ($script:Items[0].Status -like 'Installed*')
@@ -222,7 +237,8 @@ try {
         Write-Section '2. A machine-wide product in HKLM'
 
         foreach ($n in 'Format-Size', 'Get-FolderSize', 'ConvertTo-PSRegPath', 'AsText',
-                       'Clean-DisplayName', 'Parse-UninstallString', 'Get-InstalledPrograms') {
+                       'Clean-DisplayName', 'Parse-UninstallString', 'ConvertTo-Int',
+                       'Get-InstalledPrograms') {
             . ([scriptblock]::Create((Get-Fn $n)))
         }
         $mDir = Join-Path $progDir 'Zephyr Lab'
@@ -261,7 +277,9 @@ try {
         # ============================================================== 3-6. the wipe targets
         Write-Section '3-6. hosts line, service, scheduled task, another profile'
 
-        foreach ($n in 'Scan-Leftovers', 'Set-Status', 'Set-Ring') { . ([scriptblock]::Create((Get-Fn $n))) }
+        # Test-ProtectedPath before Scan-Leftovers: the scan calls it on every file target, and
+        # lifting the caller without the helper throws CommandNotFound on the first one
+        foreach ($n in 'Test-ProtectedPath', 'Scan-Leftovers', 'Set-Status', 'Set-Ring') { . ([scriptblock]::Create((Get-Fn $n))) }
         $script:ProtectedPaths = @($ast.FindAll({ param($n)
             $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and
             $n.Left.Extent.Text -eq '$script:ProtectedPaths' }, $true) |

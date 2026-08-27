@@ -29,7 +29,7 @@
     never opened, nothing is downloaded, and nothing outside $env:TEMP is written to.
 
 .EXAMPLE
-    powershell -NoProfile -ExecutionPolicy Bypass -File tools\Test-CatalogScenarios.ps1
+    powershell -NoProfile -ExecutionPolicy Bypass -File tests\Test-CatalogScenarios.ps1
 #>
 [CmdletBinding()]
 param(
@@ -90,11 +90,18 @@ try {
         return $fn.Extent.Text
     }
 
-    foreach ($n in 'Get-Field', 'Set-Field', 'Remove-Field', 'Get-BoxText', 'Test-RealHash', 'Test-App',
+    $lifted = @('Get-Field', 'Set-Field', 'Remove-Field', 'Get-BoxText', 'Test-RealHash', 'Test-App',
+                   'Invoke-Guarded',
                    'Format-Size', 'ConvertTo-Id', 'Get-VerifyCandidates',
                    'Format-PostDest', 'Get-PostStepSummary', 'Update-PostRowText', 'New-PostRow',
                    'Get-PostRows', 'ConvertTo-PostStep', 'Set-PostRows', 'Test-InPackage',
-                   'Export-Catalog') {
+                   'ConvertFrom-PackageFileName',
+                   'Get-CategoryNames', 'Get-AppsInCategory', 'Get-DefaultCategory',
+                   'Get-IconFileFor', 'Get-IconView', 'Set-CatalogDirty', 'Request-Save',
+                   'Move-AppIcon', 'Request-IconMove',
+                   'Show-AppDialog',
+                   'Save-CatalogHistory', 'Export-Catalog')
+    foreach ($n in $lifted) {
         . ([scriptblock]::Create((Get-FunctionText $editorAst $n)))
     }
 
@@ -110,12 +117,9 @@ try {
     $xe = ($lines | Select-String -Pattern "^'@$" | Where-Object { $_.LineNumber -gt $xs } | Select-Object -First 1).LineNumber
     $xaml = ($lines[$xs..($xe - 2)] -join "`r`n")
 
-    $dlgFn  = Get-FunctionText $editorAst 'Show-AppDialog'
-    $bodyAt = $dlgFn.IndexOf('{')
-    $showAt = $dlgFn.IndexOf('[void]$dlg.ShowDialog()')
-    $endAt  = $dlgFn.LastIndexOf('}')
-    $head = $dlgFn.Substring($bodyAt + 1, $showAt - $bodyAt - 1)
-    $tail = $dlgFn.Substring($showAt + '[void]$dlg.ShowDialog()'.Length, $endAt - $showAt - '[void]$dlg.ShowDialog()'.Length)
+    # Show-AppDialog no longer blocks on ShowDialog - it builds the drawer's contents,
+    # wires them, and returns. So it is simply CALLED, and it publishes $c and $state
+    # for a harness to inspect. Edits apply as they are made; there is no accept step.
 
     # the elevated worker, sliced out of its here-string
     $wl = $workerSrc -split "`r?`n"
@@ -128,6 +132,20 @@ try {
     # Set-StatusText writes to the main window's label, which does not exist out here
     $TxtStatus = [pscustomobject]@{ Text = ''; Foreground = '' }
     function Set-StatusText([string]$text, [string]$colour = '#FFB6B6C0') { $TxtStatus.Text = $text }
+    # The overlay these reach for belongs to the MAIN window, which no harness puts up. Three of
+    # them are Invoke-Guarded's own error path, so without them a throw inside any lifted code
+    # died reporting the throw - hiding the real failure behind a CommandNotFoundException.
+    function Get-LevelDot([int]$Level) { '#FF4ADE80' }
+    function Show-Fail([string]$Text) { $script:LastStatus = $Text }
+    function Show-Warn([string]$Text) { $script:LastStatus = $Text }
+    function Show-Done([string]$Text) { $script:LastStatus = $Text }
+    function Show-Notice([string]$Title, [string]$Body) { $script:LastNotice = "$Title :: $Body" }
+    # Confirming immediately is the honest stand-in: the question cannot be asked without a
+    # window, and what these tests are about is what happens AFTER it is answered yes.
+    function Show-Confirm([string]$Title, [string]$Body, [string]$OkText, [scriptblock]$OnConfirm) {
+        $script:LastConfirm = "$Title :: $Body"
+        if ($OnConfirm) { & $OnConfirm }
+    }
 
     function Invoke-Click($Button) {
         $Button.RaiseEvent((New-Object Windows.RoutedEventArgs([Windows.Controls.Primitives.ButtonBase]::ClickEvent)))
@@ -191,12 +209,14 @@ try {
         id = ''; name = ''; version = ''; publisher = ''; category = 'Apps'
         sizeBytes = 0; url = ''; sha256 = ''; silentArgs = ''; verifyPaths = @()
     }
-    . ([scriptblock]::Create($head))
+    $dlg   = Show-AppDialog $App $null $LocalFile
+    $c     = $dlg.Tag.C
+    $state = $dlg.Tag.State
 
     $c.DlgName.Text = 'Scenario App'
     $c.DlgUrl.Text  = 'https://example.invalid/package.zip'
     # what "Use a local file..." does once the file picker has returned
-    & $startFetch $zip
+    & ($dlg.Tag.Fn.startFetch) $zip
     $waited = 0
     while ($state.job -and $waited -lt 30000) { Wait-Dispatcher 200; $waited += 200 }
     Assert-True  'the background fetch finished'   ($null -eq $state.job)
@@ -231,9 +251,9 @@ try {
     Set-ComboText $c.DlgPostFrom 'inner\Tools\finish.cmd'
     Assert-Equal 'three actions queued up' 3 $state.rows.Count
 
-    try { Invoke-Click $c.DlgOk } catch { }
-    Assert-True 'Save accepted the app' $state.ok
-    $null = . ([scriptblock]::Create($tail))
+    & ($dlg.Tag.Apply)
+    Assert-Equal 'Save accepted the app, and reports no problem' '' ([string]$c.DlgStatus.Text)
+    & ($dlg.Tag.Apply)
 
     Assert-Equal 'the id came from the name'    'scenario-app'    $App.id
     Assert-Equal 'the entry was kept'           'inner\setup.cmd' $App.entry
@@ -276,7 +296,9 @@ try {
     # a step added by hand that the dialog has no UI for - it must survive being edited around
     Set-Field $App 'postInstall' (@(
         [pscustomobject]@{ type = 'kill'; name = 'scenario'; folder = $installDir }) + @($App.postInstall))
-    . ([scriptblock]::Create($head))
+    $dlg   = Show-AppDialog $App $null $LocalFile
+    $c     = $dlg.Tag.C
+    $state = $dlg.Tag.State
 
     Assert-Equal 'all four steps are listed' 4 $state.rows.Count
     Assert-Equal 'the hand-written kill is first, and read-only' 'other' $state.rows[0].Kind
@@ -300,9 +322,9 @@ try {
     # the step's own type is asserted below, after the save
     Assert-Equal 'the kill was moved to the end' 'copy,copy,other' (($state.rows | ForEach-Object { $_.Kind }) -join ',')
 
-    try { Invoke-Click $c.DlgOk } catch { }
-    Assert-True 'the edit was accepted' $state.ok
-    $null = . ([scriptblock]::Create($tail))
+    & ($dlg.Tag.Apply)
+    Assert-Equal 'the edit was accepted, and reports no problem' '' ([string]$c.DlgStatus.Text)
+    & ($dlg.Tag.Apply)
     $steps = @($App.postInstall)
     Assert-Equal 'three steps saved'                    3 $steps.Count
     Assert-Equal 'in the new order'                     'copy,copy,kill' (($steps | ForEach-Object { $_.type }) -join ',')
@@ -312,6 +334,61 @@ try {
 
     $script:Catalog = [pscustomobject]@{ apps = @($App) }
     Assert-True 'the edited catalog saves again' (Export-Catalog)
+
+    # ================================================================== 3b. fields with no UI
+    Write-Section '3b. New-schema fields survive being edited around'
+
+    # requires HAS a control now; the rest ride with no UI at all - same contract the
+    # hand-written kill step proves above: editing the app must not shake them loose.
+    # Section 4 hands this very $App to the REAL worker afterwards, so everything 3b
+    # scribbles on it is captured here and restored at the end - fake verifyPaths in
+    # particular would make that install unverifiable and skip its after-install steps.
+    $origName = [string](Get-Field $App 'name')
+    $origVp   = @(Get-Field $App 'verifyPaths')
+    Set-Field $App 'requires' @('some-base')
+    Set-Field $App 'uninstallOnly' $true
+    Set-Field $App 'uninstall' ([pscustomobject]@{
+        command = 'C:\V\un.exe'; args = '-i uninstall -q -o "__ODIS_MANIFEST__"'; detect = 'C:\V\v.exe' })
+    $cl = Get-Field $App 'cleanup'
+    if (-not $cl) { $cl = [pscustomobject]@{}; Set-Field $App 'cleanup' $cl }
+    Set-Field $cl 'removers' @([pscustomobject]@{ name = 'vendor-clear'
+        path = '%ProgramFiles%\V\uninstall.exe'; args = '--mode unattended'; shared = $true })
+    # several verify paths, hand-curated: the drawer edits the FIRST and must keep the rest -
+    # the old write-back truncated to one, which is exactly the regression pinned here
+    Set-Field $App 'verifyPaths' @('C:\V\v.exe', 'C:\V\lib\core.dll')
+
+    $dlg2   = Show-AppDialog $App $null $LocalFile
+    $c2     = $dlg2.Tag.C
+    Assert-Equal 'the requires field loads into its box' 'some-base' ([string]$c2.DlgRequires.Text)
+    $c2.DlgName.Text = 'Scenario App Renamed'
+    $c2.DlgRequires.Text = 'other-base'
+    & ($dlg2.Tag.Apply)
+    & ($dlg2.Tag.Apply)
+    try { $dlg2.Close() } catch { }
+
+    Assert-Equal 'requires was rewritten from the box'   'other-base' ([string]@(Get-Field $App 'requires')[0])
+    Assert-True  'uninstallOnly survived the edit'       ([bool](Get-Field $App 'uninstallOnly'))
+    Assert-True  'the ODIS token survived unmangled'     ((Get-Field (Get-Field $App 'uninstall') 'args') -like '*"__ODIS_MANIFEST__"*')
+    Assert-Equal 'the remover survived'                  'vendor-clear' ([string](Get-Field @(Get-Field (Get-Field $App 'cleanup') 'removers')[0] 'name'))
+    Assert-Equal 'BOTH verify paths survived the drawer' 2 @(Get-Field $App 'verifyPaths').Count
+    Assert-Equal 'the second one intact'                 'C:\V\lib\core.dll' ([string]@(Get-Field $App 'verifyPaths')[1])
+
+    $script:Catalog = [pscustomobject]@{ apps = @($App) }
+    Assert-True 'and it still saves' (Export-Catalog)
+    $reload2 = (Get-Content -LiteralPath $CatalogPath -Raw) | ConvertFrom-Json
+    Assert-Equal 'requires round-trips to disk'          'other-base' ([string]$reload2.apps[0].requires[0])
+    Assert-True  'uninstallOnly round-trips'             ([bool]$reload2.apps[0].uninstallOnly)
+
+    # Hand section 4 back the app it expects: real name, real verify paths, installable again -
+    # and SAVED, because section 4 reads the catalog off disk, and the file on disk right now
+    # is the 3b-polluted one whose fake verify paths make the install unverifiable.
+    Set-Field $App 'name' $origName
+    Set-Field $App 'verifyPaths' @($origVp)
+    Remove-Field $App 'uninstallOnly'
+    Remove-Field $App 'requires'
+    Remove-Field $App 'uninstall'
+    $script:Catalog = [pscustomobject]@{ apps = @($App) }
+    Assert-True 'and the restored app saves for section 4' (Export-Catalog)
 
     # ================================================================== 4. the real worker
     Write-Section '4. Handing the edited entry to the real elevated worker'
@@ -368,15 +445,17 @@ try {
     $dialogXaml = $xaml
     $App = [pscustomobject]@{ id = ''; name = ''; category = 'Apps'; sizeBytes = 0
                               url = ''; sha256 = ''; silentArgs = ''; verifyPaths = @() }
-    . ([scriptblock]::Create($head))
+    $dlg   = Show-AppDialog $App $null $LocalFile
+    $c     = $dlg.Tag.C
+    $state = $dlg.Tag.State
     $c.DlgName.Text = 'Bare Installer'
     $c.DlgUrl.Text  = 'https://example.invalid/setup.exe'
     Invoke-Click $c.DlgPostAdd
     Set-ComboText $c.DlgPostFrom 'Support\licence.dat'
     Set-ComboText $c.DlgPostDest 'C:\Program Files\Bare'
-    Invoke-Click $c.DlgOk
+    & ($dlg.Tag.Apply)
     Assert-True 'a single installer cannot carry an after-install file' ($c.DlgStatus.Text -like '*must be a .zip*')
-    Assert-True 'and the dialog stays open'                             (-not $state.ok)
+    Assert-True 'and the dialog stays open' ($c.DlgStatus.Text -ne '')
     try { $dlg.Close() } catch { }
 
     # publishing refuses the same thing from the catalog side
@@ -385,6 +464,34 @@ try {
                               postInstall = @([pscustomobject]@{ type = 'copy'; from = 'a\b.dat'; dest = 'C:\x\' }) }
     Assert-True 'Test-App refuses it too' ((@(Test-App $bad) -join ' ') -like '*need a package*')
 
+    # ---- the lift list, checked against itself -------------------------------------------
+    #
+    # HANDOVER trap 13: a lifted function grows a call to another editor function, the list is
+    # not updated, and this suite dies with a CommandNotFoundException thrown from inside a
+    # closure - nowhere near the change that caused it, and only if a test happens to walk that
+    # branch. It has now happened five times, so it is asked rather than remembered.
+    #
+    # "Is it DEFINED right now" rather than "is it on a list", so lifting and stubbing both
+    # satisfy it and there is no second list to keep in step. Run LAST, when every stub exists.
+    $editorFns = @($editorAst.FindAll({ param($n)
+        $n -is [System.Management.Automation.Language.FunctionDefinitionAst] }, $true) |
+        ForEach-Object { $_.Name } | Sort-Object -Unique)
+    $missing = @()
+    foreach ($n in $lifted) {
+        $fnAst = $editorAst.FindAll({ param($x)
+            $x -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $x.Name -eq $n }, $true) |
+            Select-Object -First 1
+        foreach ($cmd in $fnAst.FindAll({ param($x)
+            $x -is [System.Management.Automation.Language.CommandAst] }, $true)) {
+            $called = $cmd.GetCommandName()
+            if (-not $called) { continue }
+            if ($editorFns -notcontains $called) { continue }
+            if (Get-Command -Name $called -CommandType Function -ErrorAction SilentlyContinue) { continue }
+            $missing += "$n calls $called"
+        }
+    }
+    Assert-Equal 'every editor function a lifted one calls is lifted or stubbed' `
+                 '' ((@($missing | Sort-Object -Unique)) -join ' | ')
     # ================================================================== verdict
     Write-Host ''
     Write-Host ("{0}/{1} passed" -f $script:Pass, ($script:Pass + $script:Fail)) `

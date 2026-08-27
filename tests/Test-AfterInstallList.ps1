@@ -36,7 +36,7 @@
     run, and nothing outside $env:TEMP is written to.
 
 .EXAMPLE
-    powershell -NoProfile -ExecutionPolicy Bypass -File tools\Test-AfterInstallList.ps1
+    powershell -NoProfile -ExecutionPolicy Bypass -File tests\Test-AfterInstallList.ps1
 #>
 [CmdletBinding()]
 param(
@@ -126,9 +126,18 @@ try {
         return $fn.Extent.Text
     }
 
-    $fromEditor = 'Get-Field', 'Set-Field', 'Remove-Field', 'Test-RealHash', 'Test-App',
+    # Get-DefaultCategory and the two it leans on came in when categories stopped being a
+    # hardcoded 'Apps': Show-AppDialog now ASKS what a new app should be filed under instead of
+    # writing a literal, so the dialog cannot be lifted without them.
+    $fromEditor = 'Get-CategoryNames', 'Get-AppsInCategory', 'Get-DefaultCategory',
+                  'Invoke-Guarded',
+                  'Get-IconFileFor', 'Get-IconView', 'Set-CatalogDirty', 'Request-Save',
+                  'Move-AppIcon', 'Request-IconMove',
+                  'Show-AppDialog',
+                  'Get-Field', 'Set-Field', 'Remove-Field', 'Test-RealHash', 'Test-App',
                   'Format-Size', 'ConvertTo-Id', 'Get-BoxText', 'Test-InPackage', 'Get-VerifyCandidates',
                   'Format-PostDest', 'Get-PostStepSummary', 'Update-PostRowText', 'New-PostRow',
+                  'ConvertFrom-PackageFileName',
                   'Get-PostRows', 'ConvertTo-PostStep', 'Set-PostRows'
     foreach ($n in $fromEditor) { . ([scriptblock]::Create((Get-FunctionText $editorAst $n 'Catalog-Editor.ps1'))) }
 
@@ -137,6 +146,20 @@ try {
     foreach ($n in 'Invoke-PostStep', 'Invoke-PostInstall') { . ([scriptblock]::Create((Get-FunctionText $workerAst $n 'AppDeploy.ps1'))) }
     # the worker narrates every step down the status pipe; outside the worker there is no pipe
     function Write-Status([string]$Id, [string]$State, [string]$Detail, [bool]$Dirty = $false, [string[]]$Created = @()) { }
+    # The overlay these reach for belongs to the MAIN window, which no harness puts up. Three of
+    # them are Invoke-Guarded's own error path, so without them a throw inside any lifted code
+    # died reporting the throw - hiding the real failure behind a CommandNotFoundException.
+    function Get-LevelDot([int]$Level) { '#FF4ADE80' }
+    function Show-Fail([string]$Text) { $script:LastStatus = $Text }
+    function Show-Warn([string]$Text) { $script:LastStatus = $Text }
+    function Show-Done([string]$Text) { $script:LastStatus = $Text }
+    function Show-Notice([string]$Title, [string]$Body) { $script:LastNotice = "$Title :: $Body" }
+    # Confirming immediately is the honest stand-in: the question cannot be asked without a
+    # window, and what these tests are about is what happens AFTER it is answered yes.
+    function Show-Confirm([string]$Title, [string]$Body, [string]$OkText, [scriptblock]$OnConfirm) {
+        $script:LastConfirm = "$Title :: $Body"
+        if ($OnConfirm) { & $OnConfirm }
+    }
 
     Write-Host ("Lifted {0} functions from the editor, 2 from the worker." -f $fromEditor.Count) -ForegroundColor DarkGray
 
@@ -152,7 +175,10 @@ try {
 
     # the names come out of the source too, never a copy kept here - a control added to the
     # lookup and forgotten in the XAML is exactly the failure this is for
-    $m = [regex]::Match($editorSrc, 'foreach \(\$n in ((?s:.*?))\) \{\s*\r?\n\s*\$c\[\$n\] = \$dlg\.FindName')
+    # [^{}] rather than . : a non-greedy .* will happily start at some OTHER "foreach ($n in"
+    # earlier in the editor and run all the way down to here, capturing a whole function body
+    # on the way. A control-name list never contains a brace, so this cannot wander.
+    $m = [regex]::Match($editorSrc, 'foreach \(\$n in ((?s:[^{}]*?))\) \{\s*\r?\n\s*\$c\[\$n\] = \$dlg\.FindName')
     if (-not $m.Success) { throw 'Could not locate the control-name list in Show-AppDialog.' }
     $wantNames = @(& ([scriptblock]::Create($m.Groups[1].Value)))
     Assert-True "the control-name list was found ($($wantNames.Count) names)" ($wantNames.Count -ge 20)
@@ -381,13 +407,9 @@ try {
     if (-not $win) {
         Write-Host '  SKIP  no WPF here, so the dialog cannot be built' -ForegroundColor Yellow
     } else {
-        $dlgFn = Get-FunctionText $editorAst 'Show-AppDialog' 'Catalog-Editor.ps1'
-        $bodyAt = $dlgFn.IndexOf('{')
-        $showAt = $dlgFn.IndexOf('[void]$dlg.ShowDialog()')
-        $endAt  = $dlgFn.LastIndexOf('}')
-        if ($bodyAt -lt 0 -or $showAt -lt 0 -or $endAt -lt $showAt) { throw 'Could not split Show-AppDialog at ShowDialog.' }
-        $head = $dlgFn.Substring($bodyAt + 1, $showAt - $bodyAt - 1)
-        $tail = $dlgFn.Substring($showAt + '[void]$dlg.ShowDialog()'.Length, $endAt - $showAt - '[void]$dlg.ShowDialog()'.Length)
+        # Show-AppDialog no longer blocks on ShowDialog - it builds the drawer's contents,
+        # wires them, and returns. So it is simply CALLED, and it publishes $c and $state
+        # for a harness to inspect. Edits apply as they are made; there is no accept step.
 
         function Invoke-Click($Button) {
             $Button.RaiseEvent((New-Object Windows.RoutedEventArgs([Windows.Controls.Primitives.ButtonBase]::ClickEvent)))
@@ -420,12 +442,14 @@ try {
             )
         }
         # dot-sourced, so $c / $state / $dlg are this scope's to inspect and click
-        . ([scriptblock]::Create($head))
+        $dlg   = Show-AppDialog $App $null $LocalFile
+        $c     = $dlg.Tag.C
+        $state = $dlg.Tag.State
 
         Assert-Equal 'the dialog opened with both existing steps' 2 $state.rows.Count
         Assert-Equal 'and selected the first'                     0 $c.DlgPostList.SelectedIndex
         Assert-True  'the kill row cannot be edited'              (-not $c.DlgPostEdit.IsEnabled)
-        Assert-True  'and says so'                                ($c.DlgPostWhere.Text -like '*kept exactly as it is*')
+        Assert-True  'and says so'                                ($c.DlgPostWhere.Text -like '*exactly as written*')
         Assert-True  'it cannot move up from the top'             (-not $c.DlgPostUp.IsEnabled)
 
         $c.DlgPostList.SelectedIndex = 1
@@ -461,27 +485,25 @@ try {
         Assert-Equal 'switching back restores the move'        'copy'          $state.rows[1].Kind
         Assert-Equal 'without having lost the destination'     'C:\Fake\Docs\' $state.rows[1].Dest
 
-        # an empty action must not be saveable
+        # An incomplete action is no longer REFUSED, because there is no Save to refuse at: the
+        # drawer writes as you go and says what is wrong, which is the same split the rest of
+        # the tool uses - saving warns, publishing is the gate that refuses.
         Invoke-Click $c.DlgPostAdd
-        Invoke-Click $c.DlgOk
-        Assert-True 'Save refuses an action with no file' ($c.DlgStatus.Text -like '*action 4*no file chosen*')
-        Assert-True 'and does not accept the dialog'      (-not $state.ok)
+        & ($dlg.Tag.Apply)
+        Assert-True 'an action with no file is called out' ($c.DlgStatus.Text -like '*action 4*no file chosen*')
         Invoke-Click $c.DlgPostRemove
         Assert-Equal 'Remove took it back out' 3 $state.rows.Count
 
-        # a move with nowhere to go is refused too
+        # a move with nowhere to go is named too
         $c.DlgPostList.SelectedIndex = 2
         Set-ComboText $c.DlgPostDest ''
-        Invoke-Click $c.DlgOk
-        Assert-True 'Save refuses a move with no destination' ($c.DlgStatus.Text -like '*action 3*where the file goes*')
+        & ($dlg.Tag.Apply)
+        Assert-True 'a move with no destination is called out' ($c.DlgStatus.Text -like '*action 3*where the file goes*')
         Set-ComboText $c.DlgPostDest 'C:\Fake\App'
 
-        # Now let it through. The accepting path ends in $dlg.Close(), which a window that was
-        # never shown may refuse - $state.ok is set before it, and that is the decision.
-        try { Invoke-Click $c.DlgOk } catch { }
-        Assert-True 'a complete list is accepted' $state.ok
-        # dot-sourced so it writes into $App here; its return value is not the subject
-        $null = . ([scriptblock]::Create($tail))
+        # and with the list complete it says nothing at all
+        & ($dlg.Tag.Apply)
+        Assert-Equal 'a complete list reports no problem' '' ([string]$c.DlgStatus.Text)
 
         $saved = @($App.postInstall)
         Assert-Equal 'three steps were saved'          3 $saved.Count
@@ -491,7 +513,6 @@ try {
         Assert-Equal 'the original file keeps its own'        'C:\Fake\App\'  $saved[2].dest
         Assert-Equal 'two directories, from the GUI, no hand-editing' 2 `
                      (@($saved | Where-Object { $_.dest } | ForEach-Object { $_.dest } | Select-Object -Unique).Count)
-        try { $dlg.Close() } catch { }
     }
 
     # ------------------------------------------------------------------ 8. a brand-new app
@@ -514,7 +535,9 @@ try {
             id = ''; name = ''; version = ''; publisher = ''; category = 'Apps'
             sizeBytes = 0; url = ''; sha256 = ''; silentArgs = ''; verifyPaths = @()
         }
-        . ([scriptblock]::Create($head))
+        $dlg   = Show-AppDialog $App $null $LocalFile
+        $c     = $dlg.Tag.C
+        $state = $dlg.Tag.State
 
         Assert-Equal 'a new app opens with an empty list' 0 $state.rows.Count
         Assert-True  'with nothing selected'              ($c.DlgPostList.SelectedIndex -lt 0)
@@ -543,17 +566,17 @@ try {
         $c.DlgName.Text  = 'Brand New'
         $c.DlgUrl.Text   = 'https://example.invalid/app.zip'
         $c.DlgEntry.Text = 'Build\setup.exe'
-        Invoke-Click $c.DlgOk
+        & ($dlg.Tag.Apply)
         Assert-True 'Save refuses an action with no file chosen' ($c.DlgStatus.Text -like '*action 1*no file chosen*')
-        Assert-True 'and the dialog is NOT accepted'             (-not $state.ok)
+        Assert-True 'and the dialog is NOT accepted' ($c.DlgStatus.Text -ne '')
         Assert-True 'so nothing empty reaches the catalog'       (-not $App.PSObject.Properties['postInstall'])
 
         # the same for a move with no destination
         $c.DlgPostMove.IsChecked = $true
         Set-ComboText $c.DlgPostFrom 'Tools\thing.dat'
-        Invoke-Click $c.DlgOk
+        & ($dlg.Tag.Apply)
         Assert-True 'Save refuses a move with nowhere to go' ($c.DlgStatus.Text -like '*action 1*where the file goes*')
-        Assert-True 'still not accepted'                     (-not $state.ok)
+        Assert-True 'still not accepted' ($c.DlgStatus.Text -ne '')
 
         # The file box is free text. Once a fetch has read the package, a name that is not in it
         # is a typo, and the alternative to catching it here is catching it on a client at the
@@ -562,16 +585,15 @@ try {
         Set-ComboText $c.DlgPostDest 'C:\Somewhere'
         Set-ComboText $c.DlgPostFrom 'Tools\thing.dat'
         Assert-True 'a file not in the package is called out on screen' ($c.DlgPostWhere.Text -like '*no such file in the package*')
-        Invoke-Click $c.DlgOk
+        & ($dlg.Tag.Apply)
         Assert-True 'and Save refuses it'  ($c.DlgStatus.Text -like "*not in the package*")
-        Assert-True 'still not accepted'   (-not $state.ok)
+        Assert-True 'still not accepted' ($c.DlgStatus.Text -ne '')
 
         Set-ComboText $c.DlgPostFrom 'Docs\readme.txt'
         Assert-True 'a file that IS in the package is accepted' ($c.DlgPostWhere.Text -notlike '*no such file*')
-        try { Invoke-Click $c.DlgOk } catch { }
-        Assert-True 'and Save goes through' $state.ok
+        & ($dlg.Tag.Apply)
+        Assert-Equal 'and the drawer stops complaining' '' ([string]$c.DlgStatus.Text)
 
-        try { $dlg.Close() } catch { }
     }
 
     # ------------------------------------------------------------------ 9. the package guard
@@ -701,21 +723,23 @@ try {
         $BaseUrl = 'https://files.example.invalid'
         $App = [pscustomobject]@{ id = ''; name = ''; category = 'Apps'; sizeBytes = 0
                                   url = ''; sha256 = ''; silentArgs = ''; verifyPaths = @() }
-        . ([scriptblock]::Create($head))
+        $dlg   = Show-AppDialog $App $null $LocalFile
+        $c     = $dlg.Tag.C
+        $state = $dlg.Tag.State
 
         # first package, the way "Use a local file..." ends up calling it
-        & $setAuto $c.DlgName 'name' 'Office 2024'
-        & $setAuto $c.DlgUrl  'url'  "$BaseUrl/files/Office 2024.zip"
-        & $startFetch $officeZip
+        & ($dlg.Tag.Fn.setAuto) $c.DlgName 'name' 'Office 2024'
+        & ($dlg.Tag.Fn.setAuto) $c.DlgUrl  'url'  "$BaseUrl/files/Office 2024.zip"
+        & ($dlg.Tag.Fn.startFetch) $officeZip
         $w = 0; while ($state.job -and $w -lt 30000) { Wait-Dispatcher 200; $w += 200 }
         Assert-Equal 'the first package sets the name'  'Office 2024' (Get-BoxText $c.DlgName)
         Assert-Equal 'and finds its installer'          'inner\office-setup.exe' (Get-BoxText $c.DlgEntry)
         $officeSha = $state.sha256
 
         # now the second, WITHOUT closing the dialog
-        & $setAuto $c.DlgName 'name' 'AutoCAD 2026'
-        & $setAuto $c.DlgUrl  'url'  "$BaseUrl/files/AutoCAD 2026.zip"
-        & $startFetch $autocadZip
+        & ($dlg.Tag.Fn.setAuto) $c.DlgName 'name' 'AutoCAD 2026'
+        & ($dlg.Tag.Fn.setAuto) $c.DlgUrl  'url'  "$BaseUrl/files/AutoCAD 2026.zip"
+        & ($dlg.Tag.Fn.startFetch) $autocadZip
         $w = 0; while ($state.job -and $w -lt 30000) { Wait-Dispatcher 200; $w += 200 }
 
         Assert-Equal 'the name follows the second package'  'AutoCAD 2026' (Get-BoxText $c.DlgName)
@@ -735,16 +759,18 @@ try {
             verifyPaths = @('C:\Program Files\Microsoft Office\root\Office16\WINWORD.EXE')
         }
         $App = $existing
-        . ([scriptblock]::Create($head))
+        $dlg   = Show-AppDialog $App $null $LocalFile
+        $c     = $dlg.Tag.C
+        $state = $dlg.Tag.State
         Assert-Equal 'the existing app opens with its own setup file' 'inner\office-setup.exe' (Get-BoxText $c.DlgEntry)
 
         # Swap the package, the way "Use a local file..." does. Then check EVERY derived field
         # at once rather than one per bug report: a field that stays behind leaves the entry
         # half describing one product and half describing another, which is worse than either.
         $beforeVerify = Get-BoxText $c.DlgVerify
-        & $setAuto $c.DlgName 'name' 'AutoCAD 2026'
-        & $setAuto $c.DlgUrl  'url'  "$BaseUrl/files/AutoCAD 2026.zip"
-        & $startFetch $autocadZip
+        & ($dlg.Tag.Fn.setAuto) $c.DlgName 'name' 'AutoCAD 2026'
+        & ($dlg.Tag.Fn.setAuto) $c.DlgUrl  'url'  "$BaseUrl/files/AutoCAD 2026.zip"
+        & ($dlg.Tag.Fn.startFetch) $autocadZip
         $w = 0; while ($state.job -and $w -lt 30000) { Wait-Dispatcher 200; $w += 200 }
 
         Assert-Equal 'the name follows the new package'     'AutoCAD 2026' (Get-BoxText $c.DlgName)
@@ -758,22 +784,278 @@ try {
         Assert-True  'and no field still mentions the old product' `
                      (@((Get-BoxText $c.DlgName), (Get-BoxText $c.DlgUrl), (Get-BoxText $c.DlgEntry),
                         (Get-BoxText $c.DlgVerify)) -notmatch '(?i)office|microsoft 365').Count -eq 4
-        try { $dlg.Close() } catch { }
 
         # reopen a fresh dialog for the last check
         $App = [pscustomobject]@{ id = ''; name = ''; category = 'Apps'; sizeBytes = 0
                                   url = ''; sha256 = ''; silentArgs = ''; verifyPaths = @() }
-        . ([scriptblock]::Create($head))
-        & $setAuto $c.DlgName 'name' 'AutoCAD 2026'
+        $dlg   = Show-AppDialog $App $null $LocalFile
+        $c     = $dlg.Tag.C
+        $state = $dlg.Tag.State
+        & ($dlg.Tag.Fn.setAuto) $c.DlgName 'name' 'AutoCAD 2026'
 
         # and the other half of the rule: something typed by hand is never overwritten
         $c.DlgName.Text = 'AutoCAD 2026 - Kuwait site licence'
-        & $setAuto $c.DlgName 'name' 'Something Else'
+        & ($dlg.Tag.Fn.setAuto) $c.DlgName 'name' 'Something Else'
         Assert-Equal 'a name typed by hand survives the next package' `
                      'AutoCAD 2026 - Kuwait site licence' (Get-BoxText $c.DlgName)
-        try { $dlg.Close() } catch { }
     }
 
+    # ------------------------------------------------------------------ 13. reopening an app
+    Write-Section '13. Reopening an app offers the files inside its own package'
+
+    if (-not $win) {
+        Write-Host '  SKIP  no WPF here' -ForegroundColor Yellow
+    } else {
+        # The bug: everything the dialog knew about a package arrived with the FETCH, so an app
+        # opened from the catalog offered only the files its own steps already named. Adding a
+        # SECOND file meant typing a path from memory - and Test-InPackage, handed an empty
+        # list, says nothing either way, so a typo passed every check in the editor and failed
+        # on the client at the end of a long install. Re-hashing 14 GB to get the list back is
+        # not an answer. Reading the archive's table of contents is.
+        $reopenDir = Join-Path $root 'reopen'
+        foreach ($d in 'Support', 'Docs', 'Tools', 'inner') {
+            New-Item -ItemType Directory -Force -Path (Join-Path $reopenDir "src\$d") | Out-Null
+        }
+        Set-Content -LiteralPath (Join-Path $reopenDir 'src\Support\licence.dat') -Value 'LIC'        -Encoding ASCII
+        Set-Content -LiteralPath (Join-Path $reopenDir 'src\Docs\readme.txt')     -Value 'READ'       -Encoding ASCII
+        Set-Content -LiteralPath (Join-Path $reopenDir 'src\Tools\finish.cmd')    -Value '@echo done' -Encoding ASCII
+        Set-Content -LiteralPath (Join-Path $reopenDir 'src\inner\setup.exe')     -Value 'MZ suite'   -Encoding ASCII
+        $suiteZip = Join-Path $reopenDir 'Suite 2026.zip'
+        [IO.Compression.ZipFile]::CreateFromDirectory((Join-Path $reopenDir 'src'), $suiteZip)
+        $suiteSha = (Get-FileHash -LiteralPath $suiteZip -Algorithm SHA256).Hash
+
+        # ---- the listing mode on its own, before any window is involved
+        $listed = & $script:FetchWork $suiteZip (Join-Path $root 'pkgcache') $true | Select-Object -Last 1
+        Assert-Equal 'a listing reads every file in the package'    4 (@($listed.files).Count)
+        Assert-Equal 'and finds the installer inside it'            'inner\setup.exe' ([string](@($listed.entries)[0]))
+        Assert-Equal 'and says that is what it was'                 $true ([bool]$listed.listOnly)
+        Assert-Equal 'and did NOT hash - which is the whole point'  '' ([string]$listed.sha256)
+        # the same call on a URL must not quietly start a 14 GB download to answer it
+        $urlListed = & $script:FetchWork 'https://example.invalid/nope.zip' (Join-Path $root 'pkgcache') $true |
+                     Select-Object -Last 1
+        Assert-True  'a listing refuses a URL rather than downloading it' ([bool]$urlListed.error)
+
+        # ---- and now through the dialog, opened the way the Edit button opens it
+        $dialogXaml = $xaml
+        $Owner      = $null
+        $PackageDir = Join-Path $root 'pkgcache'
+        $BaseUrl    = 'https://files.example.invalid'
+        $App = [pscustomobject]@{
+            id = 'suite'; name = 'Suite 2026'; category = 'Apps'
+            url = "$BaseUrl/files/suite/Suite 2026.zip"
+            sha256 = $suiteSha; sizeBytes = (Get-Item $suiteZip).Length
+            silentArgs = '/S'; entry = 'inner\setup.exe'
+            verifyPaths = @('C:\Fake\Suite\suite.exe')
+            postInstall = @(
+                [pscustomobject]@{ type = 'copy'; name = 'Copy licence.dat'
+                                   from = 'Support\licence.dat'; dest = 'C:\Fake\Suite\' }
+            )
+        }
+        # what Get-LocalFileFor hands the dialog in the real editor
+        $LocalFile = $suiteZip
+        $dlg   = Show-AppDialog $App $null $LocalFile
+        $c     = $dlg.Tag.C
+        $state = $dlg.Tag.State
+        $w = 0; while ($state.job -and $w -lt 30000) { Wait-Dispatcher 200; $w += 200 }
+
+        Assert-Equal 'opening read the package, without being asked to' 4 (@($state.files).Count)
+        $offered = @($c.DlgPostFrom.Items | ForEach-Object { [string]$_ })
+        Assert-True  'a file NO step mentions is offered'      ($offered -contains 'Docs\readme.txt')
+        Assert-True  'so is the one a step DOES mention'       ($offered -contains 'Support\licence.dat')
+        Assert-Equal 'every file in the package is on the list' 4 $offered.Count
+        # the hash is the expensive half, and opening an app must not pay it or disturb it
+        Assert-Equal 'the hash is still the catalog''s own'    $suiteSha $state.sha256
+        Assert-Equal 'and the size with it'                    ((Get-Item $suiteZip).Length) $state.size
+        # a listing disables nothing: Save and Fetch stay usable throughout
+        Assert-True  'Fetch was never disabled by the listing'  $c.DlgFetch.IsEnabled
+        Assert-True  'nor was Fetch'                           $c.DlgFetch.IsEnabled
+        # filling an editable ComboBox blanks its Text, and that text IS the selected row's
+        # file - so the row's own value has to be put back afterwards
+        Assert-Equal 'the existing step kept its file' 'Support\licence.dat' $c.DlgPostFrom.Text
+        Assert-Equal 'and its destination'             'C:\Fake\Suite\'      $c.DlgPostDest.Text
+
+        # the half that saves a client install: the guard now HAS an opinion
+        Set-ComboText $c.DlgPostFrom 'Support\licence.dat.bak'
+        Assert-True 'a file that is not in the package is called out at once' `
+                    ($c.DlgPostWhere.Text -like '*no such file in the package*')
+        & ($dlg.Tag.Apply)
+        Assert-True 'and Save refuses it'           ($c.DlgStatus.Text -like '*not in the package*')
+        Assert-True 'without accepting the dialog' ($c.DlgStatus.Text -ne '')
+
+        # the case the whole feature exists for: a SECOND file, picked off the list
+        Set-ComboText $c.DlgPostFrom 'Support\licence.dat'
+        Invoke-Click $c.DlgPostAdd
+        Set-ComboText $c.DlgPostFrom 'Docs\readme.txt'
+        Set-ComboText $c.DlgPostDest 'C:\Fake\Suite\Docs'
+        & ($dlg.Tag.Apply)
+        Assert-Equal 'a second file chosen from the list is accepted, and reports no problem' '' ([string]$c.DlgStatus.Text)
+        & ($dlg.Tag.Apply)
+        $reSaved = @($App.postInstall)
+        Assert-Equal 'both steps were saved'    2 $reSaved.Count
+        Assert-Equal 'the original first'       'Support\licence.dat' ([string]$reSaved[0].from)
+        Assert-Equal 'and the new one after it' 'Docs\readme.txt'     ([string]$reSaved[1].from)
+
+        # ---- the package is NOT on this machine: no list, no opinion, and no crash
+        $App = [pscustomobject]@{
+            id = 'gone'; name = 'Gone 2026'; category = 'Apps'
+            url = "$BaseUrl/files/gone/Gone.zip"; sha256 = ('C' * 64); sizeBytes = 99
+            silentArgs = '/S'; entry = 'inner\setup.exe'; verifyPaths = @('C:\Fake\Gone\g.exe')
+            postInstall = @(
+                [pscustomobject]@{ type = 'copy'; name = 'Copy thing'
+                                   from = 'Support\thing.dat'; dest = 'C:\Fake\Gone\' }
+            )
+        }
+        $LocalFile = Join-Path $reopenDir 'not-here.zip'
+        $dlg   = Show-AppDialog $App $null $LocalFile
+        $c     = $dlg.Tag.C
+        $state = $dlg.Tag.State
+        $w = 0; while ($state.job -and $w -lt 10000) { Wait-Dispatcher 200; $w += 200 }
+        Assert-Equal 'a package this machine does not have leaves the list empty' 0 (@($state.files).Count)
+        Assert-True  'and the step it cannot check is NOT declared wrong' `
+                     ($c.DlgPostWhere.Text -notlike '*no such file in the package*')
+        & ($dlg.Tag.Apply)
+        Assert-Equal 'so an app whose bytes are elsewhere is not called wrong' '' ([string]$c.DlgStatus.Text)
+        $LocalFile = ''
+    }
+
+    # ------------------------------------------------------------------ 14. names and paths
+    Write-Section '14. A file name is not an install path'
+
+    # `SketchUp Pro 2026.26.1.256.rar` used to be read as the NAME "SketchUp Pro 2026 26 1 256",
+    # every dot turned into a space. Get-VerifyCandidates then built an install path out of that
+    # name, and the after-install destination box was prefilled from THAT - so one mangled file
+    # name produced %ProgramFiles%\SketchUp Pro 2026 26 1 256\SketchUpPro2026261256.exe, a
+    # directory no installer creates, and a destination with a second path inside it.
+    $n = ConvertFrom-PackageFileName 'SketchUp Pro 2026.26.1.256.rar'
+    Assert-Equal 'a dotted version stops being part of the name' 'SketchUp Pro' ([string]$n.Name)
+    Assert-Equal 'and comes back as the version'   '2026.26.1.256' ([string]$n.Version)
+
+    # a YEAR is not a version. These products really are called this, and moving the number out
+    # would rename them.
+    foreach ($t in @(@{ f = 'AutoCAD 2026.zip';   n = 'AutoCAD 2026' },
+                     @{ f = 'Office_2024.exe';    n = 'Office 2024' },
+                     @{ f = 'Revit_2026-x64.zip'; n = 'Revit 2026 x64' })) {
+        $g = ConvertFrom-PackageFileName $t.f
+        Assert-Equal "'$($t.f)' keeps its number in the name" $t.n ([string]$g.Name)
+        Assert-Equal "'$($t.f)' claims no version"            ''   ([string]$g.Version)
+    }
+    $v = ConvertFrom-PackageFileName 'setup_v3.1.exe'
+    Assert-Equal 'a v-prefixed version is split off too' 'setup' ([string]$v.Name)
+    Assert-Equal 'without the v'                         '3.1'   ([string]$v.Version)
+    # a file named only for its version still has to produce SOMETHING to call the app
+    $only = ConvertFrom-PackageFileName '2026.1.2.msi'
+    Assert-True  'a file that is only a version still yields a name' ([bool]([string]$only.Name))
+
+    # ---- a real path typed after a guess is the whole path
+    #
+    # This is the value that reached a saved catalog: the box was prefilled with a guessed
+    # %ProgramFiles%\ folder, the technician typed the real one after it, and both were kept.
+    Assert-Equal 'a path inside a path keeps only the real one' `
+                 'C:\Program Files\SketchUp\SketchUp 2026\LayOut\' `
+                 (Format-PostDest '%ProgramFiles%\C:\Program Files\SketchUp\SketchUp 2026\LayOut\')
+    Assert-Equal 'and the same without a trailing separator' `
+                 'C:\Program Files\SketchUp\SketchUp 2026\SketchUp\' `
+                 (Format-PostDest '%ProgramFiles%\C:\Program Files\SketchUp\SketchUp 2026\SketchUp')
+    # and everything that was already right stays exactly as it was
+    Assert-Equal 'an ordinary absolute path is untouched' 'C:\Program Files\App\' `
+                 (Format-PostDest 'C:\Program Files\App\')
+    Assert-Equal 'an environment path is untouched'       '%ProgramFiles%\App\' `
+                 (Format-PostDest '%ProgramFiles%\App\')
+    Assert-Equal 'a real UNC destination is untouched'    '\\nas\share\' `
+                 (Format-PostDest '\\nas\share\')
+    Assert-Equal 'a filename destination still renames'   'C:\App\licence.dat' `
+                 (Format-PostDest 'C:\App\licence.dat')
+    Assert-Equal 'and nothing is still nothing'           '' (Format-PostDest '  ')
+
+    # ------------------------------------------------------------------ 15. curated fields
+    Write-Section '15. A hashed entry keeps the two fields nobody can derive'
+
+    if (-not $win) {
+        Write-Host '  SKIP  no WPF here' -ForegroundColor Yellow
+    } else {
+        # Re-fetching a file used to overwrite the silent switches and the verify path along
+        # with everything else. For Office that replaced empty ODT switches with '/S' and
+        # WINWORD.EXE with %ProgramFiles%\OfficeSetup\OfficeSetup.exe - both invented out of the
+        # file's NAME. Those two fields cannot be read off a package at any price: one comes
+        # from the vendor's documentation, the other from a machine that has the product.
+        $curDir = Join-Path $root 'curated'
+        New-Item -ItemType Directory -Force -Path (Join-Path $curDir 'src\inner') | Out-Null
+        Set-Content -LiteralPath (Join-Path $curDir 'src\inner\OfficeSetup.exe') -Value 'MZ odt' -Encoding ASCII
+        $odtZip = Join-Path $curDir 'OfficeSetup.zip'
+        [IO.Compression.ZipFile]::CreateFromDirectory((Join-Path $curDir 'src'), $odtZip)
+
+        $dialogXaml = $xaml
+        $Owner      = $null
+        $PackageDir = Join-Path $root 'pkgcache'
+        $BaseUrl    = 'https://files.example.invalid'
+        $LocalFile  = ''
+
+        # the entry as it actually sits in the catalog: hashed, and carrying two values that
+        # were settled by hand somewhere else
+        $App = [pscustomobject]@{
+            id = 'office365'; name = 'OfficeSetup'; version = 'Current Channel'; category = 'Apps'
+            url = "$BaseUrl/files/office365/OfficeSetup.exe"
+            sha256 = ('e' * 64); sizeBytes = 7426144
+            silentArgs = ''
+            verifyPaths = @('%ProgramFiles%\Microsoft Office\root\Office16\WINWORD.EXE')
+        }
+        $dlg   = Show-AppDialog $App $null $LocalFile
+        $c     = $dlg.Tag.C
+        $state = $dlg.Tag.State
+        & ($dlg.Tag.Fn.startFetch) $odtZip
+        $w = 0; while ($state.job -and $w -lt 30000) { Wait-Dispatcher 200; $w += 200 }
+
+        Assert-Equal 'the verify path survives a re-fetch' `
+                     '%ProgramFiles%\Microsoft Office\root\Office16\WINWORD.EXE' (Get-BoxText $c.DlgVerify)
+        Assert-Equal 'and the silent switches stay empty rather than becoming a guess' `
+                     '' (Get-BoxText $c.DlgSilent)
+        # what IS a property of the file still follows the file, or swapping a package would
+        # leave an entry half describing one product and half another
+        Assert-Equal 'the setup file inside the package still follows' 'inner\OfficeSetup.exe' (Get-BoxText $c.DlgEntry)
+        Assert-Equal 'and so does the hash' ((Get-FileHash -LiteralPath $odtZip -Algorithm SHA256).Hash) $state.sha256
+
+        # an UNFINISHED entry has nothing settled in it, so the guesses are still welcome -
+        # that is the whole reason the proposals exist
+        $App = [pscustomobject]@{
+            id = ''; name = ''; category = 'Apps'; sizeBytes = 0
+            url = ''; sha256 = ''; silentArgs = ''; verifyPaths = @()
+        }
+        $dlg   = Show-AppDialog $App $null $LocalFile
+        $c     = $dlg.Tag.C
+        $state = $dlg.Tag.State
+        & ($dlg.Tag.Fn.setAuto) $c.DlgName 'name' 'Some Installer'
+        & ($dlg.Tag.Fn.startFetch) $odtZip
+        $w = 0; while ($state.job -and $w -lt 30000) { Wait-Dispatcher 200; $w += 200 }
+        Assert-True 'a brand-new entry is still offered a verify path' ([bool](Get-BoxText $c.DlgVerify))
+    }
+    # ---- the lift list, checked against itself -------------------------------------------
+    #
+    # HANDOVER trap 13: a lifted function grows a call to another editor function, the list is
+    # not updated, and this suite dies with a CommandNotFoundException thrown from inside a
+    # closure - nowhere near the change that caused it, and only if a test happens to walk that
+    # branch. It has now happened five times, so it is asked rather than remembered.
+    #
+    # "Is it DEFINED right now" rather than "is it on a list", so lifting and stubbing both
+    # satisfy it and there is no second list to keep in step. Run LAST, when every stub exists.
+    $editorFns = @($editorAst.FindAll({ param($n)
+        $n -is [System.Management.Automation.Language.FunctionDefinitionAst] }, $true) |
+        ForEach-Object { $_.Name } | Sort-Object -Unique)
+    $missing = @()
+    foreach ($n in $fromEditor) {
+        $fnAst = $editorAst.FindAll({ param($x)
+            $x -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $x.Name -eq $n }, $true) |
+            Select-Object -First 1
+        foreach ($cmd in $fnAst.FindAll({ param($x)
+            $x -is [System.Management.Automation.Language.CommandAst] }, $true)) {
+            $called = $cmd.GetCommandName()
+            if (-not $called) { continue }
+            if ($editorFns -notcontains $called) { continue }
+            if (Get-Command -Name $called -CommandType Function -ErrorAction SilentlyContinue) { continue }
+            $missing += "$n calls $called"
+        }
+    }
+    Assert-Equal 'every editor function a lifted one calls is lifted or stubbed' `
+                 '' ((@($missing | Sort-Object -Unique)) -join ' | ')
     # ------------------------------------------------------------------ verdict
     Write-Host ''
     Write-Host ("{0}/{1} passed" -f $script:Pass, ($script:Pass + $script:Fail)) `

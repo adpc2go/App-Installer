@@ -19,7 +19,7 @@
     timer wiring around these calls is still only covered by reading it.
 
 .EXAMPLE
-    powershell -NoProfile -ExecutionPolicy Bypass -File tools\Test-DownloadResilience.ps1
+    powershell -NoProfile -ExecutionPolicy Bypass -File tests\Test-DownloadResilience.ps1
 #>
 [CmdletBinding()]
 param(
@@ -266,6 +266,198 @@ finally {
 }
 
 Write-Host ''
+    # ------------------------------------------------------------------ 6. many connections
+    Write-Section '6. One file over eight connections'
+
+    # MEASURED against the live edge before any of this was written - 192 MB, median of three
+    # runs each: 1 stream 48 MB/s, 2 streams 64, 4 streams 78, 8 streams 92, 16 streams 97.
+    # A single TCP stream is limited to about (window size / round-trip time), so one connection
+    # left half the link unused - and the further away the client, the worse that gets.
+    #
+    # What is worth testing is not the speed. It is that eight writers into one file produce the
+    # SAME BYTES, that an interrupted one resumes at the right offsets, and that everything this
+    # cannot do is handed back to BITS instead of failing the download.
+    # This harness has never needed the repository before - sections 1-5 drive BITS directly -
+    # so the path is worked out here rather than assumed to exist.
+    $dlHere = $PSScriptRoot
+    if (-not $dlHere -and $PSCommandPath) { $dlHere = Split-Path -Parent $PSCommandPath }
+    $dlRepo = Split-Path -Parent $dlHere
+    $adPath = Join-Path $dlRepo 'server\AppDeploy.ps1'
+    if (-not (Test-Path -LiteralPath $adPath)) { throw "cannot find $adPath" }
+    $adSrc = Get-Content -LiteralPath $adPath -Raw
+    $adAst = [System.Management.Automation.Language.Parser]::ParseInput($adSrc, [ref]$null, [ref]$null)
+    # Everything Invoke-SegmentedDownload CALLS has to be lifted with it or stubbed below.
+    # A helper it calls that is neither is a CommandNotFoundException thrown from inside the
+    # download loop - and the speed/ETA sample only fires after a whole second, so a fast
+    # local transfer never reaches it and the harness stays green while the real thing, on a
+    # slow link, is the only place that breaks. Hence the exact-count check.
+    $wanted = @('Invoke-SegmentedDownload', 'Format-Size', 'Format-Eta')
+    $segFn = @($adAst.FindAll({ param($n)
+        $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+        $n.Name -in $wanted }, $true))
+    if ($segFn.Count -lt $wanted.Count) {
+        $missing = @($wanted | Where-Object { $_ -notin @($segFn.Name) })
+        throw "could not lift from AppDeploy.ps1: $($missing -join ', ')"
+    }
+    foreach ($f in $segFn) { . ([scriptblock]::Create($f.Extent.Text)) }
+    # the bits of the GUI it talks to; none of them are what is under test here
+    function Set-Status { param($i, $t, $k) }
+    function Update-Overall { param($p) }
+    function Update-UI { }
+    function Add-Log { param($m) }
+    $script:SegmentStreams = 8
+    $script:CancelPath = $null
+
+    $segDir = Join-Path $root 'segmented'
+    New-Item -ItemType Directory -Force -Path $segDir | Out-Null
+    $payload = New-Object byte[] (6MB)
+    (New-Object Random 1234).NextBytes($payload)
+    $srcFile = Join-Path $segDir 'source.bin'
+    [IO.File]::WriteAllBytes($srcFile, $payload)
+    $srcHash = (Get-FileHash -LiteralPath $srcFile -Algorithm SHA256).Hash
+
+    $segPort = 8123
+    $segStop = Join-Path $segDir 'stop.flag'
+    $segSrv = Start-TestServer "http://127.0.0.1:$segPort/" $srcFile 262144 0
+    try {
+        $item = [pscustomobject]@{ Id = 'seg'; Name = 'Segmented'; Url = "http://127.0.0.1:$segPort/f.bin"
+                                   SizeBytes = [long]$payload.Length; Size = '6 MB'
+                                   Progress = 0; ProgressVis = 'Collapsed' }
+
+        # ---- the whole point: eight writers, one file, identical bytes
+        $dest = Join-Path $segDir 'whole.bin'
+        $null = Invoke-SegmentedDownload -Item $item -Dest $dest -Streams 8
+        Assert-Equal 'eight connections rebuild the file exactly' `
+                     $srcHash (Get-FileHash -LiteralPath $dest -Algorithm SHA256).Hash
+        Assert-Equal 'and the part file is cleaned up'    $false (Test-Path -LiteralPath "$dest.part")
+        Assert-Equal 'and so is the journal'              $false (Test-Path -LiteralPath "$dest.parts")
+
+        # ---- resume. The offset arithmetic is what silently corrupts a file: get it wrong and
+        # every byte still arrives, just in the wrong places, and only the SHA-256 afterwards
+        # would ever notice.
+        $rdest = Join-Path $segDir 'resumed.bin'
+        $rtmp = "$rdest.part"
+        $streams = 8
+        $per = [long][Math]::Floor($payload.Length / $streams)
+        $fs = [IO.File]::Open($rtmp, 'Create', 'Write', 'None')
+        $doneArr = @()
+        try {
+            $fs.SetLength($payload.Length)
+            for ($i = 0; $i -lt $streams; $i++) {
+                $from = [long]($i * $per)
+                $to = $(if ($i -eq $streams - 1) { [long]($payload.Length - 1) } else { [long]($from + $per - 1) })
+                $half = [long][Math]::Floor(($to - $from + 1) / 2)
+                [void]$fs.Seek($from, 'Begin')
+                $fs.Write($payload, $from, $half)      # genuinely the right bytes, half of each range
+                $doneArr += $half
+            }
+        } finally { $fs.Close() }
+        (@{ total = [long]$payload.Length; streams = $streams; done = $doneArr } | ConvertTo-Json -Compress) |
+            Set-Content -LiteralPath "$rdest.parts" -Encoding ASCII
+        $null = Invoke-SegmentedDownload -Item $item -Dest $rdest -Streams 8
+        Assert-Equal 'a half-finished download resumes to the same bytes' `
+                     $srcHash (Get-FileHash -LiteralPath $rdest -Algorithm SHA256).Hash
+
+        # ---- a journal describing a DIFFERENT file must be ignored, not trusted
+        $sdest = Join-Path $segDir 'stale.bin'
+        $stmp = "$sdest.part"
+        $sfs = [IO.File]::Open($stmp, 'Create', 'Write', 'None')
+        try { $sfs.SetLength($payload.Length) } finally { $sfs.Close() }
+        (@{ total = [long]($payload.Length + 999); streams = 8; done = @(1..8 | ForEach-Object { 99999 }) } |
+            ConvertTo-Json -Compress) | Set-Content -LiteralPath "$sdest.parts" -Encoding ASCII
+        $null = Invoke-SegmentedDownload -Item $item -Dest $sdest -Streams 8
+        Assert-Equal 'a journal for another file is discarded, not believed' `
+                     $srcHash (Get-FileHash -LiteralPath $sdest -Algorithm SHA256).Hash
+    } finally {
+        Set-Content -LiteralPath $segStop -Value 'x' -ErrorAction SilentlyContinue
+        Start-Sleep -Milliseconds 400
+    }
+
+    # ---- Stop, mid-download. The one path that can leave a technician staring at a window.
+    Write-Section '7. Stop, while eight connections are running'
+
+    $slowPort = 8124
+    $slowStop = Join-Path $segDir 'stop2.flag'
+    # throttled hard, so there is time to press Stop while it is genuinely in flight
+    $slowSrv = Start-TestServer "http://127.0.0.1:$slowPort/" $srcFile 16384 25
+    try {
+        $script:CancelPath = Join-Path $segDir 'cancel.flag'
+        $slowItem = [pscustomobject]@{ Id = 'slow'; Name = 'Slow'; Url = "http://127.0.0.1:$slowPort/f.bin"
+                                       SizeBytes = [long]$payload.Length; Size = '6 MB'
+                                       Progress = 0; ProgressVis = 'Collapsed' }
+        $cdest = Join-Path $segDir 'cancelled.bin'
+        # something has to raise the flag while the call is blocked inside the download
+        $flagger = [powershell]::Create()
+        [void]$flagger.AddScript({
+            param($Flag)
+            Start-Sleep -Milliseconds 1200
+            Set-Content -LiteralPath $Flag -Value 'stop'
+        }).AddArgument($script:CancelPath)
+        $fh = $flagger.BeginInvoke()
+
+        $sw = [Diagnostics.Stopwatch]::StartNew()
+        $threw = $false
+        try { $null = Invoke-SegmentedDownload -Item $slowItem -Dest $cdest -Streams 8 }
+        catch { $threw = $true }
+        $sw.Stop()
+        try { [void]$flagger.EndInvoke($fh) } catch { }
+        $flagger.Dispose()
+
+        Assert-Equal 'Stop is noticed rather than ignored'          $true $threw
+        # 60s is a ceiling, not a target: the whole file at this throttle takes minutes, so
+        # finishing anywhere near it proves it stopped rather than ran to completion.
+        Assert-Equal 'and it gives up promptly'                     $true ($sw.Elapsed.TotalSeconds -lt 60)
+        Assert-Equal 'a cancelled download produces no file'        $false (Test-Path -LiteralPath $cdest)
+        Assert-Equal 'but its progress is kept, so a retry resumes' $true (Test-Path -LiteralPath "$cdest.parts")
+        $script:CancelPath = $null
+    } finally {
+        Set-Content -LiteralPath $slowStop -Value 'x' -ErrorAction SilentlyContinue
+        Start-Sleep -Milliseconds 400
+    }
+
+    # ---- everything it cannot do must fall back, never fail the download
+    Write-Section '8. What it refuses, so BITS can take over'
+
+    $noSize = [pscustomobject]@{ Id = 'ns'; Name = 'NoSize'; Url = "http://127.0.0.1:$segPort/f.bin"
+                                 SizeBytes = [long]0; Size = ''; Progress = 0; ProgressVis = 'Collapsed' }
+    $t2 = $false
+    try { $null = Invoke-SegmentedDownload -Item $noSize -Dest (Join-Path $segDir 'ns.bin') }
+    catch { $t2 = $true }
+    Assert-Equal 'an entry with no size is handed back to BITS' $true $t2
+
+    $gone = [pscustomobject]@{ Id = 'gone'; Name = 'Gone'; Url = 'http://127.0.0.1:8199/nothing.bin'
+                               SizeBytes = [long]$payload.Length; Size = '6 MB'
+                               Progress = 0; ProgressVis = 'Collapsed' }
+    $t3 = $false
+    try { $null = Invoke-SegmentedDownload -Item $gone -Dest (Join-Path $segDir 'gone.bin') }
+    catch { $t3 = $true }
+    Assert-Equal 'an unreachable server is handed back too'    $true $t3
+
+    # ---- how much longer, not how long it has been
+    Write-Section '9. The countdown'
+
+    # A number on screen during a multi-gigabyte download is the only thing being asked about,
+    # and the answer is time REMAINING. Elapsed time answers a question nobody asked.
+    #
+    # The last two cases are the point of the function: it returns nothing rather than a guess.
+    # A blank is honest. "14h left" that becomes "3m left" ten seconds later is not, and on a
+    # link to Kuwait the first sample after a stall would produce exactly that.
+    foreach ($case in @(
+        @{ left = 30MB;   rate = 1MB;      want = '30s left'     },
+        @{ left = 90MB;   rate = 1MB;      want = '1m 30s left'  },
+        @{ left = 14GB;   rate = 2MB;      want = '1h 59m left'  },
+        @{ left = 0;      rate = 5MB;      want = ''             },   # nothing left to wait for
+        @{ left = 4GB;    rate = 0;        want = ''             },   # no speed sample yet
+        @{ left = 14GB;   rate = 100;      want = ''             })) { # so slow the guess is noise
+        $got = Format-Eta ([long]$case.left) ([double]$case.rate)
+        Assert-Equal ("{0} left at {1}/s" -f (Format-Size ([long]$case.left)),
+                      (Format-Size ([long]$case.rate))) $case.want $got
+    }
+    # the direction is the whole point: less left must read as less time, never more
+    $near = [int]([regex]::Match((Format-Eta 10MB 1MB), '\d+').Value)
+    $far  = [int]([regex]::Match((Format-Eta 50MB 1MB), '\d+').Value)
+    Assert-Equal 'it counts DOWN - less remaining reads as less time' $true ($near -lt $far)
+
 Write-Host ("{0} passed, {1} failed" -f $script:Pass, $script:Fail) `
     -ForegroundColor $(if ($script:Fail) { 'Red' } else { 'Green' })
 exit $(if ($script:Fail) { 1 } else { 0 })
