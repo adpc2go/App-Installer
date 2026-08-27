@@ -12,7 +12,7 @@
   redirection and host drive access as a side effect.
 #>
 param(
-    [string]$VMName = 'Home',
+    [string]$VMName = 'Pro',
     [int]$Width     = 1280,
     [int]$Height    = 1024,
     [switch]$FullScreen,

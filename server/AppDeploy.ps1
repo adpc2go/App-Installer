@@ -12094,6 +12094,20 @@ function Abort-Batch([string]$Reason) {
 function Read-WorkerStatus {
     if (-not (Test-Path $script:StatusPath)) { return }
     $lines = @(Get-Content $script:StatusPath -ErrorAction SilentlyContinue)
+    # The offset ONLY ever moves forward.
+    #
+    # The elevated worker appends to this file while the GUI reads it, so a momentary lock or a
+    # half-flushed line makes Get-Content return fewer lines than last time - and -ErrorAction
+    # SilentlyContinue turns a failed read into an empty one rather than an error. Assigning the
+    # offset from that count unconditionally moved it BACKWARDS, and the next tick then replayed
+    # every line already shown.
+    #
+    # On a 25H2 lab machine that printed the first thirty rows of a batch a second time, the
+    # whole replay inside one second, which reads exactly like the tool having run everything
+    # twice - including "restore point created" twice when only one was ever made. Nothing ran
+    # twice; only the log lied. A tool whose log cannot be trusted is worse than one that fails
+    # loudly, because every other verdict in it becomes a question.
+    if ($lines.Count -le $script:StatusOffset) { return }
     for ($i = $script:StatusOffset; $i -lt $lines.Count; $i++) {
         $s = $null
         try { $s = $lines[$i] | ConvertFrom-Json } catch { continue }
@@ -12150,12 +12164,17 @@ function Read-WorkerStatus {
             }
             # Log EVERY status the worker reports, not only the terminal ones. The elevated
             # side runs invisibly, so its intermediate steps ("Verifying file", "copying
-            # Documents") are the only trace of what actually happened in there. Each status
-            # is read once from the queue, so this cannot spam.
+            # Documents") are the only trace of what actually happened in there. Each status is
+            # read once - guaranteed by the forward-only offset at the top of this function,
+            # NOT by the queue. It was assumed here, it was not true, and a whole batch was
+            # logged twice before anybody noticed.
             Add-Log "$($item.Name) -> $txt"
         }
     }
-    $script:StatusOffset = $lines.Count
+    # Guarded rather than assigned. The early return above already covers the case this
+    # protects against, but this is the line that actually caused the replay, so it states the
+    # invariant instead of relying on a caller three hundred lines away to have upheld it.
+    if ($lines.Count -gt $script:StatusOffset) { $script:StatusOffset = $lines.Count }
 
     # deep clean: once every item has reported, scan for leftovers and show the kill list.
     # An uninstall batch always scans. An install batch scans only when something actually

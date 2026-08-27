@@ -1,261 +1,220 @@
-# App-Installer test lab
+# Windows test lab
 
-Real Windows 11, wiped clean in under ten seconds, host never rebooted.
+A real Windows 11 machine you can wreck and reset in six seconds.
 
-## Two VMs, on purpose
+It runs in a window next to your editor. You install things in it, break things in it, then
+reset it and it is exactly as it was. Your own PC is never touched and never rebooted.
 
-| | Edition | Loop | Why it exists |
-|---|---|---|---|
-| `Home` | Windows 11 **Home** | ~6s | What most client machines actually run - the honest test target |
-| `Pro` | Windows 11 **Pro** | ~10s | Comfortable to work in: native clipboard, resizable window |
+---
 
-Windows **Home cannot accept an inbound RDP session**, and Hyper-V's Enhanced Session Mode
-*is* RDP into the guest. So the Home VM can never have Enhanced Session, native clipboard,
-or a resizable window - through any setting, driver or registry key. That is a licensing
-gate in the Home SKU, not a fault. It is the entire reason the Pro VM exists.
+## The problem it solves
 
-Both guests have identical drivers. Pro shows a second display adapter in Device Manager
-only because an RDP session is live; it disappears when you disconnect.
+Testing an installer means dirtying a Windows install - real installers, real registry
+writes, real services, real leftovers.
 
-## Daily use
+Which creates a problem:
 
-From any directory - these live in your PowerShell profile:
+> **After one test, the machine is no longer clean, so the next test is not valid.**
+
+App B behaves differently on a machine that still has App A's debris on it. An uninstaller
+that looks like it worked may only have worked because a previous run already removed the key
+it was supposed to find. Every test after the first is measuring a different machine.
+
+The usual fixes are all bad: uninstalling by hand is slow and never truly reaches clean;
+reinstalling Windows takes an hour; restoring a VM from backup takes minutes and you have to
+remember to do it.
+
+Here it costs **one command and about six seconds**, which changes what is worth testing.
+
+---
+
+## The whole idea in one line
+
+**`lab` wipes the machine and starts it. That is the only command you need.**
+
+There is no "reset" step, because resetting *is* how every run begins. You never clean up,
+never uninstall, never undo. Leave the machine as wrecked as you like - the next `lab` throws
+it away before doing anything else.
+
+---
+
+## Two workflows
+
+Everything you will ever do is one of these two.
+
+### A. Test something, throw it away, test again
+
+```
+lab            ->  clean machine appears
+                   do whatever you want, make a mess
+lab            ->  clean machine again. The mess is gone.
+                   make a different mess
+lab            ->  clean again
+```
+
+Same command every time. Nothing to finish, close, or restore.
+
+### B. Change what "clean" means, permanently
+
+```
+lab -NoLaunch                    ->  clean machine appears
+                                     make ONLY the change you want to keep
+                                     (install something, change a setting)
+labsave -To CLEAN-v2 -Promote    ->  this is now the new "clean"
+
+lab                              ->  clean machine, WITH your change
+lab                              ->  clean machine, change still there
+```
+
+### The only difference between A and B
+
+**One command: `labsave`.**
+
+| | |
+|---|---|
+| You do **not** run `labsave` | changes are temporary - the next `lab` deletes them |
+| You **do** run `labsave` | changes become part of clean - every future `lab` has them |
+
+Changes are temporary by default. `labsave` is what makes them stick.
+
+Two things matter in workflow B:
+
+- **Start from clean first.** Run `lab -NoLaunch`, *then* make your change, *then* save. If
+  you save after a messy test session, all that mess becomes permanent too.
+- **Nothing is destroyed.** `-Promote` keeps the previous clean version under another name,
+  so a bad baseline can always be undone.
+
+---
+
+## Commands
 
 ```powershell
-lab -Mode Live      # Home: wipe, then run  irm https://apps.pc2go.ca/go | iex
-lab                 # Home: wipe, push the working tree, run server\AppDeploy.ps1
-labpro -Mode Live   # same, against the Pro VM
+lab                 wipe, then run the working tree            <- the one you want
+lab -NoLaunch       wipe, start nothing (for workflow B)
+lab -NoRevert       do NOT wipe - keep the current mess and run again
+lab -Mode Live      wipe, then run the PUBLISHED build from the server
 
-lab -NoRevert       # do NOT wipe - inspect a failure before losing it
-lab -NoLaunch       # wipe and boot, start nothing - for editing the baseline
-
-lablog              # guest launch transcript
-labsync -Background # live host->guest clipboard mirror (Home)
-tolab / fromlab     # one-shot clipboard, either direction
-labsave             # freeze the current guest state as a baseline
-labconn             # mstsc over the VMBus (Pro)
+labpro              same as lab, but the Pro machine
+labsave             make the current state the new clean
+lablog              show the error the machine printed
+labsync -Background copy/paste from your PC into the machine (run once per session)
+tolab / fromlab     one-shot copy/paste, either direction
+labconn             reconnect to the Pro machine
 ```
 
-Or call the scripts directly with `-VMName Pro`. Credentials are stored per VM under
-`%LOCALAPPDATA%\<VMName>\guest.cred.xml`, DPAPI-encrypted to your Windows account.
+`lab` runs **your working tree**. `lab -Mode Live` downloads the **published** build instead,
+so it tests what actually shipped - use it after publishing a release, not while coding.
 
-The guest console opens **black**, not PowerShell blue.
+Every command takes `-VMName Home` or `-VMName Pro`; `lab` means Home, `labpro` means Pro.
 
-## When to run what
+---
 
-| What you want | Run |
-|---|---|
-| Test the **published** tool the way a technician gets it | `lab -Mode Live` |
-| Test code you just **edited** but have not published | `lab` |
-| A test failed and you want to **look at the wreckage** | run nothing yet - the VM is still dirty, go look |
-| ...then retry **on top of** that dirty state | `lab -NoRevert` |
-| See the error the guest printed | `lablog` |
-| Paste things into the VM all session | `labsync -Background` once, then just copy normally |
-| Grab text **out** of the VM | `fromlab` |
-| Prepare the baseline by hand | `lab -NoLaunch`, change it, then `labsave -To CLEAN-v6 -Promote` |
-| Same, but scripted and repeatable | `.\Update-Baseline.ps1 -ApplyFile .\my-change.ps1 -To CLEAN-v6` |
-| Run any of it against Pro | `labpro ...` or add `-VMName Pro` |
-| Pro lost its connection after a guest reboot | close the window and reopen, or `labconn -VMName Pro` |
+## The two machines
 
-### The normal rhythm
+| | Windows edition | Use it for |
+|---|---|---|
+| `Home` | Home | The honest test target - most client machines run Home |
+| `Pro` | Pro | Working comfortably: copy/paste and a resizable window |
 
-```
-labsync -Background     once, at the start of the day (Home only)
+Default to **Home**. If your installer works there, it works everywhere.
 
-lab -Mode Live          clean VM, your tool launches
-                        ...poke at it, find a bug...
-                        fix the code in VS Code on the HOST - the dirty VM is irrelevant
-lab -Mode Live          clean VM again, new code, ~6 seconds
-                        repeat
-```
+Switch to **Pro** when you need to work *inside* the machine - reading logs, editing files,
+digging through the registry - because it has real copy/paste and a window you can resize.
 
-You never uninstall anything, never clean up, never undo. **The wipe is the first thing every
-run does, not the last** - so leaving the VM filthy is expected. There is no cleanup step in
-this workflow.
+**Why they differ:** Windows Home is licensed not to accept incoming Remote Desktop
+connections, and Hyper-V's "Enhanced Session" *is* Remote Desktop into the machine. So Home
+can never have native clipboard or a resizable window - no setting, driver, or registry key
+changes that. It is the reason the Pro machine exists. (Both have identical drivers; Pro just
+shows an extra display adapter while a session is live.)
 
-The only time you skip the wipe is when a failure is worth studying: leave it dirty, read
-`lablog`, poke around, and use `-NoRevert` if you want to run again without losing it. That
-is also how you test the leftover-removal path properly - let something install and fail
-dirty, then run the uninstaller against that exact mess rather than a fresh machine.
+---
 
-### Which VM
+## How the reset works
 
-Use **Home** by default. It is the honest target: most client machines run Home, and if your
-uninstaller works there it works everywhere. Use **Pro** when you want to work comfortably
-inside the VM - reading logs, editing files, poking at the registry - because it has native
-clipboard and a resizable window.
-
-## How the wipe works
-
-The checkpoint froze two things: the disk, and the RAM.
+Taking a checkpoint froze two things: the disk, and the memory.
 
 ```
-AppLab.vhdx      frozen at checkpoint - never written to again
-AppLab_*.avhdx   every change since: installs, registry, temp files
+<name>.vhdx      the disk, frozen - never written to again
+<name>_*.avhdx   every change since: installs, registry, temp files
 saved memory     RAM contents at the moment of the checkpoint
 ```
 
-(The VMs were renamed to `Home` and `Pro` after creation. `Rename-VM` does not rename files,
-so the disks under `C:\VMs` are still `AppLab*.vhdx` and `AppLabPro*.vhdx`. Cosmetic only.)
+Resetting **deletes the changes file and reloads the saved memory**. It does not copy or
+restore anything, which is why:
 
-Reverting deletes the `.avhdx` and reloads the saved memory. It does not copy or restore
-anything, which is why it costs the same ~1.5s whether the test installed one app or fifty,
-and why the disk never grows across runs.
+- it costs the same whether the test installed one app or fifty
+- the disk never grows over time
+- the machine *resumes* at a logged-in desktop instead of booting
 
-Reloading memory is also why the guest *resumes* at a logged-in desktop instead of booting.
-A Production checkpoint would use VSS and cold-boot instead - about 25s. Standard is
-deliberate.
+Nothing inside survives a reset, and code is pushed one way only (your PC -> the machine), so
+nothing a test does can reach your real files.
 
-Nothing in the guest survives a revert, and the code push is one-way (host -> guest), so
-nothing a test does can reach your working tree.
+---
 
-## Changing what "clean" means
+## Rules that will bite you
 
-All of this runs on the HOST, never inside the VM.
+- **Never save a baseline from a lock screen.** The checkpoint captures memory, so if the
+  machine is locked when you save, every future run starts locked and asks for a password.
+  After any reboot inside the machine, log back in and reach the desktop before `labsave`.
+- **Never change the machine's hardware once a baseline exists.** RAM, CPU count, video - the
+  saved memory is tied to the hardware it was captured with, and the reset then fails with
+  *"Microsoft Video Monitor ... Catastrophic failure"*. To change hardware: delete every
+  checkpoint, change it, boot, re-save.
+- **Keep one checkpoint per machine.** Each extra one adds a differencing disk that every read
+  has to walk through. Five of them once cost 39 GB on top of an 18 GB base here; deleting the
+  superseded four merged them down and reclaimed 35 GB. Delete old ones with the machine off.
+- **The machines must use a LOCAL Windows account.** The host talks to them over PowerShell
+  Direct, which cannot authenticate a Microsoft account.
 
-**Changes you make by hand** (install something, tweak a setting):
+---
 
-```powershell
-lab -NoLaunch                          # 1. start from a CLEAN vm - do not skip this
-                                       # 2. make your changes in the VM window
-labsave -To CLEAN-v6 -Promote          # 3. freeze it and make it the default
-```
+## Display and copy/paste
 
-Step 1 is the whole discipline. `Save-Baseline.ps1` captures the guest exactly as it is, so
-capturing after a test run bakes that test's installs and registry debris in permanently.
-It prompts before committing, and `-Promote` renames the old baseline rather than deleting
-it.
+**Pro:** both work natively. Drag the window edge to resize; copy/paste just works.
 
-**Changes you can script** - this reverts to clean for you, so the discipline is automatic:
+**Home:** neither is possible natively (see the edition note above).
 
-```powershell
-.\Update-Baseline.ps1 -VMName Home -ApplyFile .\guest-set-resolution.ps1 -To CLEAN-v6
-.\Test.ps1 -Checkpoint CLEAN-v6        # try it before committing to it
-Rename-VMCheckpoint -VMName Home -Name CLEAN -NewName CLEAN-old
-Start-Sleep -Seconds 2                 # Hyper-V needs a beat between renames
-Rename-VMCheckpoint -VMName Home -Name CLEAN-v6 -NewName CLEAN
-```
+- *Size* is set **inside** the machine - Settings > System > Display. Baked in at 1920x1080;
+  anything you change by hand reverts on the next `lab` unless you `labsave` it.
+- *Copy/paste* goes through `labsync -Background` (a live one-way mirror from your PC into the
+  machine) or `tolab` / `fromlab` for one-offs.
 
-### Two traps when re-baselining
+If Home ever looks blurry and oversized, that is Windows scaling the window. It is fixed here
+by marking vmconnect DPI-aware, so the picture is 1:1 and sharp - but smaller. Put that window
+on an unscaled monitor for the best result.
 
-- **Reboot the guest and it comes back at the LOCK SCREEN.** A Standard checkpoint captures
-  memory, so locking there means typing a password on every future run. Always log back in
-  and sit at the desktop before saving. This has already bitten once - a reboot mid-edit
-  reset the display resolution and the wrong value got frozen in.
-- **Never change VM hardware while a memory checkpoint exists.** RAM, vCPU, `Set-VMVideo` -
-  the saved memory image is bound to the device configuration it was captured with, and the
-  restore fails with *"Microsoft Video Monitor ... Catastrophic failure"*. To change
-  hardware: delete every checkpoint, change it, boot, re-baseline.
+---
 
-## Resolution and sharpness
-
-The two VMs resize by completely different mechanisms.
-
-| | Home (Basic Session) | Pro (Enhanced Session) |
-|---|---|---|
-| What is sent | a video feed of a virtual monitor | RDP drawing instructions |
-| Who sets the size | the **guest** | the **connection** |
-| How to change it | Settings > System > Display inside the VM | drag the window edge |
-| Resizable | no - fixed, then stretched | yes, dynamic |
-| Ceiling | 1920x1200 (`Get-VMVideo`) | any |
-
-Home is baked at **1920x1080** - 16:9, matching the monitor, so no letterboxing. Anything
-set by hand inside Home reverts on the next `lab`; bake it in with
-`Update-Baseline.ps1 -ApplyFile .\guest-set-resolution.ps1` (edit `$W`/`$H` at the top).
-
-**Why Home looked blurry and oversized:** the primary display runs at 150% scaling
-(1707x960 effective on a 2560x1440 panel), and Windows was upscaling the whole vmconnect
-window by 1.5x - bigger *and* softer. Fixed by marking vmconnect DPI-aware:
-
-```
-HKCU\...\AppCompatFlags\Layers   C:\Windows\System32\vmconnect.exe = "~ HIGHDPIAWARE"
-```
-
-Basic Session is now 1:1 and sharp, but smaller. Put the Home window on the unscaled
-2560x1440 monitor for the best of both. Pro is unaffected - RDP negotiates DPI itself.
-
-## Clipboard
-
-**Pro:** native, both directions. Nothing to configure.
-
-**Home:** impossible natively (see above). Use the bridge:
-
-```powershell
-labsync -Background   # live mirror, host -> guest, automatic
-labsync               # same, foreground, Ctrl+C to stop
-tolab / fromlab       # one-shot, either direction
-```
-
-`labsync` must run **STA** - a PowerShell background job runs MTA, where `Get-Clipboard`
-silently returns nothing and the loop never sees a change. `-Background` spawns a detached
-`-STA` process for that reason, and it reconnects on its own when a revert kills its session.
-
-Both bridge scripts hand the actual clipboard call to a scheduled task in the guest's
-signed-in session: the clipboard belongs to a window station, and PowerShell Direct lands in
-session 0, where a `Set-Clipboard` writes a clipboard nothing on the desktop can see.
-
-vmconnect also has **Clipboard > Type clipboard text** built in - host to guest, typed as
-keystrokes, no setup.
-
-## Scripts
+## Files
 
 | | |
 |---|---|
-| `Test.ps1` | **The loop.** Revert, resume, push code, launch. `-Mode Live`, `-NoRevert`, `-NoLaunch`, `-Checkpoint`, `-VMName` |
-| `Save-Baseline.ps1` | Freeze the current guest state as a baseline (hand-made changes) |
-| `Update-Baseline.ps1` | Revert to clean, apply a script, checkpoint (scripted changes) |
-| `Get-LabLog.ps1` | Read the guest launch transcript from the host |
-| `Send-LabClipboard.ps1` / `Get-LabClipboard.ps1` | One-shot clipboard, either direction |
-| `Sync-LabClipboard.ps1` | Live host->guest clipboard mirror |
-| `Connect-Lab.ps1` | mstsc over the VMBus (port 2179). Pro only - Home cannot host RDP |
-| `guest-enable-rdp.ps1` | Enables RDP in a guest (applied via `Update-Baseline.ps1`) |
-| `guest-set-resolution.ps1` | Sets guest resolution via ChangeDisplaySettings, in the interactive session |
+| `Test.ps1` | The loop. `-Mode Live`, `-NoRevert`, `-NoLaunch`, `-Checkpoint`, `-VMName` |
+| `Save-Baseline.ps1` | Make the current state the new clean (hand-made changes) |
+| `Update-Baseline.ps1` | Reset to clean, apply a script, save (repeatable changes) |
+| `Get-LabLog.ps1` | Read what the machine printed |
+| `Send-LabClipboard.ps1` / `Get-LabClipboard.ps1` | One-shot copy/paste |
+| `Sync-LabClipboard.ps1` | Live copy/paste mirror |
+| `Connect-Lab.ps1` | Reconnect to Pro over the VMBus |
+| `guest-*.ps1` | Changes applied *inside* a machine, via `Update-Baseline.ps1` |
 
-### Build scripts (already run - here for a rebuild)
+The shortcuts (`lab`, `labpro`, ...) are functions in your PowerShell profile, so they work
+from any folder. They just call these scripts.
+
+### Rebuilding from scratch
 
 | | |
 |---|---|
-| `1-Enable-HyperV.ps1` | Enables Hyper-V. Needs a real **Restart**, not Shut down - Fast Startup skips pending servicing and the install silently half-applies. |
-| `2-New-LabVM.ps1` | Gen 2 VM, TPM + Secure Boot, Default Switch. Setup needs a **local** account. |
-| `3-Set-Baseline.ps1` | Preps guest, stores credential, ejects the ISO, takes the first checkpoint. `-NoCheckpoint` does everything except the checkpoint. |
+| `1-Enable-HyperV.ps1` | Enables Hyper-V. Needs a real **Restart** - "Shut down" skips pending servicing and the install silently half-applies. |
+| `2-New-LabVM.ps1` | Creates the machine and boots the Windows installer. Use a **local** account. |
+| `3-Set-Baseline.ps1` | Preps it, saves the credential, ejects the ISO, takes the first checkpoint. |
 
-## Checkpoints
+---
 
-```
-Home            Pro
-  CLEAN           CLEAN
-```
+## See also
 
-One each - keep it that way.
+`START-HERE.md` - the one-page version, if this is too much.
 
-Every checkpoint adds another differencing disk to the chain, and every disk read walks the
-whole chain. Home briefly carried five (from rebuilding the baseline five times during
-setup) and they cost ~39 GB of `.avhdx` on top of an 18 GB base. Deleting the four
-superseded ones merged them down and reclaimed **35 GB**:
-
-```
-before  Home ~57 GB + Pro ~31 GB = 99 GB
-after   Home  33.7 GB + Pro 26.6 GB = 64 GB
-```
-
-So: keep intermediate checkpoints only while you are still deciding whether a new baseline
-is right. Once it is settled, delete the old ones - `Remove-VMCheckpoint` merges rather than
-discards, so the surviving baseline keeps all its data. Do it with the VM **off**; the merge
-is faster and cannot race a running guest.
-
-## Gotchas
-
-- **`vmicrdv` must be Automatic**, or Enhanced Session does not come back after a guest
-  reboot and vmconnect reports a flat *"could not connect"* instead of retrying. Set on Pro
-  by `3-Set-Baseline.ps1`.
-- **Guests must use a LOCAL account.** PowerShell Direct cannot authenticate a Microsoft
-  account. `Shift+F10` then `start ms-cxh:localonly` during setup.
-- **`Test.ps1` needs Hyper-V rights.** You are in `Hyper-V Administrators`, so it runs from a
-  normal terminal - no elevation.
-- **Activation is not needed.** Unactivated Windows 11 runs indefinitely; you lose a
-  watermark and personalization settings, nothing your installer touches.
-
-## What this covers that `../sandbox/` does not
-
-Reboot-requiring installers, live Defender, a realistically dirty baseline, MSIX/Store,
-drivers and services. `sandbox/` is a 20-second smoke test; this is the release gate.
+`../sandbox/` - a Windows Sandbox setup that starts in 20 seconds but cannot reboot, has no
+live antivirus, and starts unrealistically clean. Good for a quick smoke test; this lab is
+the one to trust before shipping.
