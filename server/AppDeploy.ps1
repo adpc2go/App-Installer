@@ -1,4 +1,4 @@
-#requires -Version 5.1
+﻿#requires -Version 5.1
 <#
   PC2Go App Installer - portable remote deployment tool
   Runs entirely from PowerShell 5.1 + WPF (both in-box on Win10/11).
@@ -5095,7 +5095,6 @@ $script:TweakDefs = @(
     #     or removes something not trivially restorable (6) ---
     @{ id = 'adobeblock';      name = 'Adobe URL Block List - Enable';     hint = 'hosts';    caution = $true }
     @{ id = 'bitlocker';       name = 'BitLocker - Disable';               hint = 'policy';   caution = $true }
-    @{ id = 'dnsresolver';     name = 'DNS - Fast Public Resolvers';       hint = 'network';  caution = $true }
     @{ id = 'onedriveremove';  name = 'Microsoft OneDrive - Remove';       hint = 'removes';  caution = $true }
     @{ id = 'razerdisable';    name = 'Razer Software Auto-Install - Disable'; hint = 'policy'; caution = $true }
     # CAUTION and unticked on purpose, because the cost lands on somebody else. Removed apps
@@ -5104,7 +5103,6 @@ $script:TweakDefs = @(
     # and this is the only thing that stops it. But it stops EVERY Store update, including the
     # codecs, WebView2 and runtimes a customer's own software depends on. That is a decision for
     # the technician who knows the machine, not a default buried in a 42-row batch.
-    @{ id = 'storeupdates';    name = 'Microsoft Store - Stop Automatic App Updates'; hint = 'policy'; caution = $true }
     @{ id = 'windowsai';       name = 'Windows AI - Disable And Remove';   hint = 'removes';  caution = $true }
     # --- Cleanup sub-tab: one-time disk actions, each reports reclaimed space (5).
     #     componentstore is the DISM half SPLIT OUT of the old diskcleanup row - never
@@ -6443,7 +6441,6 @@ $script:TweakTests = @{
                                    (Join-Path ${env:ProgramFiles(x86)} 'Microsoft OneDrive\OneDrive.exe'))
                         return -not (@($paths | Where-Object { $_ -and (Test-Path -LiteralPath $_) }).Count) }
     razerdisable    = { Test-RegVal 'HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\DriverSearching' 'SearchOrderConfig' 0 }
-    storeupdates    = { Test-RegVal 'HKLM\SOFTWARE\Policies\Microsoft\WindowsStore' 'AutoDownload' 2 }
     # Promoted from Preferences. Each of these acts in ONE direction, so absent simply means not
     # applied - none of them needs the "absent counts as already-correct" rule the preferences
     # carried, because none of them targets a Windows default. That rule is why Window Snapping
@@ -6488,8 +6485,6 @@ $script:TweakTests = @{
                             }
                             return $true
                         } catch { return $false } }
-    dnsresolver     = { try { return [bool]@(Get-DnsClientServerAddress -AddressFamily IPv4 -ErrorAction Stop |
-                                             Where-Object { $_.ServerAddresses -contains '1.1.1.1' }).Count } catch { return $false } }
     debloatweb      = { Test-AppxAbsent $script:DebloatPacks['debloatweb'] }
     debloatdev      = { Test-AppxAbsent $script:DebloatPacks['debloatdev'] }
     debloatxbox     = { Test-AppxAbsent $script:DebloatPacks['debloatxbox'] }
@@ -10596,21 +10591,6 @@ function Apply-Tweak($app) {
             Set-Reg 'HKCU\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer' 'SettingsPageVisibility' 'hide:home' 'String'
             $detail = 'Settings opens on System instead of the Home page of suggestions'
         }
-        'storeupdates' {
-            # 2 is "never" for the Store's own update check. This is the only thing that keeps a
-            # debloat done: the removals are already correct - Remove-AppxByName removes for all
-            # users AND deprovisions - and the apps still came back, because Windows Update
-            # re-acquired them through the Store channel. Observed on a 25H2 machine: Xbox Game
-            # Bar and Gaming App reinstalled within hours, taking the gaming settings with them.
-            #
-            # The price is every other Store app freezing too, which is why this row is CAUTION
-            # and unticked. Note what survived that reinstall: a policy-disabled FEATURE stays
-            # disabled even when its app returns - Widgets through AllowNewsAndInterests, Game
-            # DVR through AllowGameDVR. The policies are the durable half of a debloat; this row
-            # only decides whether the packages themselves stay gone.
-            Set-Reg 'HKLM\SOFTWARE\Policies\Microsoft\WindowsStore' 'AutoDownload' 2
-            $detail = 'Store will not update or reinstall apps by itself - removed apps stay removed, and nothing else updates either'
-        }
         'razerdisable' {
             # Razer Synapse arrives as a device 'companion app' through Windows Update
             Set-Reg 'HKLM\SOFTWARE\Policies\Microsoft\Windows\Device Metadata' 'PreventDeviceMetadataFromNetwork' 1
@@ -10733,21 +10713,6 @@ function Apply-Tweak($app) {
                 }
             }
             $detail = "power saving disabled on $n physical network adapter(s) (reconnect or reboot to apply)"
-        }
-        'dnsresolver' {
-            # NEVER on a domain: internal DNS is how domain machines find everything.
-            # The guard runs even though the row is optional - a tick must not break AD.
-            $onDomain = $false
-            try { $onDomain = [bool](Get-CimInstance Win32_ComputerSystem -ErrorAction Stop).PartOfDomain } catch {}
-            if ($onDomain) {
-                Write-Status $app.id 'Skipped' 'domain-joined machine - internal DNS left alone deliberately'
-                return
-            }
-            $n = 0
-            foreach ($a in @(Get-NetAdapter -Physical -ErrorAction SilentlyContinue | Where-Object { $_.Status -eq 'Up' })) {
-                try { Set-DnsClientServerAddress -InterfaceIndex $a.ifIndex -ServerAddresses @('1.1.1.1', '8.8.8.8') -ErrorAction Stop; $n++ } catch {}
-            }
-            $detail = "Cloudflare (1.1.1.1) + Google (8.8.8.8) DNS set on $n adapter(s) - cross-provider redundancy"
         }
 
         # ---------------- store debloat ----------------
@@ -11267,10 +11232,6 @@ function Undo-Tweak($app) {
             }
             $detail = 'sync policy lifted - OneDrive is NOT reinstalled'
         }
-        'storeupdates' {
-            Remove-RegVal 'HKLM\SOFTWARE\Policies\Microsoft\WindowsStore' 'AutoDownload'
-            $detail = 'Store app updates are automatic again - removed apps may return on their own'
-        }
         # ---------------- promoted from the old Preferences tab ----------------
         # Each undo DELETES rather than writing the opposite, so Windows goes back to deciding
         # for itself. Writing 0 would leave the machine carrying our opinion of the default,
@@ -11385,13 +11346,6 @@ function Undo-Tweak($app) {
                 }
             }
             $detail = "driver-default power saving restored on $n adapter(s)"
-        }
-        'dnsresolver' {
-            $n = 0
-            foreach ($a in @(Get-NetAdapter -Physical -ErrorAction SilentlyContinue)) {
-                try { Set-DnsClientServerAddress -InterfaceIndex $a.ifIndex -ResetServerAddresses -ErrorAction Stop; $n++ } catch {}
-            }
-            $detail = "$n adapter(s) back to automatic (DHCP) DNS"
         }
 
         # ---------------- post-format setup ----------------
