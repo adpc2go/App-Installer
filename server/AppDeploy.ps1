@@ -11126,8 +11126,20 @@ function Apply-Tweak($app) {
             $detail = 'foreground game favoured (Win32PrioritySeparation 0x26), kernel kept resident (sign out or reboot to apply)'
         }
         'gamebaroff' {
+            # Both switches on Settings > Gaming > Game Bar. Measured, not guessed: setting
+            # UseNexusForGameBarEnabled to 0 was watched flipping the first toggle to Off on a
+            # live 25H2 machine, and GamepadNexusChordEnabled appeared as 0 - it had never
+            # existed before - the moment the second one was switched off.
+            #
+            # Honest about what this is worth: neither makes anything faster. The Game Bar app
+            # is already gone with Xbox and Gaming - Remove, and background capture is dead at
+            # policy level in the Game DVR row, which is where the real cost was. These two are
+            # controller-shortcut behaviour. They are here so a machine does not go back to a
+            # customer with switches On for software that is not installed - deterministic
+            # state, not performance, and the row should not pretend otherwise.
             Set-Reg 'HKCU\Software\Microsoft\GameBar' 'UseNexusForGameBarEnabled' 0
-            $detail = 'Game Bar overlay off - removes its hook from the present path (capture itself untouched)'
+            Set-Reg 'HKCU\Software\Microsoft\GameBar' 'GamepadNexusChordEnabled' 0
+            $detail = 'Game Bar overlay and its controller shortcuts off - capture itself is the Game DVR row'
         }
         'inputqueue' {
             # 1000 Hz+ mice can overflow the default 100-entry queue under load
