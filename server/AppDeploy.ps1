@@ -1603,7 +1603,6 @@ $xaml = @'
           <Button x:Name="BtnSubTweaks" Content="Tweaks" Style="{StaticResource TabActive}"/>
           <Button x:Name="BtnSubClean" Content="Cleanup" Style="{StaticResource TabIdle}"/>
           <Button x:Name="BtnSubGame" Content="Gaming" Style="{StaticResource TabIdle}"/>
-          <Button x:Name="BtnSubPrefs" Content="Preferences" Style="{StaticResource TabIdle}"/>
           <Border Width="1" Height="18" Background="{StaticResource Line}" Margin="10,0,4,0" VerticalAlignment="Center"/>
           <Button x:Name="BtnSelAll" Content="Select All" Style="{StaticResource TabIdle}"/>
           <Button x:Name="BtnSelNone" Content="Clear All" Style="{StaticResource TabIdle}"/>
@@ -1719,35 +1718,6 @@ $xaml = @'
 
           <!-- preferences are TOGGLES: the tick is the state you want the machine in,
                pre-set from what it actually is, so only what you change gets applied -->
-          <ScrollViewer x:Name="ScrollPrefs" Visibility="Collapsed" VerticalScrollBarVisibility="Auto">
-            <ItemsControl x:Name="ListPref">
-              <ItemsControl.GroupStyle>
-                <GroupStyle>
-                  <GroupStyle.HeaderTemplate>
-                    <DataTemplate>
-                      <StackPanel Orientation="Horizontal" Margin="10,10,0,7">
-                        <Rectangle Width="3" Height="14" Fill="{StaticResource Good}" RadiusX="1.5" RadiusY="1.5" VerticalAlignment="Center"/>
-                        <TextBlock Text="{Binding Name}" FontSize="12.5" FontWeight="Bold" Foreground="{StaticResource Ink}"
-                                   Margin="8,0,6,0" VerticalAlignment="Center"/>
-                        <TextBlock Text="{Binding ItemCount}" FontSize="11" Foreground="{StaticResource Dim}" VerticalAlignment="Center"/>
-                      </StackPanel>
-                    </DataTemplate>
-                  </GroupStyle.HeaderTemplate>
-                  <GroupStyle.Panel>
-                    <ItemsPanelTemplate>
-                      <StackPanel VerticalAlignment="Top"/>
-                    </ItemsPanelTemplate>
-                  </GroupStyle.Panel>
-                </GroupStyle>
-              </ItemsControl.GroupStyle>
-              <ItemsControl.ItemTemplate>
-                <DataTemplate>
-                  <CheckBox Style="{StaticResource TweakRow}"
-                            IsChecked="{Binding IsSelected, UpdateSourceTrigger=PropertyChanged}"/>
-                </DataTemplate>
-              </ItemsControl.ItemTemplate>
-            </ItemsControl>
-          </ScrollViewer>
         </Grid>
       </Grid>
 
@@ -2986,8 +2956,8 @@ foreach ($n in 'ListApps','BarOverall','TxtOverall','TxtLog','TxtStatus','TxtCat
                'BatchStrip','ListBatch','TxtBatchHead','BtnBatchFold','BtnBatchClose','BatchScroll',
                'BatchHead','BatchChevron',
                'BtnTabTweak','PanelTweak','ListTweak','BtnTweakApply','EmptyTweak','BtnTweakUndo',
-               'BtnSubTweaks','BtnSubClean','BtnSubGame','BtnSubPrefs','ScrollTweaks','ScrollClean','ScrollGame','ScrollPrefs','ListGame',
-               'ListClean','BtnSelAll','BtnSelNone','BtnPreClear','BtnDetect','BtnMeasure','TxtTweakHint','TxtTweakApplyBtn','ListPref',
+               'BtnSubTweaks','BtnSubClean','BtnSubGame','ScrollTweaks','ScrollClean','ScrollGame','ListGame',
+               'ListClean','BtnSelAll','BtnSelNone','BtnPreClear','BtnDetect','BtnMeasure','TxtTweakHint','TxtTweakApplyBtn',
                'BtnTabUsers','TxtNewUser','HintNewUser','TxtNewFull','HintNewFull',
                'TxtUserHint','ListSrcUsers','ListDstUsers','ListMigrate',
                'BtnCopyLog','BtnSaveLog',
@@ -3021,7 +2991,6 @@ if ($missing.Count) {
         $AppTitle)
 }
 
-
 $script:Items = New-Object 'System.Collections.ObjectModel.ObservableCollection[object]'
 # two separate inventories, each scanned only when its sub-tab is first opened
 $script:UnItems = New-Object 'System.Collections.ObjectModel.ObservableCollection[object]'
@@ -3029,7 +2998,6 @@ $script:UnStore = New-Object 'System.Collections.ObjectModel.ObservableCollectio
 $script:TweakItems = New-Object 'System.Collections.ObjectModel.ObservableCollection[object]'
 $script:CleanItems = New-Object 'System.Collections.ObjectModel.ObservableCollection[object]'
 $script:GameItems = New-Object 'System.Collections.ObjectModel.ObservableCollection[object]'
-$script:PrefItems = New-Object 'System.Collections.ObjectModel.ObservableCollection[object]'
 $script:FixItems = New-Object 'System.Collections.ObjectModel.ObservableCollection[object]'
 $script:FwItems = New-Object 'System.Collections.ObjectModel.ObservableCollection[object]'
 $script:AccountItems = New-Object 'System.Collections.ObjectModel.ObservableCollection[object]'
@@ -3110,9 +3078,6 @@ $script:CleanView.Filter = $unFilter
 $script:GameView = [Windows.Data.CollectionViewSource]::GetDefaultView($script:GameItems)
 $script:GameView.GroupDescriptions.Add((New-Object Windows.Data.PropertyGroupDescription 'Category'))
 $script:GameView.Filter = $unFilter
-$script:PrefView = [Windows.Data.CollectionViewSource]::GetDefaultView($script:PrefItems)
-$script:PrefView.GroupDescriptions.Add((New-Object Windows.Data.PropertyGroupDescription 'Category'))
-$script:PrefView.Filter = $unFilter
 
 # leftovers group under the app that owns them, so attribution is obvious in the preview
 $script:WipeView = [Windows.Data.CollectionViewSource]::GetDefaultView($script:WipeFindings)
@@ -3134,7 +3099,6 @@ $ListBatch.ItemsSource = $script:BatchRows
 $ListTweak.ItemsSource = $script:TweakView
 $ListClean.ItemsSource = $script:CleanView
 $ListGame.ItemsSource = $script:GameView
-$ListPref.ItemsSource = $script:PrefView
 $script:MigrateView = [Windows.Data.CollectionViewSource]::GetDefaultView($script:MigrateItems)
 $script:MigrateView.GroupDescriptions.Add((New-Object Windows.Data.PropertyGroupDescription 'Category'))
 # An account can never be both ends of a copy, so each list hides whatever the other one
@@ -3606,18 +3570,13 @@ function Update-Dash {
         # BtnSubStore's style - so the status line always describes what is on screen
         $n = @($script:TweakItems | Where-Object { $_.IsSelected }).Count
         $c = @($script:CleanItems | Where-Object { $_.IsSelected }).Count
-        $p = 0
-        # while a sync is running every toggle is being rewritten, so counting mid-flight
-        # would report changes the technician never made
-        if (-not $script:PrefSyncing) { $p = @(Get-PendingPrefs).Count }
+
         $g = @($script:GameItems | Where-Object { $_.IsSelected }).Count
         $TxtStatus.Text = switch ($script:OptSubTab) {
             'Clean' { "$c of $($script:CleanItems.Count) cleanup task(s) selected" }
             'Game'  { "$g of $($script:GameItems.Count) gaming tweak(s) selected" }
-            'Prefs' { $(if ($p) { "$p preference change(s) pending" } else { "$($script:PrefItems.Count) preferences - toggles mirror this machine" }) }
             default { "$n of $($script:TweakItems.Count) tweak(s) selected" +
-                      $(if ($c -ne @($script:CleanItems | Where-Object { $_.IsSilent }).Count) { "    |    $c cleanup" } else { '' }) +
-                      $(if ($p) { "    |    $p preference change(s) pending" } else { '' }) }
+                      $(if ($c -ne @($script:CleanItems | Where-Object { $_.IsSilent }).Count) { "    |    $c cleanup" } else { '' }) }
         }
     } elseif ($PanelTools.Visibility -eq 'Visible') {
         $n = @($script:FixItems | Where-Object { $_.IsSelected }).Count
@@ -6182,118 +6141,19 @@ function Build-MigrateList {
 #              how you restore a Windows default rather than guessing at its number.
 #   test     : how to read the current state. abs = the answer when the value is absent,
 #              which is what makes "default is on" settings report correctly on a fresh PC.
-$script:PrefTableSource = @'
-$script:PrefDefs = @(
-    # EMPTY, deliberately, and this table is kept rather than deleted so the shape of what was
-    # here stays on the record.
-    #
-    # There were eleven toggles. Four were promoted to Tweaks rows - Lock Screen - Disable,
-    # Logon Verbose Mode - Enable, Mouse Acceleration - Disable, Settings Home Page - Hide -
-    # because each has one right answer on a machine handed back to a customer. S0 Sleep
-    # Network Connectivity moved to Tools > Fixes, where the repairs live. The remaining six
-    # were dropped: Dark Theme, Scrollbars and Taskbar Centered Icons are per-customer taste
-    # that takes two clicks in Settings; File Explorer Hidden Files is a technician's own
-    # preference and the wrong default for a client machine; New Outlook is an application
-    # decision that would rot; Window Snapping targets the Windows default and so would have
-    # been a row that changes nothing.
-    #
-    # The tab went with them because a tick meant two different things in two places. In Tweaks
-    # a tick means "apply this". Here it meant "this is how the machine already is", mirrored
-    # from the live state by Sync-Prefs - so applying with a box UNTICKED wrote the OFF state
-    # and, in one observed case, left-aligned a taskbar nobody had asked to move. A tweak never
-    # writes an off state; not ticking it means leave it alone.
-)
-
-# ---------- store debloat groups ----------
-# One source of truth for the six grouped Store-debloat rows: the GUI's detection probes
-# and the worker's apply branches must agree on the SAME patterns, or "Detect Applied"
-# lies about what a batch actually removed. Matched with a trailing * because package
-# identities carry publisher suffixes and vary by build.
-# Count for reporting: 22 apps, not 24 - XboxApp/GamingApp and MSTeams/MicrosoftTeams are
-# old and new generations of the same two apps.
-$script:DebloatPacks = @{
-    debloatweb    = @('Microsoft.BingSearch', 'Microsoft.BingNews', 'Microsoft.BingWeather', 'Microsoft.StartExperiencesApp')
-    debloatdev    = @('Microsoft.Windows.DevHome', 'Microsoft.PowerAutomateDesktop')
-    debloatxbox   = @('Microsoft.MicrosoftSolitaireCollection', 'Microsoft.GamingApp', 'Microsoft.XboxApp',
-                      'Microsoft.XboxGamingOverlay', 'Microsoft.XboxIdentityProvider',
-                      'Microsoft.XboxSpeechToTextOverlay', 'Microsoft.Xbox.TCUI')
-    debloatmsapps = @('Microsoft.WindowsFeedbackHub', 'Microsoft.GetHelp', 'MSTeams', 'MicrosoftTeams', 'Microsoft.OutlookForWindows')
-    debloatmobile = @('MicrosoftWindows.CrossDevice', 'Microsoft.YourPhone')
-    debloatutil   = @('Microsoft.WindowsAlarms', 'Clipchamp.Clipchamp', 'MicrosoftCorporationII.QuickAssist', 'Microsoft.Todos')
-}
-
-# OEM updater services and logon tasks are matched by pattern because the names vary by
-# vendor. Shared for the same reason as the debloat packs: probe and apply must agree.
-$script:OemBloatPatterns = @('HP*', 'Dell*', 'SupportAssist*', 'Lenovo*', 'Acer*', 'ASUS*',
-                             'Nahimic*', 'Killer*', 'AdobeUpdate*', 'GoogleUpdate*', 'jusched*')
-'@
-Invoke-Expression $script:PrefTableSource
 
 # Reads a preference's live state. 'abs' carries the answer for a value that is not there
 # at all, which is the normal case for anything Windows ships enabled by default - without
 # it every untouched setting would read as off.
-function Test-Pref([hashtable]$T) {
-    $val = Get-RegVal $T.p $T.n
-    if ($null -eq $val) { return [bool]$T.abs }
-    if ($null -eq $T.v) { return (-not [bool]$T.abs) }
-    foreach ($opt in @($T.v)) { if ("$val" -eq "$opt") { return $true } }
-    return $false
-}
-
-function Load-Prefs {
-    $script:PrefItems.Clear()
-    foreach ($d in $script:PrefDefs) {
-        $item = New-Object AppItem
-        $item.Id = "pref-$($d.id)"
-        $item.Name = $d.name
-        $item.Size = ''
-        $item.Publisher = 'Preference'
-        $item.UnArgs = $d.id
-        $item.IsSilent = $true
-        $item.Category = 'Customize Preferences'
-        $item.IconBg = '#FF34D399'
-        $item.add_PropertyChanged({ param($s, $e) if ($e.PropertyName -eq 'IsSelected') { Update-Dash } })
-        $script:PrefItems.Add($item)
-    }
-    Sync-Prefs
-    Add-Log "Preferences loaded: $($script:PrefItems.Count) toggles, set from this machine's current state."
-}
 
 # Point every toggle at what the machine actually says right now, and remember that reading
 # in OrigState. Called on load, from Detect, from Clear and after a batch - so "pending
 # changes" always means changes YOU made since the last real read.
-function Sync-Prefs {
-    $script:PrefSyncing = $true
-    $script:SuspendDash = $true
-    try {
-        foreach ($item in $script:PrefItems) {
-            $d = @($script:PrefDefs | Where-Object { $_.id -eq $item.UnArgs })[0]
-            if (-not $d) { continue }
-            $state = $false
-            try { $state = Test-Pref $d.test } catch { $state = $false }
-            $item.OrigState = $(if ($state) { 'on' } else { 'off' })
-            $item.IsSelected = $state
-            Set-Status $item '' 'neutral'
-            Set-Ring $item 'none'
-        }
-    } finally {
-        $script:PrefSyncing = $false
-        $script:SuspendDash = $false
-    }
-}
 
 # A preference is only work if its tick no longer matches what the machine said.
 # This is compared against the CACHED reading, never the live registry: it runs from
 # Update-Dash, which fires on every checkbox change, and re-reading every toggle per tick
 # once made a bulk selection change do nearly a thousand registry reads and freeze the tab.
-function Get-PendingPrefs {
-    $out = @()
-    foreach ($item in $script:PrefItems) {
-        if (-not $item.OrigState) { continue }
-        if (($item.OrigState -eq 'on') -ne [bool]$item.IsSelected) { $out += $item }
-    }
-    return @($out)
-}
 
 # ---------- sub-tabs ----------
 # Optimize is three sub-tabs - Tweaks, Cleanup, Preferences - each full width, each with
@@ -6307,24 +6167,19 @@ function Select-OptTab([string]$Which) {
     $BtnSubTweaks.Style = $window.FindResource($(if ($Which -eq 'Tweaks') { 'TabActive' } else { 'TabIdle' }))
     $BtnSubClean.Style  = $window.FindResource($(if ($Which -eq 'Clean')  { 'TabActive' } else { 'TabIdle' }))
     $BtnSubGame.Style   = $window.FindResource($(if ($Which -eq 'Game')   { 'TabActive' } else { 'TabIdle' }))
-    $BtnSubPrefs.Style  = $window.FindResource($(if ($Which -eq 'Prefs')  { 'TabActive' } else { 'TabIdle' }))
     $ScrollTweaks.Visibility = $(if ($Which -eq 'Tweaks') { 'Visible' } else { 'Collapsed' })
     $ScrollClean.Visibility  = $(if ($Which -eq 'Clean')  { 'Visible' } else { 'Collapsed' })
     $ScrollGame.Visibility   = $(if ($Which -eq 'Game')   { 'Visible' } else { 'Collapsed' })
-    $ScrollPrefs.Visibility  = $(if ($Which -eq 'Prefs')  { 'Visible' } else { 'Collapsed' })
     # Undo exists for config tweaks (Tweaks, Gaming): cleanup rows are one-time actions,
     # and a preference has no undo - you flip the toggle and Apply.
     $BtnTweakUndo.Visibility = $(if ($Which -in 'Tweaks', 'Game' -and $PanelTweak.Visibility -eq 'Visible') { 'Visible' } else { 'Collapsed' })
     $TxtTweakApplyBtn.Text = switch ($Which) {
         'Clean' { 'Run Cleanup' }
         'Game'  { 'Apply Gaming' }
-        'Prefs' { 'Apply Preferences' }
         default { 'Apply Tweaks' }
     }
     # Select All / Clear All act on a ticked list - meaningless for preference toggles,
     # which mirror the machine (Select All there would mean "turn everything on")
-    $BtnSelAll.Visibility  = $(if ($Which -eq 'Prefs') { 'Collapsed' } else { 'Visible' })
-    $BtnSelNone.Visibility = $(if ($Which -eq 'Prefs') { 'Collapsed' } else { 'Visible' })
     # the latency probe is the Gaming sub-tab's evidence tool - meaningless elsewhere
     $BtnMeasure.Visibility = $(if ($Which -eq 'Game') { 'Visible' } else { 'Collapsed' })
     switch ($Which) {
@@ -6338,7 +6193,6 @@ function Select-OptTab([string]$Which) {
             } catch {}
             $TxtTweakHint.Text = $free
         }
-        'Prefs'  { $TxtTweakHint.Text = '' }
         default  { $TxtTweakHint.Text = '' }
     }
     Update-Dash
@@ -6842,14 +6696,6 @@ function Invoke-TweakDetect {
     # The ACTIVE sub-tab only - the rule for this whole toolbar: nothing global. Probing all
     # three lists to answer a question about the one on screen paid seconds of appx probes
     # for verdicts that landed on lists nobody was looking at.
-    if ($script:OptSubTab -eq 'Prefs') {
-        # the toggles ARE a live read of the machine - re-reading them is what Detect means
-        # here, and it is also what the global version quietly did for them at its end
-        Sync-Prefs
-        $TxtTweakHint.Text = 'preferences re-read from this machine'
-        Update-Dash
-        return
-    }
     # Visible progress from the first click: the appx probes take seconds, and a frozen
     # tab with no feedback reads as a broken button. The hint counts rows as they probe
     # and the dispatcher is pumped so each row's verdict paints as it lands.
@@ -6890,7 +6736,7 @@ function Invoke-TweakDetect {
         $window.Cursor = $null
         $BtnDetect.IsEnabled = $true
     }
-    # no Sync-Prefs here any more: the toggles get their re-read when Detect is pressed ON
+    # no  here any more: the toggles get their re-read when Detect is pressed ON
     # the Preferences sub-tab, per the nothing-global rule
     $TxtTweakHint.Text = "$applied already applied, $notDetectable not detectable"
     Add-Log "Detect ($($script:OptSubTab)): $applied row(s) already applied on this machine, $notDetectable are one-time actions that cannot be detected."
@@ -7133,7 +6979,7 @@ function Start-TweakUndo([object[]]$Sel) {
     # it is told to. Undo needs the broadcast exactly as much as apply does, or turning a
     # preference back off looks just as broken as turning it on did.
     $script:NeedSettingBroadcast = [bool]@($Sel | Where-Object {
-        ($_.UnArgs -in $explorerIds) -or ($_.Publisher -eq 'Preference') }).Count
+        $_.UnArgs -in $explorerIds }).Count
     foreach ($s in $Sel) { Set-Status $s 'Queued' 'neutral'; Set-Ring $s 'queued' }
     $script:Pending = @($Sel)
     $script:BatchTab = 'Tweak'
@@ -7185,7 +7031,6 @@ function Start-Tweaks([object[]]$Sel) {
     Update-UI
     $run = @(); $skipped = 0
     foreach ($s in $Sel) {
-        if ($s.Publisher -eq 'Preference') { Set-Ring $s 'none'; $run += $s; continue }
         $test = $script:TweakTests[$s.UnArgs]
         $res = $null
         if ($test) { try { $res = & $test } catch { $res = $null } }
@@ -7228,7 +7073,7 @@ function Start-Tweaks([object[]]$Sel) {
     # BOTH of its values correctly, Detect read them back and honestly said "applied", and the
     # screen stayed light - because nothing ever told Windows. See Send-SettingChange.
     $script:NeedSettingBroadcast = [bool]@($run | Where-Object {
-        ($_.UnArgs -in $explorerIds) -or ($_.Publisher -eq 'Preference') }).Count
+        $_.UnArgs -in $explorerIds }).Count
 
     # A restore point is the undo button for everything else here, so if it was selected
     # it is queued FIRST - after the other tweaks have run it would be worthless.
@@ -7254,12 +7099,7 @@ function Start-Tweaks([object[]]$Sel) {
     $sid = ''
     try { $sid = ([Security.Principal.WindowsIdentity]::GetCurrent()).User.Value } catch {}
     foreach ($s in $ordered) {
-        $entry = $(if ($s.Publisher -eq 'Preference') {
-                       @{ id = $s.Id; action = 'pref'; pref = $s.UnArgs
-                          state = $(if ($s.IsSelected) { 'on' } else { 'off' }); userSid = $sid }
-                   } else {
-                       @{ id = $s.Id; action = 'tweak'; tweak = $s.UnArgs; userSid = $sid }
-                   }) | ConvertTo-Json -Compress
+        $entry = @{ id = $s.Id; action = 'tweak'; tweak = $s.UnArgs; userSid = $sid } | ConvertTo-Json -Compress
         Add-Content -Path $script:QueuePath -Value $entry -Encoding UTF8
     }
     Add-Content -Path $script:QueuePath -Value '{"end":true}' -Encoding UTF8
@@ -9023,7 +8863,6 @@ $script:ManualServices = @(
 
 # The preference table is substituted in by Start-Worker from the single definition in the
 # GUI, so both sides always agree and the queue still carries nothing but an id and a state.
-#__PREFTABLE__
 
 # CreateProfile is what Windows itself calls the first time someone signs in: it builds
 # C:\Users\<name> from the default profile with the right ACLs and a fresh NTUSER.DAT.
@@ -10323,26 +10162,6 @@ function Remove-NamedFwRules($app) {
     if ($failed -and -not $removed) { Write-Status $app.id 'Failed' $detail } else { Write-Status $app.id 'Applied' $detail }
 }
 
-function Apply-Pref($app) {
-    $id = [string]$app.pref
-    $want = [string]$app.state
-    $d = @($script:PrefDefs | Where-Object { $_.id -eq $id })[0]
-    if (-not $d) { Write-Status $app.id 'Failed' "unknown preference id '$id'"; return }
-    Write-Status $app.id 'Applying' ''
-    $ops = @(if ($want -eq 'on') { $d.on } else { $d.off })
-    $n = 0
-    foreach ($op in $ops) {
-        # v = $null deletes the value, which restores the Windows default rather than
-        # writing a guess at what that default is
-        if ($null -eq $op.v) { Remove-RegVal $op.p $op.n }
-        else {
-            $type = 'DWord'; if ($op.t) { $type = [string]$op.t }
-            Set-Reg $op.p $op.n $op.v $type
-        }
-        $n++
-    }
-    Write-Status $app.id 'Applied' "turned $want"
-}
 
 # Cleanup rows report reclaimed space by measuring the system drive before and after -
 # honest and cheap, where summing per-file sizes undercounts (folders, ACL-blocked files).
@@ -10439,7 +10258,7 @@ function Initialize-NvApi {
         try {
             # NvApiSrc is injected as an assignment at Start-Worker time (the placeholder
             # sits just above this function) rather than inlined - a nested here-string
-            # would terminate the outer worker here-string early. Same as PrefTable.
+            # would terminate the outer worker here-string early. Same reason as the NVAPI source.
             if (-not ('GoNvApi' -as [type])) { Add-Type -ErrorAction Stop -TypeDefinition $NvApiSrc }
             $script:NvReady = ([GoNvApi]::Initialize() -eq 0)
         } catch { $script:NvReady = $false }
@@ -11848,9 +11667,9 @@ while (-not $finished) {
                     if ($app.userSid) { $script:UserSid = [string]$app.userSid }
                     Undo-Tweak $app
                 }
-                'pref'      {
+                'pref-removed' {
                     if ($app.userSid) { $script:UserSid = [string]$app.userSid }
-                    Apply-Pref $app
+                    
                 }
                 'fix'           { Invoke-Fix $app }
                 'fwblock'       { Block-AppNetwork $app }
@@ -11912,7 +11731,6 @@ $script:DeepClean = $false
 $script:AwaitingScan = $false
 $script:ForceMode = $false
 $script:ConfirmAction = $null
-$script:PrefSyncing = $false
 $script:SuspendDash = $false
 <#
     Tell Windows a setting changed. Without this, writing the value is only half the job.
@@ -11980,7 +11798,7 @@ function Start-Worker {
     # NVAPI source is injected as a here-string ASSIGNMENT ($NvApiSrc = @'...'@) built here -
     # it only exists after substitution, so it is never nested inside the worker here-string.
     $nvAssign = "`$NvApiSrc = @'" + [Environment]::NewLine + $script:NvApiSource + [Environment]::NewLine + "'@"
-    $built = $workerScript.Replace('#__PREFTABLE__', $script:PrefTableSource).Replace('#__NVAPISOURCE__', $nvAssign)
+    $built = $workerScript.Replace('#__NVAPISOURCE__', $nvAssign)
     Set-Content -Path $script:WorkerPath -Value $built -Encoding UTF8
     Remove-Item -LiteralPath $script:StatusPath, $script:CancelPath -ErrorAction SilentlyContinue
     $script:StatusOffset = 0
@@ -12570,18 +12388,6 @@ function Confirm-AppliedRows {
     foreach ($p in @($script:Pending)) {
         if ("$($p.Status)" -notlike 'Applied*') { continue }
         $probe = $null
-        if ($p.Publisher -eq 'Preference') {
-            $d = @($script:PrefDefs | Where-Object { $_.id -eq $p.UnArgs })[0]
-            # A preference turned OFF is confirmed by its test being FALSE, so the expected
-            # answer follows the tick rather than always being $true.
-            if ($d -and $d.test) {
-                $want = [bool]$p.IsSelected
-                $got = $null
-                try { $got = Test-Pref $d.test } catch { $got = $null }
-                if ($null -ne $got -and $got -ne $want) { $unconfirmed += $p }
-            }
-            continue
-        }
         $probe = $script:TweakTests[[string]$p.UnArgs]
         # No probe means nothing to check against - a restore point and every cleanup row are
         # events, not states, and silence is the honest answer for them.
@@ -12779,7 +12585,6 @@ function Finish-Batch {
     $script:UnDirty = $true
     $script:StoreDirty = $true
     # re-read the toggles so they show what the machine is NOW, not what was requested
-    if ($script:PrefItems.Count) { Sync-Prefs }
     if (@($script:Deferred).Count -gt 0) {
         # apps added after downloads had finished: run them now as a follow-up batch
         $next = @($script:Deferred)
@@ -14416,7 +14221,6 @@ $BtnFwRemoveAll.Add_Click({
 $TxtNewUser.Add_TextChanged({ $HintNewUser.Visibility = $(if ($TxtNewUser.Text) { 'Collapsed' } else { 'Visible' }) })
 $TxtNewFull.Add_TextChanged({ $HintNewFull.Visibility = $(if ($TxtNewFull.Text) { 'Collapsed' } else { 'Visible' }) })
 
-
 $BtnNewUserOk.Add_Click({
     if (Test-BatchBusy) { return }
     $name = ('' + $TxtNewUser.Text).Trim()
@@ -14717,7 +14521,6 @@ function Get-LocalSubnets {
     return ,$out
 }
 
-
 # A name a human recognises, or the address if nothing will give one up. Reverse DNS first because
 # it is instant when it works; NetBIOS second because on a workgroup it is usually the only thing
 # that answers at all.
@@ -15004,7 +14807,6 @@ $BtnFolderPick.Add_Click({
     # go with it - otherwise a later USB backup would still be trying to sign into someone PC.
     Set-BackupFolder $picked '' ''
 })
-
 
 # ---------- reaching a share from the GUI ----------
 #
@@ -15858,22 +15660,20 @@ $BtnForce.Add_Click({
 # by a running batch. Queueing the next job while a download finishes is the whole point.
 $BtnSubTweaks.Add_Click({ Select-OptTab 'Tweaks' })
 $BtnSubClean.Add_Click({  Select-OptTab 'Clean' })
-$BtnSubPrefs.Add_Click({  Select-OptTab 'Prefs' })
 # Select All / Clear All act on the sub-tab on screen only. Select All ticks CAUTION too -
 # that is a deliberate technician act, and the Apply confirm still names every CAUTION row.
 function Set-OptSelection([bool]$On) {
     if (Test-TweakListBusy) { return }
-    if ($script:OptSubTab -eq 'Prefs') { return }
     $items = Get-OptItems
     $script:SuspendDash = $true
     try { foreach ($t in $items) { $t.IsSelected = $On } } finally { $script:SuspendDash = $false }
     Update-Dash
 }
 # The ticked-list collection behind the active sub-tab. Valid ONLY for the three ticked
-# lists - there is deliberately no 'Prefs' case, and the default falls through to TweakItems,
+# lists - the default falls through to TweakItems,
 # so a caller that reaches this while Preferences is on screen would silently operate on 44
 # tweak rows. Every Prefs special-case must happen BEFORE calling this (see Invoke-TweakDetect
-# and BtnPreClear, which both early-return into Sync-Prefs).
+# and BtnPreClear, which both early-return into ).
 function Get-OptItems {
     switch ($script:OptSubTab) {
         'Clean' { return $script:CleanItems }
@@ -15907,14 +15707,6 @@ $BtnPreClear.Add_Click({
     # The ACTIVE sub-tab only - same rule as Select All/Clear All and Apply: nothing global.
     # A reset pressed while experimenting on Gaming must not un-curate ticks on Tweaks or
     # silently drop Preference edits staged on another sub-tab.
-    if ($script:OptSubTab -eq 'Prefs') {
-        # preferences are toggles, so reset means drop pending edits and show the machine's
-        # real state again - unticking them all would read as "turn everything off"
-        Sync-Prefs
-        $TxtTweakHint.Text = ''
-        Update-Dash
-        return
-    }
     # Reset returns to the DEFAULT state (ticked except CAUTION), not to all-unticked -
     # with no presets to restore a selection, all-unticked would strand the user with no
     # way back except reloading the app
@@ -16014,16 +15806,6 @@ $BtnTweakApply.Add_Click({
                 Add-Log ('Gaming baseline - ' + (Format-GamingProbe $script:GameBaseline))
                 Start-Tweaks $sel
             }.GetNewClosure())
-        }
-        'Prefs' {
-            # a preference batch is only the toggles that no longer match the machine -
-            # preferences you did not touch are never rewritten
-            $sel = @(Get-PendingPrefs)
-            if ($sel.Count -eq 0) {
-                Show-Overlay 'Nothing to do' 'Flip a preference toggle first. Toggles already matching this machine are left alone.'
-                return
-            }
-            Start-Tweaks $sel
         }
         default {
             $sel = @($script:TweakItems | Where-Object { $_.IsSelected })
@@ -16142,8 +15924,7 @@ $script:SearchTimer.Add_Tick({
         $script:UnView.Refresh()
         $script:StoreView.Refresh()
         $script:TweakView.Refresh()
-        $script:PrefView.Refresh()
-        $script:FwView.View.Refresh()
+            $script:FwView.View.Refresh()
         $script:FwOpenSrc.View.Refresh()
         $script:FixView.Refresh()
     } catch {
@@ -16265,7 +16046,6 @@ $window.Add_ContentRendered({
     if ($script:CatalogLoaded) { return }
     $script:CatalogLoaded = $true
     foreach ($line in (Get-SessionHeader)) { Add-Log $line }
-    Load-Prefs   # toggles, pre-set from this machine's current state
     Load-Catalog
 })
 $timer.Start()
