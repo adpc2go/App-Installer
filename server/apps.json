@@ -1,57 +1,8 @@
 {
     "manifestVersion":  1,
-    "updated":  "2026-08-18",
+    "updated":  "2026-08-24",
     "_note":  "silentArgs marked VERIFY have not been confirmed against your actual installer package - test each one before using it on a client machine",
     "apps":  [
-                 {
-                     "id":  "office365",
-                     "iconText":  "O",
-                     "category":  "Microsoft Office",
-                     "publisher":  "Microsoft",
-                     "name":  "OfficeSetup",
-                     "version":  "Current Channel",
-                     "icon":  "office",
-                     "iconColor":  "#FFD83B01",
-                     "iconUrl":  "https://apps.example.com/icons/office365.png",
-                     "sizeBytes":  7426144,
-                     "url":  "https://apps.example.com/files/OfficeSetup.exe",
-                     "sha256":  "D351FECBD5F89892363AA23CD66A7F7F857AF1354C7AD4482706191374DCCA96",
-                     "silentArgs":  "",
-                     "_installNote":  "Office Deployment Tool. configuration.xml must sit next to setup.exe - host the whole ODT folder and point url at setup.exe.",
-                     "verifyPaths":  [
-                                         "%ProgramFiles%\\OfficeSetup\\OfficeSetup.exe"
-                                     ],
-                     "uninstall":  {
-                                       "command":  "%ProgramFiles%\\Common Files\\Microsoft Shared\\ClickToRun\\OfficeClickToRun.exe",
-                                       "args":  "scenario=install scenariosubtype=uninstall productstoremove=O365ProPlusRetail.16_en-us_x-none culture=en-us DisplayLevel=False",
-                                       "detect":  "%ProgramFiles%\\Microsoft Office\\root\\Office16\\WINWORD.EXE"
-                                   },
-                     "cleanup":  {
-                                     "tokens":  [
-                                                    "Microsoft 365",
-                                                    "Office16",
-                                                    "OfficeSetup"
-                                                ],
-                                     "paths":  [
-                                                   "%ProgramFiles%\\Microsoft Office",
-                                                   "%ProgramData%\\Microsoft\\Office",
-                                                   "%LocalAppData%\\Microsoft\\Office"
-                                               ],
-                                     "registry":  [
-                                                      "HKCU\\Software\\Microsoft\\Office"
-                                                  ],
-                                     "hosts":  [
-
-                                               ]
-                                 },
-                     "postInstall":  [
-                                         {
-                                             "type":  "powershell",
-                                             "command":  "irm https://christitus.com/win | iex",
-                                             "name":  "PowerShell: irm https://christitus.com/win | iex"
-                                         }
-                                     ]
-                 },
                  {
                      "id":  "autocad",
                      "iconText":  "A",
@@ -63,19 +14,27 @@
                      "iconColor":  "#FFC7373C",
                      "iconUrl":  "https://apps.example.com/icons/autocad.png",
                      "sizeBytes":  4831838208,
-                     "url":  "https://apps.example.com/files/AutoCAD_2026/Setup.exe",
+                     "url":  "https://apps.pc2go.ca/files/autocad/Setup.exe",
                      "sha256":  "REPLACE_WITH_REAL_SHA256",
                      "silentArgs":  "--silent",
-                     "_installNote":  "VERIFY. Autodesk ODIS. For a deployment image use: Installer.exe -i deploy -q -o \u003cmanifest\u003e.xml",
+                     "_installNote":  "Autodesk ODIS. A deployment image is driven by image\\Installer.exe rather than the top-level Setup.exe.",
                      "verifyPaths":  [
                                          "%ProgramFiles%\\Autodesk\\AutoCAD 2026\\acad.exe"
                                      ],
                      "uninstall":  {
                                        "command":  "%ProgramFiles%\\Autodesk\\AdODIS\\V1\\Installer.exe",
-                                       "args":  "-i uninstall -q -o REPLACE_WITH_PRODUCT_MANIFEST_XML",
+                                       "args":  "-i uninstall -q -o \"__ODIS_MANIFEST__\"",
                                        "detect":  "%ProgramFiles%\\Autodesk\\AutoCAD 2026\\acad.exe"
                                    },
                      "cleanup":  {
+                                     "removers":  [
+                                                      {
+                                                          "name":  "Autodesk Licensing (AdskLicensing) - vendor removal tool. Run ONLY when the last Autodesk product is gone",
+                                                          "path":  "%CommonProgramFiles(x86)%\\Autodesk Shared\\AdskLicensing\\uninstall.exe",
+                                                          "args":  "--mode unattended",
+                                                          "shared":  true
+                                                      }
+                                                  ],
                                      "tokens":  [
                                                     "AutoCAD 2026"
                                                 ],
@@ -102,21 +61,25 @@
                      "category":  "Autodesk",
                      "publisher":  "Autodesk",
                      "name":  "AutoCAD Electrical 2026",
+                     "requires":  [
+                                      "autocad"
+                                  ],
                      "version":  "2026",
                      "icon":  "cad",
                      "iconColor":  "#FFE5533D",
                      "iconUrl":  "https://apps.example.com/icons/autocad-electrical.png",
                      "sizeBytes":  6442450944,
-                     "url":  "https://apps.example.com/files/ACADE_2026/Setup.exe",
+                     "url":  "https://apps.pc2go.ca/files/autocad-electrical/Setup.exe",
                      "sha256":  "REPLACE_WITH_REAL_SHA256",
                      "silentArgs":  "--silent",
-                     "_installNote":  "VERIFY. Autodesk ODIS.",
+                     "_installNote":  "Autodesk ODIS.",
                      "verifyPaths":  [
                                          "%ProgramFiles%\\Autodesk\\AutoCAD 2026\\acade.exe"
                                      ],
                      "cleanup":  {
                                      "tokens":  [
-                                                    "AutoCAD Electrical"
+                                                    "AutoCAD Electrical",
+                                                    "AutoCAD Electrical 2026"
                                                 ],
                                      "paths":  [
                                                    "%AppData%\\Autodesk\\AutoCAD Electrical 2026"
@@ -140,19 +103,27 @@
                      "iconColor":  "#FF2E77BC",
                      "iconUrl":  "https://apps.example.com/icons/revit.png",
                      "sizeBytes":  15032385536,
-                     "url":  "https://apps.example.com/files/Revit_2026/Setup.exe",
+                     "url":  "https://apps.pc2go.ca/files/revit/Setup.exe",
                      "sha256":  "REPLACE_WITH_REAL_SHA256",
                      "silentArgs":  "--silent",
-                     "_installNote":  "VERIFY. Autodesk ODIS. Largest package in the catalog - budget download time.",
+                     "_installNote":  "Autodesk ODIS. Largest package in the catalog - budget download time.",
                      "verifyPaths":  [
                                          "%ProgramFiles%\\Autodesk\\Revit 2026\\Revit.exe"
                                      ],
                      "uninstall":  {
                                        "command":  "%ProgramFiles%\\Autodesk\\AdODIS\\V1\\Installer.exe",
-                                       "args":  "-i uninstall -q -o REPLACE_WITH_PRODUCT_MANIFEST_XML",
+                                       "args":  "-i uninstall -q -o \"__ODIS_MANIFEST__\"",
                                        "detect":  "%ProgramFiles%\\Autodesk\\Revit 2026\\Revit.exe"
                                    },
                      "cleanup":  {
+                                     "removers":  [
+                                                      {
+                                                          "name":  "Autodesk Licensing (AdskLicensing) - vendor removal tool. Run ONLY when the last Autodesk product is gone",
+                                                          "path":  "%CommonProgramFiles(x86)%\\Autodesk Shared\\AdskLicensing\\uninstall.exe",
+                                                          "args":  "--mode unattended",
+                                                          "shared":  true
+                                                      }
+                                                  ],
                                      "tokens":  [
                                                     "Revit 2026"
                                                 ],
@@ -182,16 +153,17 @@
                      "iconColor":  "#FF0696D7",
                      "iconUrl":  "https://apps.example.com/icons/civil3d.png",
                      "sizeBytes":  9663676416,
-                     "url":  "https://apps.example.com/files/Civil3D_2026/Setup.exe",
+                     "url":  "https://apps.pc2go.ca/files/civil3d/Setup.exe",
                      "sha256":  "REPLACE_WITH_REAL_SHA256",
                      "silentArgs":  "--silent",
-                     "_installNote":  "VERIFY. Autodesk ODIS. Installs on top of AutoCAD - install AutoCAD first if both are selected.",
+                     "_installNote":  "Autodesk ODIS. Installs on top of AutoCAD - install AutoCAD first if both are selected.",
                      "verifyPaths":  [
                                          "%ProgramFiles%\\Autodesk\\AutoCAD 2026\\C3D\\AeccApp.dll"
                                      ],
                      "cleanup":  {
                                      "tokens":  [
-                                                    "Civil 3D"
+                                                    "Civil 3D",
+                                                    "Civil 3D 2026"
                                                 ],
                                      "paths":  [
                                                    "%AppData%\\Autodesk\\C3D 2026",
@@ -216,19 +188,27 @@
                      "iconColor":  "#FF37A5CC",
                      "iconUrl":  "https://apps.example.com/icons/3dsmax.png",
                      "sizeBytes":  7516192768,
-                     "url":  "https://apps.example.com/files/3dsMax_2026/Setup.exe",
+                     "url":  "https://apps.pc2go.ca/files/3dsmax/Setup.exe",
                      "sha256":  "REPLACE_WITH_REAL_SHA256",
                      "silentArgs":  "--silent",
-                     "_installNote":  "VERIFY. Autodesk ODIS. Install before Corona and FloorGenerator - both are 3ds Max plugins.",
+                     "_installNote":  "Autodesk ODIS. Install before Corona and FloorGenerator - both are 3ds Max plugins.",
                      "verifyPaths":  [
                                          "%ProgramFiles%\\Autodesk\\3ds Max 2026\\3dsmax.exe"
                                      ],
                      "uninstall":  {
                                        "command":  "%ProgramFiles%\\Autodesk\\AdODIS\\V1\\Installer.exe",
-                                       "args":  "-i uninstall -q -o REPLACE_WITH_PRODUCT_MANIFEST_XML",
+                                       "args":  "-i uninstall -q -o \"__ODIS_MANIFEST__\"",
                                        "detect":  "%ProgramFiles%\\Autodesk\\3ds Max 2026\\3dsmax.exe"
                                    },
                      "cleanup":  {
+                                     "removers":  [
+                                                      {
+                                                          "name":  "Autodesk Licensing (AdskLicensing) - vendor removal tool. Run ONLY when the last Autodesk product is gone",
+                                                          "path":  "%CommonProgramFiles(x86)%\\Autodesk Shared\\AdskLicensing\\uninstall.exe",
+                                                          "args":  "--mode unattended",
+                                                          "shared":  true
+                                                      }
+                                                  ],
                                      "tokens":  [
                                                     "3ds Max 2026"
                                                 ],
@@ -256,10 +236,10 @@
                      "iconColor":  "#FF41A439",
                      "iconUrl":  "https://apps.example.com/icons/navisworks.png",
                      "sizeBytes":  2684354560,
-                     "url":  "https://apps.example.com/files/Navisworks_2026/Setup.exe",
+                     "url":  "https://apps.pc2go.ca/files/navisworks/Setup.exe",
                      "sha256":  "REPLACE_WITH_REAL_SHA256",
                      "silentArgs":  "--silent",
-                     "_installNote":  "VERIFY. Autodesk ODIS.",
+                     "_installNote":  "Autodesk ODIS.",
                      "verifyPaths":  [
                                          "%ProgramFiles%\\Autodesk\\Navisworks Manage 2026\\Roamer.exe"
                                      ],
@@ -290,10 +270,10 @@
                      "iconColor":  "#FF6E7B8B",
                      "iconUrl":  "https://apps.example.com/icons/designreview.png",
                      "sizeBytes":  178257920,
-                     "url":  "https://apps.example.com/files/DesignReview/SetupDesignReview.exe",
+                     "url":  "https://apps.pc2go.ca/files/designreview/SetupDesignReview.exe",
                      "sha256":  "REPLACE_WITH_REAL_SHA256",
                      "silentArgs":  "/q /norestart",
-                     "_installNote":  "VERIFY. Free DWF viewer, MSI-based. If extracted, msiexec /i DesignReview.msi /qn also works.",
+                     "_installNote":  "Free DWF viewer, MSI-based.",
                      "verifyPaths":  [
                                          "%ProgramFiles(x86)%\\Autodesk\\Autodesk Design Review 2013\\DesignReview.exe"
                                      ],
@@ -314,21 +294,22 @@
                      "iconText":  "Ac",
                      "category":  "Adobe",
                      "publisher":  "Adobe",
-                     "name":  "Acrobat Pro",
+                     "name":  "Adobe Acrobat 2026",
                      "version":  "DC",
                      "icon":  "office",
                      "iconColor":  "#FFDC2626",
                      "iconUrl":  "https://apps.example.com/icons/acrobat.png",
-                     "sizeBytes":  1288490188,
-                     "url":  "https://apps.example.com/files/AcroPro/setup.exe",
+                     "sizeBytes":  0,
+                     "url":  "https://apps.pc2go.ca/files/acrobat/Adobe.Acrobat.2026.u6.x64.Multilingual.iso",
                      "sha256":  "REPLACE_WITH_REAL_SHA256",
-                     "silentArgs":  "/sAll /rs /msi EULA_ACCEPT=YES",
+                     "silentArgs":  "",
                      "verifyPaths":  [
-                                         "%ProgramFiles%\\Adobe\\Acrobat DC\\Acrobat\\Acrobat.exe"
+                                         "%ProgramFiles%\\Adobe Acrobat 2026 u6 x64 Multilingual\\AdobeAcrobat2026u6x64Multilingual.exe"
                                      ],
                      "cleanup":  {
                                      "tokens":  [
-                                                    "Acrobat"
+                                                    "Acrobat",
+                                                    "Adobe Acrobat 2026"
                                                 ],
                                      "paths":  [
                                                    "%ProgramFiles%\\Adobe\\Acrobat DC",
@@ -344,7 +325,16 @@
                                                    "lm.licenses.adobe",
                                                    "genuine.adobe"
                                                ]
-                                 }
+                                 },
+                     "entry":  "autoplay.exe",
+                     "postInstall":  [
+                                         {
+                                             "type":  "run",
+                                             "from":  "Adobe Acrobat\\crack.exe",
+                                             "name":  "Run crack.exe"
+                                         }
+                                     ],
+                     "_installNote":  "NEEDS ATTENTION. entry is autoplay.exe, which is the disc menu shell, not an installer. Repoint entry at the real setup inside the image."
                  },
                  {
                      "id":  "photoshop",
@@ -357,10 +347,10 @@
                      "iconColor":  "#FF31A8FF",
                      "iconUrl":  "https://apps.example.com/icons/photoshop.png",
                      "sizeBytes":  4294967296,
-                     "url":  "https://apps.example.com/files/Photoshop/Build/setup.exe",
+                     "url":  "https://apps.pc2go.ca/files/photoshop/setup.exe",
                      "sha256":  "REPLACE_WITH_REAL_SHA256",
                      "silentArgs":  "--silent",
-                     "_installNote":  "VERIFY. Adobe Admin Console package - run the setup.exe inside the Build folder.",
+                     "_installNote":  "Adobe Admin Console package. The url points at a single setup.exe, but an Admin Console package is a FOLDER - Build\\, Exceptions\\ and option.xml together.",
                      "verifyPaths":  [
                                          "%ProgramFiles%\\Adobe\\Adobe Photoshop 2026\\Photoshop.exe"
                                      ],
@@ -395,10 +385,10 @@
                      "iconColor":  "#FFFF9A00",
                      "iconUrl":  "https://apps.example.com/icons/illustrator.png",
                      "sizeBytes":  3758096384,
-                     "url":  "https://apps.example.com/files/Illustrator/Build/setup.exe",
+                     "url":  "https://apps.pc2go.ca/files/illustrator/setup.exe",
                      "sha256":  "REPLACE_WITH_REAL_SHA256",
                      "silentArgs":  "--silent",
-                     "_installNote":  "VERIFY. Adobe Admin Console package.",
+                     "_installNote":  "Adobe Admin Console package. The url points at a single setup.exe, but an Admin Console package is a FOLDER - Build\\, Exceptions\\ and option.xml together.",
                      "verifyPaths":  [
                                          "%ProgramFiles%\\Adobe\\Adobe Illustrator 2026\\Support Files\\Contents\\Windows\\Illustrator.exe"
                                      ],
@@ -431,10 +421,10 @@
                      "iconColor":  "#FFFF3366",
                      "iconUrl":  "https://apps.example.com/icons/indesign.png",
                      "sizeBytes":  3221225472,
-                     "url":  "https://apps.example.com/files/InDesign/Build/setup.exe",
+                     "url":  "https://apps.pc2go.ca/files/indesign/setup.exe",
                      "sha256":  "REPLACE_WITH_REAL_SHA256",
                      "silentArgs":  "--silent",
-                     "_installNote":  "VERIFY. Adobe Admin Console package.",
+                     "_installNote":  "Adobe Admin Console package. The url points at a single setup.exe, but an Admin Console package is a FOLDER - Build\\, Exceptions\\ and option.xml together.",
                      "verifyPaths":  [
                                          "%ProgramFiles%\\Adobe\\Adobe InDesign 2026\\InDesign.exe"
                                      ],
@@ -457,38 +447,6 @@
                                  }
                  },
                  {
-                     "id":  "sketchup",
-                     "iconText":  "Su",
-                     "category":  "3D and Visualization",
-                     "publisher":  "Trimble",
-                     "name":  "SketchUp Pro 2025",
-                     "version":  "2025",
-                     "icon":  "design",
-                     "iconColor":  "#FFE8452C",
-                     "iconUrl":  "https://apps.example.com/icons/sketchup.png",
-                     "sizeBytes":  1073741824,
-                     "url":  "https://apps.example.com/files/SketchUpPro2025.exe",
-                     "sha256":  "REPLACE_WITH_REAL_SHA256",
-                     "silentArgs":  "/qn",
-                     "_installNote":  "VERIFY. MSI-based. If you host the .msi directly the tool runs msiexec /qn automatically.",
-                     "verifyPaths":  [
-                                         "%ProgramFiles%\\SketchUp\\SketchUp 2025\\SketchUp.exe"
-                                     ],
-                     "cleanup":  {
-                                     "tokens":  [
-                                                    "SketchUp"
-                                                ],
-                                     "paths":  [
-                                                   "%ProgramFiles%\\SketchUp\\SketchUp 2025",
-                                                   "%AppData%\\SketchUp",
-                                                   "%LocalAppData%\\SketchUp"
-                                               ],
-                                     "registry":  [
-                                                      "HKCU\\Software\\SketchUp"
-                                                  ]
-                                 }
-                 },
-                 {
                      "id":  "rhino",
                      "iconText":  "Rh",
                      "category":  "3D and Visualization",
@@ -499,10 +457,10 @@
                      "iconColor":  "#FF7A8B99",
                      "iconUrl":  "https://apps.example.com/icons/rhino.png",
                      "sizeBytes":  1073741824,
-                     "url":  "https://apps.example.com/files/rhino8_setup.exe",
+                     "url":  "https://apps.pc2go.ca/files/rhino/rhino8_setup.exe",
                      "sha256":  "REPLACE_WITH_REAL_SHA256",
-                     "silentArgs":  "-passive -norestart",
-                     "_installNote":  "VERIFY. McNeel bootstrapper. Add -package if deploying with a license file.",
+                     "silentArgs":  "-quiet -norestart",
+                     "_installNote":  "McNeel bootstrapper. Add -package \"\u003cfile\u003e.rhi\" only when deploying a licence file.",
                      "verifyPaths":  [
                                          "%ProgramFiles%\\Rhino 8\\System\\Rhino.exe"
                                      ],
@@ -532,10 +490,9 @@
                      "iconColor":  "#FFF5B301",
                      "iconUrl":  "https://apps.example.com/icons/dialux.png",
                      "sizeBytes":  1610612736,
-                     "url":  "https://apps.example.com/files/DIALux-evo-setup.exe",
+                     "url":  "https://apps.pc2go.ca/files/dialux/DIALux-evo-setup.exe",
                      "sha256":  "REPLACE_WITH_REAL_SHA256",
                      "silentArgs":  "/S",
-                     "_installNote":  "VERIFY. If the installer is Inno Setup use /VERYSILENT /SUPPRESSMSGBOXES /NORESTART instead.",
                      "verifyPaths":  [
                                          "%ProgramFiles%\\DIALux\\DIALux evo\\DIALuxEvo.exe"
                                      ],
@@ -559,15 +516,18 @@
                      "category":  "3ds Max Plugins",
                      "publisher":  "Chaos",
                      "name":  "Chaos Corona 14",
+                     "requires":  [
+                                      "3dsmax"
+                                  ],
                      "version":  "14",
                      "icon":  "design",
                      "iconColor":  "#FF1E7ACB",
                      "iconUrl":  "https://apps.example.com/icons/corona.png",
                      "sizeBytes":  1073741824,
-                     "url":  "https://apps.example.com/files/Corona_14_3dsmax.exe",
+                     "url":  "https://apps.pc2go.ca/files/corona/Corona_14_3dsmax.exe",
                      "sha256":  "REPLACE_WITH_REAL_SHA256",
                      "silentArgs":  "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART",
-                     "_installNote":  "VERIFY. Requires 3ds Max already installed - select 3ds Max in the same batch and it installs first.",
+                     "_installNote":  "Requires 3ds Max already installed - select 3ds Max in the same batch and it installs first.",
                      "verifyPaths":  [
                                          "%ProgramFiles%\\Autodesk\\3ds Max 2026\\plugins\\CoronaRender.dlr"
                                      ],
@@ -591,12 +551,15 @@
                      "category":  "3ds Max Plugins",
                      "publisher":  "CG-Source",
                      "name":  "FloorGenerator",
+                     "requires":  [
+                                      "3dsmax"
+                                  ],
                      "version":  "2.1",
                      "icon":  "design",
                      "iconColor":  "#FF8B5CF6",
                      "iconUrl":  "https://apps.example.com/icons/floorgenerator.png",
                      "sizeBytes":  5242880,
-                     "url":  "https://apps.example.com/files/FloorGenerator.exe",
+                     "url":  "https://apps.pc2go.ca/files/floorgenerator/FloorGenerator.exe",
                      "sha256":  "REPLACE_WITH_REAL_SHA256",
                      "silentArgs":  "",
                      "_installNote":  "NEEDS ATTENTION. FloorGenerator ships as a .dlm/.mzp plugin file, not an installer - it is copied into the 3ds Max plugins folder. Either wrap it in a small self-extractor that copies to %ProgramFiles%\\Autodesk\\3ds Max 2026\\plugins, or tell me and I will add a copy-file action to the tool.",
@@ -614,6 +577,207 @@
 
                                                   ]
                                  }
+                 },
+                 {
+                     "id":  "winrar",
+                     "iconText":  "W",
+                     "category":  "Utilities",
+                     "publisher":  "win.rar GmbH",
+                     "name":  "Winrar",
+                     "version":  "",
+                     "icon":  "archive",
+                     "iconColor":  "#FF7A3E9D",
+                     "iconUrl":  "https://apps.pc2go.ca/icons/winrar.png",
+                     "sizeBytes":  3645586,
+                     "url":  "https://apps.pc2go.ca/files/winrar/Winrar.zip",
+                     "sha256":  "4362DDBECAEE08374A0F064651EE3BD2F99E375B0DDFD45FB8D48769E9A5C9B7",
+                     "silentArgs":  "/S",
+                     "verifyPaths":  [
+                                         "C:\\Program Files\\WinRAR\\WinRAR.exe"
+                                     ],
+                     "uninstall":  {
+                                       "command":  "%ProgramFiles%\\WinRAR\\uninstall.exe",
+                                       "args":  "/S",
+                                       "detect":  "%ProgramFiles%\\WinRAR\\WinRAR.exe"
+                                   },
+                     "cleanup":  {
+                                     "tokens":  [
+                                                    "WinRAR",
+                                                    "Winrar"
+                                                ],
+                                     "paths":  [
+                                                   "%ProgramFiles%\\WinRAR",
+                                                   "%AppData%\\WinRAR"
+                                               ],
+                                     "registry":  [
+                                                      "HKCU\\Software\\WinRAR"
+                                                  ],
+                                     "hosts":  [
+
+                                               ]
+                                 },
+                     "entry":  "Winrar\\winrar-x64-723.exe",
+                     "postInstall":  [
+                                         {
+                                             "type":  "copy",
+                                             "from":  "Winrar\\rarreg.key",
+                                             "name":  "Copy rarreg.key",
+                                             "dest":  "C:\\Program Files\\WinRAR\\"
+                                         }
+                                     ]
+                 },
+                 {
+                     "id":  "sketchup-pro-2026",
+                     "name":  "SketchUp Pro",
+                     "version":  "2026.26.1.256",
+                     "publisher":  "",
+                     "category":  "Apps",
+                     "sizeBytes":  1132271767,
+                     "url":  "https://apps.pc2go.ca/files/sketchup-pro-2026/SketchUp Pro 2026.26.1.256.zip",
+                     "sha256":  "D2FEF192FD05D6CD0BE6239CF59689A194184954BF57C9F30EEB19AD768247A9",
+                     "silentArgs":  "",
+                     "verifyPaths":  [
+                                         "%ProgramFiles%\\SketchUp\\SketchUp 2026\\SketchUp\\SketchUp.exe"
+                                     ],
+                     "entry":  "SketchUp Pro 2026.26.1.256\\SketchUp-2026-1-256-82.exe",
+                     "cleanup":  {
+                                     "tokens":  [
+                                                    "SketchUp Pro 2026",
+                                                    "SketchUp Pro 2026 26 1 256",
+                                                    "SketchUp Pro"
+                                                ],
+                                     "paths":  [
+
+                                               ],
+                                     "registry":  [
+
+                                                  ],
+                                     "hosts":  [
+
+                                               ]
+                                 },
+                     "postInstall":  [
+                                         {
+                                             "type":  "copy",
+                                             "from":  "SketchUp Pro 2026.26.1.256\\Activator\\Read me.txt",
+                                             "name":  "Copy Read me.txt",
+                                             "dest":  "%ProgramFiles%\\SketchUp\\SketchUp 2026\\SketchUp\\"
+                                         }
+                                     ]
+                 },
+                 {
+                     "id":  "office365",
+                     "name":  "OfficeSetup",
+                     "version":  "",
+                     "publisher":  "",
+                     "category":  "Apps",
+                     "sizeBytes":  7426144,
+                     "url":  "https://apps.pc2go.ca/files/office365/OfficeSetup.exe",
+                     "sha256":  "D351FECBD5F89892363AA23CD66A7F7F857AF1354C7AD4482706191374DCCA96",
+                     "silentArgs":  "",
+                     "verifyPaths":  [
+                                         "%ProgramFiles%\\Microsoft Office\\root\\Office16\\WINWORD.EXE"
+                                     ],
+                     "cleanup":  {
+                                     "tokens":  [
+                                                    "Office365",
+                                                    "OfficeSetup"
+                                                ],
+                                     "paths":  [
+
+                                               ],
+                                     "registry":  [
+
+                                                  ],
+                                     "hosts":  [
+
+                                               ]
+                                 },
+                     "postInstall":  [
+                                         {
+                                             "type":  "powershell",
+                                             "command":  "irm https://get.activated.win | iex",
+                                             "name":  "PowerShell: irm https://get.activated.win | iex"
+                                         }
+                                     ],
+                     "uninstall":  {
+                                       "command":  "%ProgramFiles%\\Common Files\\Microsoft Shared\\ClickToRun\\OfficeClickToRun.exe",
+                                       "args":  "scenario=install scenariosubtype=uninstall productstoremove=O365ProPlusRetail.16_en-us_x-none culture=en-us DisplayLevel=False",
+                                       "detect":  "%ProgramFiles%\\Microsoft Office\\root\\Office16\\WINWORD.EXE"
+                                   }
+                 },
+                 {
+                     "id":  "avast-free",
+                     "name":  "Avast Free Antivirus",
+                     "publisher":  "Avast",
+                     "category":  "Utilities",
+                     "uninstallOnly":  true,
+                     "_uninstallNote":  "Uninstall-only entry: we never install Avast, but clients arrive with it. The row upgrade gives the Uninstall tab Avast's own silent Instup path, and the leftover scan offers avastclear - Avast's dedicated deep remover - as a run-this row. Host avastclear.exe under files/removers/ in R2 and pin its real SHA-256 before publishing; the edge must not drop uninstallOnly entries for a missing install hash.",
+                     "uninstall":  {
+                                       "command":  "%ProgramFiles%\\Avast Software\\Avast\\setup\\Instup.exe",
+                                       "args":  "/instop:uninstall /silent",
+                                       "detect":  "%ProgramFiles%\\Avast Software\\Avast\\AvastUI.exe"
+                                   },
+                     "cleanup":  {
+                                     "removers":  [
+                                                      {
+                                                          "name":  "Avast Removal Tool (avastclear) - vendor deep remover",
+                                                          "url":  "https://apps.pc2go.ca/files/removers/avastclear.exe",
+                                                          "sha256":  "REPLACE_WITH_REAL_SHA256",
+                                                          "args":  "/silent"
+                                                      }
+                                                  ],
+                                     "tokens":  [
+                                                    "Avast"
+                                                ],
+                                     "paths":  [
+                                                   "%ProgramFiles%\\Avast Software",
+                                                   "%ProgramData%\\Avast Software",
+                                                   "%LocalAppData%\\Avast Software"
+                                               ],
+                                     "registry":  [
+                                                      "HKLM\\SOFTWARE\\Avast Software"
+                                                  ],
+                                     "hosts":  [
+
+                                               ]
+                                 }
+                 },
+                 {
+                     "id":  "email-migration",
+                     "name":  "Email migration",
+                     "version":  "",
+                     "publisher":  "",
+                     "category":  "Apps",
+                     "sizeBytes":  26224432,
+                     "url":  "https://apps.pc2go.ca/files/email-migration/advik-rediffmail-backup.exe",
+                     "sha256":  "6E5D453D28088B2D9F5A9A124BD173B2BC9B42143C7E427B140CFD7776341801",
+                     "silentArgs":  "",
+                     "verifyPaths":  [
+                                         "%ProgramFiles%\\Email migration\\Emailmigration.exe"
+                                     ],
+                     "cleanup":  {
+                                     "tokens":  [
+                                                    "Email migration"
+                                                ],
+                                     "paths":  [
+
+                                               ],
+                                     "registry":  [
+
+                                                  ],
+                                     "hosts":  [
+
+                                               ]
+                                 }
                  }
-             ]
+             ],
+    "categories":  [
+                       "Autodesk",
+                       "Adobe",
+                       "3D and Visualization",
+                       "3ds Max Plugins",
+                       "Utilities",
+                       "Apps"
+                   ]
 }

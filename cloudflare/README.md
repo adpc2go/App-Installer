@@ -36,7 +36,7 @@ mid-deployment. On R2 you are explicitly in bounds.
 `AppDeploy.ps1` reads `$item.Url` straight off the catalog and hands it to BITS, and it
 derives the local filename with `([Uri]$a.url).LocalPath`, which ignores the query string.
 So signing the URLs *inside the catalog response* flows through the existing client
-untouched. No edit to the 7,635-line script, no new client-side token logic.
+untouched. No edit to the client script, no new client-side token logic.
 
 ### Token lifetime is set by BITS, not by security taste
 
@@ -109,33 +109,67 @@ live pin matches what it just built.
 ## Uploading installers
 
 **`wrangler r2 object put` is a single-shot upload and will not carry a multi-GB
-installer.** Use rclone, which does multipart.
+installer.** The catalog editor does it instead, over R2's S3 API, with resumable multipart
+uploads — no rclone, no extra binary on the machine.
 
-Create an R2 API token (dashboard → R2 → Manage R2 API Tokens), then:
+### One-time: create an R2 API token
 
-```ini
-# %USERPROFILE%\.config\rclone\rclone.conf
-[r2]
-type = s3
-provider = Cloudflare
-access_key_id = <access key id>
-secret_access_key = <secret access key>
-endpoint = https://<account-id>.r2.cloudflarestorage.com
-acl = private
-no_check_bucket = true
-```
+Dashboard → **R2 → Manage R2 API Tokens → Create**. Two decisions there matter:
+
+**Account API Token, not User API Token.** An account token belongs to the account and keeps
+working whatever happens to your user - a role change, someone leaving, membership edited. A user
+token inherits *your* permissions, so if your access changes the uploads start failing, and that
+surfaces as an S3 403 partway through a multi-gigabyte push.
+
+**Object Read & Write, scoped to `pc2go-apps`** - not Admin Read & Write, which can create and
+delete buckets. The tool only ever puts objects into one bucket.
+
+Note the *access key ID* and *secret access key*; the secret is shown once. The editor asks for
+both on the first Push and stores them DPAPI-encrypted at
+`%LOCALAPPDATA%\PC2Go2-credentials.xml` - readable only by that Windows account on that
+machine, which also means **a reinstall destroys them** and they have to be entered again.
+
+wrangler's own OAuth login cannot be used here: it is not an S3 credential, which is why the
+key pair is separate. Deploying the Worker uses that OAuth login; uploading bytes uses this key
+pair. Two credentials, two jobs.
+
+### Then, every time
 
 ```powershell
-# Mirror a local installer folder into /files/
-rclone copy "D:\Installers" r2:pc2go-apps/files --progress --transfers 4 --s3-chunk-size 64M
-
-# Icons
-rclone copy ".\icons" r2:pc2go-apps/icons --progress
+powershell -NoP -EP Bypass -File tools\Catalog-Editor.ps1
 ```
 
-After uploading, regenerate the catalog hashes with `tools\New-AppEntry.ps1` — a wrong
-`sha256` means the file is downloaded in full and then refused by the elevated worker,
-which is the most expensive possible way to fail.
+**Add folder...** turns every `.zip`/`.rar`/`.exe`/`.msi` in a directory into an entry and hashes
+them in the background. Then **Update...** (the button, bottom right):
+
+1. validates the catalog — the same rules `Publish-Release.ps1` enforces, run *before* any
+   bytes move, via `Publish-Release.ps1 -ValidateOnly`
+2. uploads each installer to `files/<app-id>/<filename>`, skipping anything already in the
+   bucket at the right size
+3. rewrites each app's `url`, `sha256` and `sizeBytes` **from the bytes that actually went
+   up** — this is what finally clears `REPLACE_WITH_REAL_SHA256`
+4. uploads `icons\<id>.png` for every app that has one, to `icons/<id>.png`, and writes
+   `iconUrl` **only** for icons that really went up — never for one that failed, because the
+   client caches what it fetches and a 404 would stick. Icons go last: they are kilobytes
+   against a 14 GB package, and a failed icon must never be why an installer did not ship
+5. saves the catalog, then runs `Publish-Release.ps1` to push the three small files, pin the
+   hash and deploy the Worker
+
+The first Push asks for the key pair in-window and stores it **encrypted with DPAPI** at
+`%LOCALAPPDATA%\PC2Go\r2-credentials.xml` — readable only by that Windows account on that
+machine, and never in the repository.
+
+**Stop is safe.** A stopped upload keeps its multipart upload ID and every completed part in
+`tools\.push-state.json` (gitignored), so pushing again carries on rather than restarting the
+file. The same holds for a dropped connection, a reboot, or closing the editor: a 14 GB
+package that died at 13 GB resumes at 13 GB.
+
+**If any app fails to upload, nothing is published.** A catalog whose URLs name objects that
+are not in the bucket is the most expensive way to fail — the client downloads the file in
+full and only then refuses it.
+
+Icons are not part of Push. Extract them with `tools\Export-AppIcons.ps1` and upload the
+small PNGs with `wrangler r2 object put`, which handles that size fine.
 
 ---
 
@@ -156,6 +190,17 @@ The default is gated.
 ---
 
 ## Verifying it works
+
+Before deploying, run the Worker's own tests. They import `worker.js` directly, so they catch a
+broken catalog filter, a broken signature or a broken gate **without** spending a deploy to find
+out — no wrangler, no network, no bucket:
+
+```powershell
+node tests\Test-Worker.mjs
+#    expect: PASS 24   FAIL 0
+```
+
+Then, against the deployed edge:
 
 ```powershell
 $base = 'https://apps.pc2go.ca'

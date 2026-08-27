@@ -9,14 +9,19 @@ param(
     [string]$BaseUrl = 'https://apps.example.com',
     [switch]$KeepCache,
     # set on the relaunched copy so a failed elevation cannot loop forever
-    [switch]$NoSelfElevate
+    [switch]$NoSelfElevate,
+    # Write a startup timing breakdown to the cache folder. Off by default, costs nothing when
+    # off, and it is the only way to answer "why is it slow to appear?" on a client machine -
+    # where the answer is usually antivirus scanning half a megabyte of script, or a domain
+    # group lookup, rather than anything this script actually does.
+    [switch]$Timing
 )
 
 $ErrorActionPreference = 'Stop'
 $AppTitle = 'PC2Go App Installer'
 # bumped on every change, shown in the title bar - so "is the new code actually running?"
 # is a question you can answer by looking at the window instead of guessing
-$BuildTag = 'build 50'
+$BuildTag = 'build 54'
 
 # Always run under Windows PowerShell 5.1 (in-box on Win10/11) - the BITS cmdlets and WPF
 # behave natively there. If launched from PowerShell 7 (pwsh), hand off transparently.
@@ -25,13 +30,148 @@ if ($PSVersionTable.PSEdition -eq 'Core') {
     $winPS = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
     $handoffArgs = "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$PSCommandPath`" -BaseUrl `"$BaseUrl`""
     if ($KeepCache) { $handoffArgs += ' -KeepCache' }
+    # Forwarded, or a switch given on the pwsh side is silently dropped here and the copy that
+    # does the work never sees it - which for -Timing means asking for a measurement and getting
+    # an empty log with nothing to say why.
+    if ($Timing)        { $handoffArgs += ' -Timing' }
+    if ($NoSelfElevate) { $handoffArgs += ' -NoSelfElevate' }
     Start-Process -FilePath $winPS -WindowStyle Hidden -ArgumentList $handoffArgs
     return
+}
+
+# A 32-bit host on 64-bit Windows sees a redirected registry (Wow6432Node) and file system
+# (SysWOW64), so HKLM writes would silently land in the wrong hive. Relaunch native via
+# Sysnative. On true 32-bit Windows Is64BitOperatingSystem is false and nothing redirects.
+if (-not [Environment]::Is64BitProcess -and [Environment]::Is64BitOperatingSystem) {
+    if (-not $PSCommandPath) { throw 'Run this via the go bootstrap (or save to a file) when using a 32-bit shell.' }
+    $nativePS = Join-Path $env:WinDir 'Sysnative\WindowsPowerShell\v1.0\powershell.exe'
+    if (Test-Path -LiteralPath $nativePS) {
+        $nativeArgs = "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$PSCommandPath`" -BaseUrl `"$BaseUrl`""
+        if ($KeepCache)     { $nativeArgs += ' -KeepCache' }
+        if ($Timing)        { $nativeArgs += ' -Timing' }
+        if ($NoSelfElevate) { $nativeArgs += ' -NoSelfElevate' }
+        Start-Process -FilePath $nativePS -WindowStyle Hidden -ArgumentList $nativeArgs
+        return
+    }
+}
+
+# ---------- the access code ----------
+# Two carriers, in order, because the relaunches this script performs do not all preserve the
+# same things:
+#   environment  - inherited by the PS7 handoff and the Sysnative relaunch (plain Start-Process)
+#   DPAPI file   - the ONLY thing that survives -Verb RunAs, which builds a fresh environment
+#                  through the AppInfo service. That is the common case, not an edge case: an
+#                  admin technician launching normally gets elevated, and the elevated copy is
+#                  the one that fetches the catalog.
+# Never a command-line argument: Win32_Process.CommandLine is world-readable.
+# See go.ps1's Save-AccessCode for why the file is ProgramData + LocalMachine + explicit DACL.
+$script:AccessPath = Join-Path $env:ProgramData 'PC2GoDeploy\access.bin'
+
+# The code is not ours to leave on a client's disk. Overwritten before deletion for the same
+# reason Clear-QueueFile does it - and with the same honesty: on an SSD that is not a
+# guaranteed erase, it is simply better than handing the bytes straight to free space.
+function Clear-AccessFile {
+    if (-not $script:AccessPath -or -not (Test-Path -LiteralPath $script:AccessPath)) { return }
+    try {
+        $len = [int](Get-Item -LiteralPath $script:AccessPath).Length
+        if ($len -gt 0) { [IO.File]::WriteAllBytes($script:AccessPath, (New-Object byte[] $len)) }
+        Remove-Item -LiteralPath $script:AccessPath -Force -ErrorAction Stop
+    } catch { }
+}
+
+$script:AccessCode = ''
+if ($env:PC2GO_CODE) {
+    $script:AccessCode = [string]$env:PC2GO_CODE
+} elseif (Test-Path -LiteralPath $script:AccessPath) {
+    # This file is a HAND-OFF TOKEN. Its whole intended life is the couple of seconds between
+    # the launcher writing it and the elevated copy reading it, so anything older is debris
+    # from a run that died - and trusting debris is worse than having nothing. LocalMachine
+    # DPAPI decrypts for anybody, so a leftover file would otherwise let a second technician,
+    # whose own write was refused by the first one's DACL, silently authenticate with a code
+    # they never typed: a 403 they cannot explain if it has since been rotated, and something
+    # worse if it has not.
+    try {
+        $ageMin = ([datetime]::UtcNow - (Get-Item -LiteralPath $script:AccessPath).LastWriteTimeUtc).TotalMinutes
+        if ($ageMin -gt 2 -or $ageMin -lt -2) {
+            Clear-AccessFile
+        } else {
+            Add-Type -AssemblyName System.Security -ErrorAction Stop
+            $script:AccessCode = [Text.Encoding]::UTF8.GetString(
+                [Security.Cryptography.ProtectedData]::Unprotect(
+                    [IO.File]::ReadAllBytes($script:AccessPath), $null, 'LocalMachine'))
+            # so the relaunches below carry it without touching the file again
+            $env:PC2GO_CODE = $script:AccessCode
+        }
+    } catch { }
+}
+$script:AccessHeader = @{}
+if ($script:AccessCode) { $script:AccessHeader['x-pc2go-code'] = $script:AccessCode }
+
+# Write the hand-off token with its DACL applied AT CREATION.
+#
+# WriteAllBytes-then-SetAccessControl leaves a window - short, but real - in which the file
+# exists under ProgramData's inherited ACL, where Users have read. With LocalMachine DPAPI,
+# readable IS decryptable, so that window is precisely the thing this design exists to close.
+# The FileStream overload that takes a FileSecurity closes it for free.
+# Creator + Administrators + SYSTEM: the creator because a filtered-token admin cannot write
+# to an Administrators-only file, which would break the writer this exists to serve.
+function Write-AccessBlob([string]$Path, [string]$Code) {
+    Add-Type -AssemblyName System.Security -ErrorAction Stop
+    $sec = New-Object Security.AccessControl.FileSecurity
+    $sec.SetAccessRuleProtection($true, $false)
+    foreach ($sid in @(([Security.Principal.WindowsIdentity]::GetCurrent()).User,
+                       (New-Object Security.Principal.SecurityIdentifier 'S-1-5-32-544'),
+                       (New-Object Security.Principal.SecurityIdentifier 'S-1-5-18'))) {
+        $sec.AddAccessRule((New-Object Security.AccessControl.FileSystemAccessRule(
+            $sid, 'FullControl', 'Allow')))
+    }
+    $bytes = [Text.Encoding]::UTF8.GetBytes($Code)
+    $blob = $null
+    try { $blob = [Security.Cryptography.ProtectedData]::Protect($bytes, $null, 'LocalMachine') }
+    finally { [Array]::Clear($bytes, 0, $bytes.Length) }
+    $dir = Split-Path -Parent $Path
+    if ($dir -and -not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Force -Path $dir | Out-Null }
+    # FileSystemRights lives in Security.AccessControl, NOT System.IO - the IO-namespaced
+    # spelling parses fine and throws "Unable to find type" only when this actually runs
+    $fs = New-Object IO.FileStream($Path, [IO.FileMode]::Create,
+                                   [Security.AccessControl.FileSystemRights]::WriteData,
+                                   [IO.FileShare]::None, 4096, [IO.FileOptions]::None, $sec)
+    try { $fs.Write($blob, 0, $blob.Length) } finally { $fs.Dispose() }
 }
 
 # TLS 1.2+ regardless of OS defaults (3072 = Tls12, 12288 = Tls13 where supported)
 try { [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor 3072 -bor 12288 } catch {
       [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor 3072 }
+
+# ---------- startup timing ----------
+# The clock starts as early as it can, which is still AFTER the two costs most likely to be the
+# real answer: PowerShell starting at all, and antivirus scanning ~480 KB of script before a
+# single line runs. Neither is visible from inside. What IS visible is the gap between this
+# point and the window appearing - and if that gap turns out to be small on a slow client, the
+# time is going to AMSI or UAC, which is worth knowing precisely because the fixes are entirely
+# different ones.
+$script:Clock = [Diagnostics.Stopwatch]::StartNew()
+$script:Marks = New-Object Collections.ArrayList
+function Add-Mark([string]$What) {
+    if (-not $Timing) { return }
+    [void]$script:Marks.Add([pscustomobject]@{ What = $What; Ms = $script:Clock.Elapsed.TotalMilliseconds })
+}
+function Write-Marks([string]$Phase) {
+    if (-not $Timing -or -not $script:Marks.Count) { return }
+    try {
+        $dir = Join-Path $env:LOCALAPPDATA 'PC2GoDeploy'
+        if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Force -Path $dir | Out-Null }
+        $out = New-Object Collections.ArrayList
+        [void]$out.Add("$([datetime]::UtcNow.ToString('o'))  $Phase  pid=$PID")
+        $prev = 0.0
+        foreach ($m in $script:Marks) {
+            [void]$out.Add(("  {0,-34} {1,8:N0} ms  (+{2:N0})" -f $m.What, $m.Ms, ($m.Ms - $prev)))
+            $prev = $m.Ms
+        }
+        Add-Content -LiteralPath (Join-Path $dir 'timing.log') -Value $out -Encoding UTF8
+    } catch { }
+}
+Add-Mark 'script body started'
 
 # ---------- one UAC prompt, at the start, and only when it is the SAME user ----------
 # Elevating the whole GUI means one consent prompt when the tool opens, and nothing after it:
@@ -83,10 +223,30 @@ try {
         [Security.Principal.WindowsBuiltInRole]::Administrator)
 } catch {}
 
+# Test-IsAdminMember is a group-membership check, and on a domain-joined machine that can go to
+# a domain controller - so it is worth its own mark. On a client with a slow or distant DC this
+# alone can be seconds, and it happens before anything is on screen.
+Add-Mark 'elevation decided'
+
 if (-not $script:Elevated -and -not $NoSelfElevate -and (Test-IsAdminMember)) {
     $relaunch = "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$PSCommandPath`" " +
                 "-BaseUrl `"$BaseUrl`" -NoSelfElevate"
     if ($KeepCache) { $relaunch += ' -KeepCache' }
+    # Forwarded, or the elevated copy - the one that actually builds the window - would measure
+    # nothing, and that is the half of the launch worth measuring.
+    if ($Timing)    { $relaunch += ' -Timing' }
+    # The access code cannot ride the environment across RunAs, and must not ride the command
+    # line. If this copy holds one and no file exists yet (a direct launch, rather than through
+    # go.ps1), lay one down for the elevated copy to pick up and shred.
+    if ($script:AccessCode) {
+        try { Write-AccessBlob $script:AccessPath $script:AccessCode }
+        catch {
+            # a stale token from another account blocks the write - it is garbage by definition
+            try { Remove-Item -LiteralPath $script:AccessPath -Force -ErrorAction Stop
+                  Write-AccessBlob $script:AccessPath $script:AccessCode } catch { }
+        }
+    }
+    Write-Marks 'unelevated launcher (handing over)'
     try {
         Start-Process -FilePath (Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe') `
                       -Verb RunAs -WindowStyle Hidden -ArgumentList $relaunch
@@ -138,6 +298,21 @@ $script:StatusPath = Join-Path $script:CacheDir 'status.jsonl'
 $script:WorkerPath = Join-Path $script:CacheDir 'worker.ps1'
 $script:ManifestCache = Join-Path $script:CacheDir 'apps.json'
 
+# Every Add-Log line is also appended to a per-session file, so the record of what was
+# done to a machine survives the app closing. NOT in CacheDir - that is removed on a
+# clean exit, and the log exists precisely to outlive the session.
+$script:SessionLogDir = Join-Path $env:LOCALAPPDATA 'PC2GoDeploy-Logs'
+$script:SessionLogPath = Join-Path $script:SessionLogDir ("session-{0}.log" -f (Get-Date -Format 'yyyyMMdd-HHmmss'))
+try {
+    New-Item -ItemType Directory -Force -Path $script:SessionLogDir | Out-Null
+    $cv = Get-ItemProperty -LiteralPath 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion' -ErrorAction Stop
+    Add-Content -LiteralPath $script:SessionLogPath -Encoding UTF8 -Value @(
+        "PC2Go App Installer ($BuildTag) - session started $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')",
+        "machine: $env:COMPUTERNAME    user: $env:USERNAME",
+        "windows: $($cv.ProductName) $($cv.DisplayVersion) build $($cv.CurrentBuildNumber)",
+        ('-' * 72))
+} catch { $script:SessionLogPath = '' }
+
 # Hide the console window so only the GUI is visible
 Add-Type -Namespace Native -Name ConsoleUtil -MemberDefinition @'
 [DllImport("kernel32.dll")] public static extern IntPtr GetConsoleWindow();
@@ -158,7 +333,34 @@ using System.ComponentModel;
 using System.Globalization;
 public class AppItem : INotifyPropertyChanged {
     public string Id; public string Url; public string Sha256; public string SilentArgs;
-    public string[] VerifyPaths; public long SizeBytes; public string FileName;
+    public string[] VerifyPaths; public string FileName;
+    // A PROPERTY, not a field. WPF binds and sorts through TypeDescriptor, which only sees
+    // properties - as a plain field this was invisible to SortDescription, so "sort by size"
+    // silently did nothing on a real machine while passing a test built from PSCustomObjects.
+    private long _sizeBytes;
+    public long SizeBytes { get { return _sizeBytes; } set { _sizeBytes = value; Raise("SizeBytes"); } }
+    // When Windows says this program was installed, for the Uninstall tab's sort and its
+    // "installed this month" filter. Nullable on purpose: the registry's InstallDate is missing
+    // on plenty of programs, and unknown must never be treated as recent.
+    private System.Nullable<System.DateTime> _installed;
+    public System.Nullable<System.DateTime> Installed {
+        get { return _installed; } set { _installed = value; Raise("Installed"); } }
+    // The Uninstall tab's table cells. Text rather than numbers because the row draws them:
+    // ColSize says "no size" where the registry gave none, and ColInstalled says "-".
+    // SizePercent drives the bar under the name, as a share of the largest program found -
+    // relative size is what is being read there, not absolute bytes.
+    //
+    // Properties for the same reason SizeBytes is one: a field is not bindable, so a row would
+    // have drawn empty cells no matter what was assigned to it.
+    private string _colInstalled; private string _colSize;
+    private double _sizePercent; private string _tagText; private string _tagVis;
+    private double _rowOpacity = 1.0;
+    public string ColInstalled { get { return _colInstalled; } set { _colInstalled = value; Raise("ColInstalled"); } }
+    public string ColSize      { get { return _colSize; }      set { _colSize = value;      Raise("ColSize"); } }
+    public double SizePercent  { get { return _sizePercent; }  set { _sizePercent = value;  Raise("SizePercent"); } }
+    public string TagText      { get { return _tagText; }      set { _tagText = value;      Raise("TagText"); } }
+    public string TagVis       { get { return _tagVis; }       set { _tagVis = value;       Raise("TagVis"); } }
+    public double RowOpacity   { get { return _rowOpacity; }   set { _rowOpacity = value;   Raise("RowOpacity"); } }
     // For a .zip package: the installer to run inside it, e.g. "Build\setup.exe". Empty for
     // a plain installer. Its presence is also what tells the disk check to budget for the
     // unpacked copy as well as the download.
@@ -187,6 +389,21 @@ public class AppItem : INotifyPropertyChanged {
     public string Source { get; set; }   // "Catalog" (vendor tool) or "Installed"
     public string OrigState;             // preference toggles: the state read off the machine
     public object PostInstall;           // catalog "postInstall" steps, run after a verified install
+    // catalog "cleanup.removers": vendor removal TOOLS (AdskLicensing's own uninstaller, an
+    // antivirus vendor's dedicated remover) offered by the leftover scan as run-this rows
+    public object Removers;
+    // catalog "requires": ids of apps that must be on the machine before this one installs.
+    // Plumbing for a dependency-orchestrated batch rides beside it. All plain fields, never
+    // WPF-bound, and null/false on every ordinary row - the Optimize tab's rows are AppItems
+    // too, and nothing here may carry a default those rows would trip over.
+    public string[] Requires;
+    public string BatchAction;           // 'uninstall' marks a synthetic remove-first step; the pump skips it
+    public bool Chain;                   // worker-side: skip this entry if an earlier chain step failed
+    public string DepBaseId;             // on a remove-first step: the base install it clears the way for
+    public string DepAddonId;            // on a remove-first step: the add-on that comes back afterwards
+    // finer than Chain: skip this entry only if one of THESE step ids failed. The reinstall
+    // must survive a failed BASE (Chain would kill it) yet die with a failed REMOVAL.
+    public string[] After;
     // Real logo (extracted from the exe, or downloaded from the catalog); when present the
     // vector category glyph is hidden and the coloured tile turns transparent.
     // This MUST raise PropertyChanged: the icon pump assigns it after the row is already
@@ -234,6 +451,12 @@ public class AppItem : INotifyPropertyChanged {
     public string BadgeBg { get { return _badgeBg; } set { _badgeBg = value; Raise("BadgeBg"); } }
     private string _badgeData = "M 0,0";
     public string BadgeData { get { return _badgeData; } set { _badgeData = value; Raise("BadgeData"); } }
+    // Whether this row can still be pulled out of a running batch. Recomputed every tick from
+    // how far the item actually got: free while it is queued, a cancelled transfer while it is
+    // downloading, a note to the elevated worker while it waits to install - and never once the
+    // installer has launched, because stopping there leaves the half-install cleanup exists for.
+    private string _removeVis = "Collapsed";
+    public string RemoveVis { get { return _removeVis; } set { _removeVis = value; Raise("RemoveVis"); } }
     // App Store-style ring: arc from 12 o'clock, sweeping clockwise with progress
     private static string ArcPath(double pct) {
         if (pct <= 0.5) return "M 13,3";
@@ -259,6 +482,19 @@ public class WipeItem {
     public long SizeBytes { get; set; }
     public string SizeText { get; set; }
     public bool Del { get; set; }          // checked = will be deleted
+    // For a 'run' target: the arguments the removal tool is launched with, and - when the tool
+    // is fetched rather than already on the machine - the SHA-256 the worker must verify before
+    // a byte of it executes. Both ride the queue with the target.
+    public string Args { get; set; }
+    public string Sha256 { get; set; }
+    public string NameVis { get { return Type == "run" ? "Visible" : "Collapsed"; } }
+    // A name-only match on a SHORT token, with nothing else vouching for it: neither the full
+    // product name nor a long token appears in the path. Listed last, hidden behind a toggle,
+    // never pre-ticked - on a busy machine these are most of the noise in the kill list.
+    private bool _weak;
+    public bool Weak { get { return _weak; } set { _weak = value; } }
+    public string WeakVis { get { return _weak ? "Visible" : "Collapsed"; } }
+    public double RowOpacity { get { return _weak ? 0.6 : 1.0; } }
     private bool _shared;
     // component shared with sibling products of the same suite - removing it breaks them
     public bool Shared { get { return _shared; } set { _shared = value; } }
@@ -269,12 +505,38 @@ public class WipeItem {
 $xaml = @'
 <Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="PC2Go App Installer" Height="680" Width="1040"
+        Title="PC2Go App Installer" Height="700" Width="1060"
         WindowStartupLocation="CenterScreen" WindowStyle="None" AllowsTransparency="True"
         Background="Transparent" ResizeMode="CanMinimize" Opacity="0"
         FontFamily="Segoe UI Variable Text, Segoe UI" FontSize="13" Foreground="#FFE9E9EE"
         TextOptions.TextFormattingMode="Ideal" UseLayoutRounding="True">
   <Window.Resources>
+
+    <!-- The palette, shared with tools\Catalog-Editor.ps1 - the same eleven names, the same
+         values. This window used to carry 41 colours written inline at the point of use, among
+         them six near-identical greys and an accent of #3D7EF0 against the editor's #2563EB:
+         close enough to look like a mistake, far enough to see side by side. Named here so the
+         two tools cannot drift again, and so changing one grey changes it everywhere.
+
+         Good, Warn, Danger and AccentDown are the four the editor does not declare. Good and
+         Warn are the values it already uses in code (#34D399, #FBBF24); Danger is the filled
+         destructive button, which the editor never draws - it outlines them instead; AccentDown
+         is the pressed state of an accent button. -->
+    <SolidColorBrush x:Key="Panel"       Color="#FF17171B"/>
+    <SolidColorBrush x:Key="Sunken"      Color="#FF101014"/>
+    <SolidColorBrush x:Key="Raised"      Color="#FF2A2A31"/>
+    <SolidColorBrush x:Key="Line"        Color="#FF3C3C45"/>
+    <SolidColorBrush x:Key="LineSoft"    Color="#FF26262E"/>
+    <SolidColorBrush x:Key="Ink"         Color="#FFE9E9EE"/>
+    <SolidColorBrush x:Key="Muted"       Color="#FF9A9AA6"/>
+    <SolidColorBrush x:Key="Dim"         Color="#FF6E6E7A"/>
+    <SolidColorBrush x:Key="Accent"      Color="#FF2563EB"/>
+    <SolidColorBrush x:Key="AccentDown"  Color="#FF1A47AC"/>
+    <SolidColorBrush x:Key="Lift"        Color="#FF4C8DFF"/>
+    <SolidColorBrush x:Key="Bad"         Color="#FFF87171"/>
+    <SolidColorBrush x:Key="Good"        Color="#FF34D399"/>
+    <SolidColorBrush x:Key="Warn"        Color="#FFFBBF24"/>
+    <SolidColorBrush x:Key="Danger"      Color="#FFE1344B"/>
 
     <Style x:Key="IconBtn" TargetType="Button">
       <Setter Property="Width" Value="42"/>
@@ -305,7 +567,7 @@ $xaml = @'
             </Border>
             <ControlTemplate.Triggers>
               <Trigger Property="IsMouseOver" Value="True">
-                <Setter TargetName="B" Property="Background" Value="#FFE1344B"/>
+                <Setter TargetName="B" Property="Background" Value="{StaticResource Danger}"/>
               </Trigger>
             </ControlTemplate.Triggers>
           </ControlTemplate>
@@ -323,7 +585,7 @@ $xaml = @'
       <Setter Property="Template">
         <Setter.Value>
           <ControlTemplate TargetType="Button">
-            <Border Background="#FF3D7EF0" CornerRadius="9" Padding="{TemplateBinding Padding}">
+            <Border Background="{StaticResource Accent}" CornerRadius="9" Padding="{TemplateBinding Padding}">
               <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
             </Border>
           </ControlTemplate>
@@ -332,7 +594,7 @@ $xaml = @'
     </Style>
 
     <Style x:Key="TabIdle" TargetType="Button">
-      <Setter Property="Foreground" Value="#FF9A9AA6"/>
+      <Setter Property="Foreground" Value="{StaticResource Muted}"/>
       <Setter Property="Padding" Value="16,7"/>
       <Setter Property="Margin" Value="6,0,0,0"/>
       <Setter Property="Cursor" Value="Hand"/>
@@ -340,12 +602,14 @@ $xaml = @'
       <Setter Property="Template">
         <Setter.Value>
           <ControlTemplate TargetType="Button">
-            <Border x:Name="B" Background="Transparent" CornerRadius="9" Padding="{TemplateBinding Padding}">
+            <!-- radius 6 and the editor's hover fill, so a tab here and a button there are the
+                 same shape rather than two different roundings side by side -->
+            <Border x:Name="B" Background="Transparent" CornerRadius="6" Padding="{TemplateBinding Padding}">
               <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
             </Border>
             <ControlTemplate.Triggers>
               <Trigger Property="IsMouseOver" Value="True">
-                <Setter TargetName="B" Property="Background" Value="#22FFFFFF"/>
+                <Setter TargetName="B" Property="Background" Value="#FF33333C"/>
               </Trigger>
             </ControlTemplate.Triggers>
           </ControlTemplate>
@@ -354,7 +618,7 @@ $xaml = @'
     </Style>
 
     <Style x:Key="GhostBtn" TargetType="Button">
-      <Setter Property="Foreground" Value="#FFD6D6DE"/>
+      <Setter Property="Foreground" Value="{StaticResource Ink}"/>
       <Setter Property="Padding" Value="16,9"/>
       <Setter Property="Margin" Value="10,0,0,0"/>
       <Setter Property="Cursor" Value="Hand"/>
@@ -362,19 +626,19 @@ $xaml = @'
       <Setter Property="Template">
         <Setter.Value>
           <ControlTemplate TargetType="Button">
-            <Border x:Name="B" Background="#FF2C2C33" BorderBrush="#FF3C3C45" BorderThickness="1"
+            <Border x:Name="B" Background="{StaticResource Raised}" BorderBrush="{StaticResource Line}" BorderThickness="1"
                     CornerRadius="9" Padding="{TemplateBinding Padding}">
               <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
             </Border>
             <ControlTemplate.Triggers>
               <Trigger Property="IsMouseOver" Value="True">
-                <Setter TargetName="B" Property="Background" Value="#FF35353E"/>
+                <Setter TargetName="B" Property="Background" Value="{StaticResource Line}"/>
               </Trigger>
               <Trigger Property="IsPressed" Value="True">
-                <Setter TargetName="B" Property="Background" Value="#FF26262C"/>
+                <Setter TargetName="B" Property="Background" Value="{StaticResource LineSoft}"/>
               </Trigger>
               <Trigger Property="IsEnabled" Value="False">
-                <Setter Property="Foreground" Value="#FF6A6A74"/>
+                <Setter Property="Foreground" Value="{StaticResource Dim}"/>
               </Trigger>
             </ControlTemplate.Triggers>
           </ControlTemplate>
@@ -396,21 +660,71 @@ $xaml = @'
               <Border.Background>
                 <LinearGradientBrush StartPoint="0,0" EndPoint="0,1">
                   <GradientStop Color="#FF4C8DFF" Offset="0"/>
-                  <GradientStop Color="#FF2F6BE4" Offset="1"/>
+                  <GradientStop Color="#FF2563EB" Offset="1"/>
                 </LinearGradientBrush>
               </Border.Background>
               <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
             </Border>
             <ControlTemplate.Triggers>
               <Trigger Property="IsMouseOver" Value="True">
-                <Setter TargetName="B" Property="Background" Value="#FF5A97FF"/>
+                <Setter TargetName="B" Property="Background" Value="{StaticResource Lift}"/>
               </Trigger>
               <Trigger Property="IsPressed" Value="True">
-                <Setter TargetName="B" Property="Background" Value="#FF2A60CE"/>
+                <Setter TargetName="B" Property="Background" Value="{StaticResource AccentDown}"/>
               </Trigger>
               <Trigger Property="IsEnabled" Value="False">
-                <Setter TargetName="B" Property="Background" Value="#FF33333B"/>
-                <Setter Property="Foreground" Value="#FF6A6A74"/>
+                <Setter TargetName="B" Property="Background" Value="{StaticResource Raised}"/>
+                <Setter Property="Foreground" Value="{StaticResource Dim}"/>
+              </Trigger>
+            </ControlTemplate.Triggers>
+          </ControlTemplate>
+        </Setter.Value>
+      </Setter>
+    </Style>
+
+    <!-- Rows for the two network lists.
+         WPF's stock ListBoxItem paints its selection with the SYSTEM highlight brush - a white
+         block with dark text - which against this palette reads as a rendering fault rather than
+         as a selection. Same template as ListRuns, plus a Lift-coloured edge: on these two lists
+         the selection IS the choice being made, so it has to be unmistakable. -->
+    <!-- Rows in the share tree.
+         A TreeViewItem paints its selection from the SYSTEM colours, so on this palette a selected
+         node comes out as a white block with dark text. Overriding the four system brush keys
+         inside the style resources fixes that without retemplating the whole control, expander
+         triangle and all. -->
+    <Style x:Key="NetTree" TargetType="TreeViewItem">
+      <Setter Property="Foreground" Value="{StaticResource Ink}"/>
+      <Setter Property="Padding" Value="2,3"/>
+      <Style.Resources>
+        <!-- Brighter than the ListBox rows use, and the SAME in both states. A TreeViewItem falls
+             back to the "inactive" brush the moment focus moves to the Use this folder button -
+             which is exactly when the technician most needs to see which folder they picked. -->
+        <SolidColorBrush x:Key="{x:Static SystemColors.HighlightBrushKey}" Color="#FF27436E"/>
+        <SolidColorBrush x:Key="{x:Static SystemColors.HighlightTextBrushKey}" Color="#FFE9E9EE"/>
+        <SolidColorBrush x:Key="{x:Static SystemColors.InactiveSelectionHighlightBrushKey}" Color="#FF27436E"/>
+        <SolidColorBrush x:Key="{x:Static SystemColors.InactiveSelectionHighlightTextBrushKey}" Color="#FFE9E9EE"/>
+      </Style.Resources>
+    </Style>
+
+    <Style x:Key="NetRow" TargetType="ListBoxItem">
+      <Setter Property="Padding" Value="0"/>
+      <Setter Property="Margin" Value="0,0,0,2"/>
+      <Setter Property="Foreground" Value="{StaticResource Ink}"/>
+      <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
+      <Setter Property="Template">
+        <Setter.Value>
+          <ControlTemplate TargetType="ListBoxItem">
+            <Border x:Name="rb" CornerRadius="6" Background="Transparent" BorderThickness="1"
+                    BorderBrush="Transparent" Padding="9,5">
+              <ContentPresenter/>
+            </Border>
+            <ControlTemplate.Triggers>
+              <Trigger Property="IsMouseOver" Value="True">
+                <Setter TargetName="rb" Property="Background" Value="{StaticResource Raised}"/>
+              </Trigger>
+              <Trigger Property="IsSelected" Value="True">
+                <Setter TargetName="rb" Property="Background" Value="#FF1B2233"/>
+                <Setter TargetName="rb" Property="BorderBrush" Value="{StaticResource Lift}"/>
               </Trigger>
             </ControlTemplate.Triggers>
           </ControlTemplate>
@@ -419,13 +733,13 @@ $xaml = @'
     </Style>
 
     <Style x:Key="SearchBox" TargetType="TextBox">
-      <Setter Property="Foreground" Value="#FFE9E9EE"/>
-      <Setter Property="CaretBrush" Value="#FFE9E9EE"/>
+      <Setter Property="Foreground" Value="{StaticResource Ink}"/>
+      <Setter Property="CaretBrush" Value="{StaticResource Ink}"/>
       <Setter Property="FontSize" Value="12.5"/>
       <Setter Property="Template">
         <Setter.Value>
           <ControlTemplate TargetType="TextBox">
-            <Border Background="#FF2C2C33" CornerRadius="9" BorderThickness="1" BorderBrush="#FF3C3C45">
+            <Border Background="{StaticResource Panel}" CornerRadius="6" BorderThickness="1" BorderBrush="{StaticResource Line}">
               <ScrollViewer x:Name="PART_ContentHost" Margin="11,0,8,0" VerticalAlignment="Center"/>
             </Border>
           </ControlTemplate>
@@ -499,7 +813,7 @@ $xaml = @'
                 </Grid.ColumnDefinitions>
 
                 <Border x:Name="Check" Grid.Column="0" Width="17" Height="17" CornerRadius="5"
-                        BorderThickness="1.5" BorderBrush="#FF5A5A66" Background="Transparent"
+                        BorderThickness="1.5" BorderBrush="{StaticResource Dim}" Background="Transparent"
                         VerticalAlignment="Center">
                   <Path x:Name="Tick" Data="M 3.5,8.5 L 6.5,11.5 L 12.5,4.5" Stroke="White" StrokeThickness="2"
                         StrokeStartLineCap="Round" StrokeEndLineCap="Round" StrokeLineJoin="Round"
@@ -522,18 +836,18 @@ $xaml = @'
                 </Border>
 
                 <TextBlock Grid.Column="2" Text="{Binding Name}" FontSize="12.5" Margin="10,0,8,0"
-                           VerticalAlignment="Center" Foreground="#FFEDEDF2" TextTrimming="CharacterEllipsis"/>
-                <TextBlock Grid.Column="3" Text="{Binding Size}" FontSize="11" Foreground="#FF74747E"
+                           VerticalAlignment="Center" Foreground="{StaticResource Ink}" TextTrimming="CharacterEllipsis"/>
+                <TextBlock Grid.Column="3" Text="{Binding Size}" FontSize="11" Foreground="{StaticResource Dim}"
                            VerticalAlignment="Center"/>
 
                 <!-- App Store-style per-app indicator: progress ring / spinner / result badge -->
                 <Grid Grid.Column="4" Grid.RowSpan="2" Width="26" Height="26" Margin="10,0,0,0"
                       VerticalAlignment="Center">
                   <Ellipse Margin="3" Stroke="#2AFFFFFF" StrokeThickness="2.5" Visibility="{Binding RingTrackVis}"/>
-                  <Path Data="{Binding RingData}" Stroke="#FF4C8DFF" StrokeThickness="2.5"
+                  <Path Data="{Binding RingData}" Stroke="{StaticResource Lift}" StrokeThickness="2.5"
                         StrokeStartLineCap="Round" StrokeEndLineCap="Round" Stretch="None"
                         Visibility="{Binding RingTrackVis}"/>
-                  <Path Data="M 13,3 A 10,10 0 0 1 23,13" Stroke="#FF8FB8FF" StrokeThickness="2.5"
+                  <Path Data="M 13,3 A 10,10 0 0 1 23,13" Stroke="{StaticResource Lift}" StrokeThickness="2.5"
                         StrokeStartLineCap="Round" Stretch="None" Visibility="{Binding SpinnerVis}"
                         RenderTransformOrigin="0.5,0.5">
                     <Path.RenderTransform><RotateTransform/></Path.RenderTransform>
@@ -579,10 +893,10 @@ $xaml = @'
                 <Setter TargetName="R" Property="Background" Value="#1AFFFFFF"/>
               </Trigger>
               <Trigger Property="IsChecked" Value="True">
-                <Setter TargetName="Check" Property="Background" Value="#FF3D7EF0"/>
-                <Setter TargetName="Check" Property="BorderBrush" Value="#FF3D7EF0"/>
+                <Setter TargetName="Check" Property="Background" Value="{StaticResource Accent}"/>
+                <Setter TargetName="Check" Property="BorderBrush" Value="{StaticResource Accent}"/>
                 <Setter TargetName="Tick" Property="Visibility" Value="Visible"/>
-                <Setter TargetName="R" Property="Background" Value="#153D7EF0"/>
+                <Setter TargetName="R" Property="Background" Value="#152563EB"/>
               </Trigger>
             </ControlTemplate.Triggers>
           </ControlTemplate>
@@ -591,34 +905,47 @@ $xaml = @'
     </Style>
 
     <!-- uninstall row: name + publisher/version, silent-vs-UI badge, result indicator -->
+    <!-- One row of the Uninstall table: tick, name over a size bar, then publisher, install
+         date and size in fixed columns that line up with the header above the list. The widths
+         here and in that header are the same numbers and have to stay that way.
+
+         It replaced a two-line card in a two-column grid, which could not answer the question
+         this tab is opened for: eighty programs, and no way to see which are big. -->
     <Style x:Key="UnRow" TargetType="CheckBox">
       <Setter Property="Focusable" Value="False"/>
       <Setter Property="Cursor" Value="Hand"/>
       <Setter Property="Template">
         <Setter.Value>
           <ControlTemplate TargetType="CheckBox">
-            <Border x:Name="R" CornerRadius="8" Padding="9,7" Background="Transparent" Margin="2,1">
-              <Grid>
+            <Border x:Name="R" CornerRadius="8" Padding="10,8" Background="Transparent" Margin="2,0"
+                    BorderThickness="0,0,0,1" BorderBrush="{StaticResource LineSoft}">
+              <Grid Opacity="{Binding RowOpacity}">
                 <Grid.RowDefinitions>
                   <RowDefinition Height="Auto"/>
                   <RowDefinition Height="Auto"/>
                 </Grid.RowDefinitions>
                 <Grid.ColumnDefinitions>
-                  <ColumnDefinition Width="Auto"/>
-                  <ColumnDefinition Width="Auto"/>
+                  <ColumnDefinition Width="26"/>
+                  <ColumnDefinition Width="34"/>
                   <ColumnDefinition Width="*"/>
-                  <ColumnDefinition Width="Auto"/>
+                  <ColumnDefinition Width="150"/>
+                  <ColumnDefinition Width="100"/>
+                  <ColumnDefinition Width="86"/>
+                  <ColumnDefinition Width="26"/>
                 </Grid.ColumnDefinitions>
 
                 <Border x:Name="Check" Grid.Column="0" Width="17" Height="17" CornerRadius="5"
-                        BorderThickness="1.5" BorderBrush="#FF5A5A66" Background="Transparent"
-                        VerticalAlignment="Center">
+                        BorderThickness="1.5" BorderBrush="{StaticResource Dim}" Background="Transparent"
+                        VerticalAlignment="Center" HorizontalAlignment="Left">
                   <Path x:Name="Tick" Data="M 3.5,8.5 L 6.5,11.5 L 12.5,4.5" Stroke="White" StrokeThickness="2"
                         StrokeStartLineCap="Round" StrokeEndLineCap="Round" StrokeLineJoin="Round"
                         Visibility="Collapsed" Stretch="None"/>
                 </Border>
 
-                <Border Grid.Column="1" Width="26" Height="26" CornerRadius="8" Margin="10,0,0,0"
+                <!-- The program's own logo, pulled out of its executable by the icon pump. The
+                     table mock had no icon column; the tool has had real icons here all along and
+                     they are worth more than the 34px they cost. -->
+                <Border Grid.Column="1" Width="26" Height="26" CornerRadius="8" Margin="2,0,0,0"
                         Background="{Binding IconBg}" VerticalAlignment="Center">
                   <Grid>
                     <Path Data="{Binding IconData}" Stroke="White" StrokeThickness="1.5"
@@ -633,16 +960,46 @@ $xaml = @'
                   </Grid>
                 </Border>
 
-                <StackPanel Grid.Column="2" Margin="10,0,8,0" VerticalAlignment="Center">
-                  <TextBlock Text="{Binding Name}" FontSize="12.5" Foreground="#FFEDEDF2"
-                             TextTrimming="CharacterEllipsis" ToolTip="{Binding Name}"/>
-                  <TextBlock FontSize="10.5" Foreground="#FF74747E" TextTrimming="CharacterEllipsis" Margin="0,2,0,0">
-                    <Run Text="{Binding Publisher}"/><Run Text=" "/><Run Text="{Binding Version}"/><Run Text="  "/><Run Text="{Binding Size}"/>
-                  </TextBlock>
+                <StackPanel Grid.Column="2" Margin="10,0,18,0" VerticalAlignment="Center">
+                  <StackPanel Orientation="Horizontal">
+                    <TextBlock Text="{Binding Name}" FontSize="12.5" Foreground="{StaticResource Ink}"
+                               TextTrimming="CharacterEllipsis" ToolTip="{Binding Name}"/>
+                    <Border CornerRadius="5" Padding="7,1" Margin="9,0,0,0" VerticalAlignment="Center"
+                            BorderThickness="1" BorderBrush="#FF2F4270" Background="#141B2233"
+                            Visibility="{Binding TagVis}">
+                      <TextBlock Text="{Binding TagText}" FontSize="10" Foreground="{StaticResource Lift}"/>
+                    </Border>
+                  </StackPanel>
+                  <!-- A ProgressBar, not a Border with a bound Width: the column is star-sized,
+                       so the fill has to be a share of whatever width the row ends up with, and
+                       that is exactly what a ProgressBar already does. -->
+                  <ProgressBar Value="{Binding SizePercent}" Maximum="100" Height="3" Margin="0,5,0,0"
+                               Background="{StaticResource LineSoft}" Foreground="{StaticResource Lift}"
+                               BorderThickness="0">
+                    <ProgressBar.Template>
+                      <ControlTemplate TargetType="ProgressBar">
+                        <Border CornerRadius="2" Background="{TemplateBinding Background}">
+                          <Border x:Name="PART_Track">
+                            <Border x:Name="PART_Indicator" CornerRadius="2" HorizontalAlignment="Left"
+                                    Background="{TemplateBinding Foreground}"/>
+                          </Border>
+                        </Border>
+                      </ControlTemplate>
+                    </ProgressBar.Template>
+                  </ProgressBar>
                 </StackPanel>
 
-                <Grid Grid.Column="3" Width="22" Height="22" VerticalAlignment="Center">
-                  <Path Data="M 11,2 A 9,9 0 0 1 20,11" Stroke="#FF8FB8FF" StrokeThickness="2.2"
+                <TextBlock Grid.Column="3" Text="{Binding Publisher}" FontSize="11.5" Margin="0,0,10,0"
+                           Foreground="{StaticResource Dim}" VerticalAlignment="Center"
+                           TextTrimming="CharacterEllipsis" ToolTip="{Binding Publisher}"/>
+                <TextBlock Grid.Column="4" Text="{Binding ColInstalled}" FontSize="11.5"
+                           Foreground="{StaticResource Dim}" VerticalAlignment="Center"/>
+                <TextBlock Grid.Column="5" Text="{Binding ColSize}" FontSize="12" TextAlignment="Right"
+                           Foreground="{StaticResource Muted}" VerticalAlignment="Center" Margin="0,0,8,0"/>
+
+                <!-- the ring and badge keep the far column, which is empty until a removal runs -->
+                <Grid Grid.Column="6" Width="22" Height="22" VerticalAlignment="Center">
+                  <Path Data="M 11,2 A 9,9 0 0 1 20,11" Stroke="{StaticResource Lift}" StrokeThickness="2.2"
                         StrokeStartLineCap="Round" Stretch="None" Visibility="{Binding SpinnerVis}"
                         RenderTransformOrigin="0.5,0.5">
                     <Path.RenderTransform><RotateTransform/></Path.RenderTransform>
@@ -664,9 +1021,9 @@ $xaml = @'
                   </Border>
                 </Grid>
 
-                <TextBlock Grid.Row="1" Grid.Column="2" Grid.ColumnSpan="2" Text="{Binding Status}"
+                <TextBlock Grid.Row="1" Grid.Column="2" Grid.ColumnSpan="4" Text="{Binding Status}"
                            FontSize="11" FontWeight="SemiBold" Foreground="{Binding StatusFg}"
-                           TextWrapping="Wrap" Margin="10,3,0,0" ToolTip="{Binding Status}">
+                           TextWrapping="Wrap" Margin="4,4,0,0" ToolTip="{Binding Status}">
                   <TextBlock.Style>
                     <Style TargetType="TextBlock">
                       <Style.Triggers>
@@ -684,8 +1041,8 @@ $xaml = @'
                 <Setter TargetName="R" Property="Background" Value="#1AFFFFFF"/>
               </Trigger>
               <Trigger Property="IsChecked" Value="True">
-                <Setter TargetName="Check" Property="Background" Value="#FFE1344B"/>
-                <Setter TargetName="Check" Property="BorderBrush" Value="#FFE1344B"/>
+                <Setter TargetName="Check" Property="Background" Value="{StaticResource Danger}"/>
+                <Setter TargetName="Check" Property="BorderBrush" Value="{StaticResource Danger}"/>
                 <Setter TargetName="Tick" Property="Visibility" Value="Visible"/>
                 <Setter TargetName="R" Property="Background" Value="#15E1344B"/>
               </Trigger>
@@ -694,6 +1051,27 @@ $xaml = @'
         </Setter.Value>
       </Setter>
     </Style>
+
+    <!-- A column heading that sorts. -->
+    <Style x:Key="ColHead" TargetType="Button">
+      <Setter Property="Foreground" Value="{StaticResource Dim}"/>
+      <Setter Property="FontSize" Value="10.5"/>
+      <Setter Property="Cursor" Value="Hand"/>
+      <Setter Property="HorizontalContentAlignment" Value="Left"/>
+      <Setter Property="Template">
+        <Setter.Value>
+          <ControlTemplate TargetType="Button">
+            <Border Background="Transparent" Padding="0,4">
+              <ContentPresenter HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}"/>
+            </Border>
+          </ControlTemplate>
+        </Setter.Value>
+      </Setter>
+    </Style>
+    <Style x:Key="ColHeadOn" TargetType="Button" BasedOn="{StaticResource ColHead}">
+      <Setter Property="Foreground" Value="{StaticResource Lift}"/>
+    </Style>
+
     <!-- firewall row: the state has to be readable at a glance, so it gets a badge rather
          than a coloured icon tile - once a real program icon loads, the tile is transparent
          and any colour on it is gone. -->
@@ -718,7 +1096,7 @@ $xaml = @'
                 </Grid.ColumnDefinitions>
 
                 <Border x:Name="Check" Grid.Column="0" Width="16" Height="16" CornerRadius="5"
-                        BorderThickness="1.5" BorderBrush="#FF5A5A66" Background="Transparent"
+                        BorderThickness="1.5" BorderBrush="{StaticResource Dim}" Background="Transparent"
                         VerticalAlignment="Center">
                   <Path x:Name="Tick" Data="M 3.5,8 L 6,10.5 L 12,4" Stroke="White" StrokeThickness="2"
                         StrokeStartLineCap="Round" StrokeEndLineCap="Round" StrokeLineJoin="Round"
@@ -735,9 +1113,9 @@ $xaml = @'
                 </Grid>
 
                 <StackPanel Grid.Column="2" Margin="10,0,8,0" VerticalAlignment="Center">
-                  <TextBlock Text="{Binding Name}" FontSize="12.5" Foreground="#FFEDEDF2"
+                  <TextBlock Text="{Binding Name}" FontSize="12.5" Foreground="{StaticResource Ink}"
                              TextTrimming="CharacterEllipsis" ToolTip="{Binding Name}"/>
-                  <TextBlock Text="{Binding Publisher}" FontSize="10.5" Foreground="#FF74747E" Margin="0,2,0,0"
+                  <TextBlock Text="{Binding Publisher}" FontSize="10.5" Foreground="{StaticResource Dim}" Margin="0,2,0,0"
                              TextTrimming="CharacterEllipsis" ToolTip="{Binding Publisher}"/>
                 </StackPanel>
 
@@ -747,7 +1125,7 @@ $xaml = @'
                      does not toggle the tick. -->
                 <Button Grid.Column="3" Width="22" Height="22" Margin="0,0,8,0" VerticalAlignment="Center"
                         Style="{StaticResource IconBtn}" ToolTip="Show the executables this covers">
-                  <TextBlock Text="&#x2026;" FontSize="14" FontWeight="Bold" Foreground="#FF9A9AA6"
+                  <TextBlock Text="&#x2026;" FontSize="14" FontWeight="Bold" Foreground="{StaticResource Muted}"
                              VerticalAlignment="Center" HorizontalAlignment="Center" Margin="0,-6,0,0"/>
                 </Button>
 
@@ -785,10 +1163,10 @@ $xaml = @'
                 <Setter TargetName="R" Property="Background" Value="#1AFFFFFF"/>
               </Trigger>
               <Trigger Property="IsChecked" Value="True">
-                <Setter TargetName="Check" Property="Background" Value="#FF3D7EF0"/>
-                <Setter TargetName="Check" Property="BorderBrush" Value="#FF3D7EF0"/>
+                <Setter TargetName="Check" Property="Background" Value="{StaticResource Accent}"/>
+                <Setter TargetName="Check" Property="BorderBrush" Value="{StaticResource Accent}"/>
                 <Setter TargetName="Tick" Property="Visibility" Value="Visible"/>
-                <Setter TargetName="R" Property="Background" Value="#153D7EF0"/>
+                <Setter TargetName="R" Property="Background" Value="#152563EB"/>
               </Trigger>
             </ControlTemplate.Triggers>
           </ControlTemplate>
@@ -807,17 +1185,17 @@ $xaml = @'
       <Setter Property="Template">
         <Setter.Value>
           <ControlTemplate TargetType="Button">
-            <Border x:Name="B" CornerRadius="10" Background="#FF2C2C33" BorderBrush="#FF3C3C45"
+            <Border x:Name="B" CornerRadius="10" Background="{StaticResource Raised}" BorderBrush="{StaticResource Line}"
                     BorderThickness="1">
               <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
             </Border>
             <ControlTemplate.Triggers>
               <Trigger Property="IsMouseOver" Value="True">
-                <Setter TargetName="B" Property="Background" Value="#FF35353E"/>
-                <Setter TargetName="B" Property="BorderBrush" Value="#FF3D7EF0"/>
+                <Setter TargetName="B" Property="Background" Value="{StaticResource Line}"/>
+                <Setter TargetName="B" Property="BorderBrush" Value="{StaticResource Accent}"/>
               </Trigger>
               <Trigger Property="IsPressed" Value="True">
-                <Setter TargetName="B" Property="Background" Value="#FF23232A"/>
+                <Setter TargetName="B" Property="Background" Value="{StaticResource Panel}"/>
               </Trigger>
             </ControlTemplate.Triggers>
           </ControlTemplate>
@@ -834,8 +1212,8 @@ $xaml = @'
       <Setter Property="Template">
         <Setter.Value>
           <ControlTemplate TargetType="CheckBox">
-            <Border x:Name="R" CornerRadius="10" Padding="14,11" Background="#FF232329" Margin="2,3"
-                    BorderThickness="1" BorderBrush="#FF2E2E36">
+            <Border x:Name="R" CornerRadius="10" Padding="14,11" Background="{StaticResource Panel}" Margin="2,3"
+                    BorderThickness="1" BorderBrush="{StaticResource Raised}">
               <Grid>
                 <Grid.ColumnDefinitions>
                   <ColumnDefinition Width="Auto"/>
@@ -850,9 +1228,9 @@ $xaml = @'
                 </Border>
 
                 <StackPanel Grid.Column="1" Margin="14,0,10,0" VerticalAlignment="Center">
-                  <TextBlock Text="{Binding Name}" FontSize="14" Foreground="#FFEDEDF2"
+                  <TextBlock Text="{Binding Name}" FontSize="14" Foreground="{StaticResource Ink}"
                              TextTrimming="CharacterEllipsis"/>
-                  <TextBlock Text="{Binding Publisher}" FontSize="11.5" Foreground="#FF8A8A94" Margin="0,3,0,0"
+                  <TextBlock Text="{Binding Publisher}" FontSize="11.5" Foreground="{StaticResource Muted}" Margin="0,3,0,0"
                              TextTrimming="CharacterEllipsis" ToolTip="{Binding Publisher}"/>
                   <TextBlock Text="{Binding Status}" FontSize="11" FontWeight="SemiBold" Margin="0,3,0,0"
                              Foreground="{Binding StatusFg}" TextWrapping="Wrap">
@@ -869,19 +1247,19 @@ $xaml = @'
                 </StackPanel>
 
                 <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center">
-                  <Border CornerRadius="5" Padding="7,3" Background="#FF33333B" Margin="0,0,10,0"
+                  <Border CornerRadius="5" Padding="7,3" Background="{StaticResource Raised}" Margin="0,0,10,0"
                           VerticalAlignment="Center">
-                    <TextBlock Text="{Binding Size}" FontSize="10.5" Foreground="#FFB9CFF6" FontWeight="SemiBold"/>
+                    <TextBlock Text="{Binding Size}" FontSize="10.5" Foreground="{StaticResource Ink}" FontWeight="SemiBold"/>
                   </Border>
-                  <Path Data="M 0,0 L 6,6 L 0,12" Stroke="#FF6E6E7A" StrokeThickness="1.8"
+                  <Path Data="M 0,0 L 6,6 L 0,12" Stroke="{StaticResource Dim}" StrokeThickness="1.8"
                         StrokeStartLineCap="Round" StrokeEndLineCap="Round" Stretch="None" VerticalAlignment="Center"/>
                 </StackPanel>
               </Grid>
             </Border>
             <ControlTemplate.Triggers>
               <Trigger Property="IsMouseOver" Value="True">
-                <Setter TargetName="R" Property="Background" Value="#FF2C2C34"/>
-                <Setter TargetName="R" Property="BorderBrush" Value="#FF3D7EF0"/>
+                <Setter TargetName="R" Property="Background" Value="{StaticResource Raised}"/>
+                <Setter TargetName="R" Property="BorderBrush" Value="{StaticResource Accent}"/>
               </Trigger>
             </ControlTemplate.Triggers>
           </ControlTemplate>
@@ -912,7 +1290,7 @@ $xaml = @'
                 </Grid.ColumnDefinitions>
 
                 <Border x:Name="Check" Grid.Column="0" Width="16" Height="16" CornerRadius="5"
-                        BorderThickness="1.5" BorderBrush="#FF5A5A66" Background="Transparent"
+                        BorderThickness="1.5" BorderBrush="{StaticResource Dim}" Background="Transparent"
                         VerticalAlignment="Center">
                   <Path x:Name="Tick" Data="M 3.5,8 L 6,10.5 L 12,4" Stroke="White" StrokeThickness="2"
                         StrokeStartLineCap="Round" StrokeEndLineCap="Round" StrokeLineJoin="Round"
@@ -923,11 +1301,11 @@ $xaml = @'
                            Fill="{Binding IconBg}" Margin="9,0,0,0" VerticalAlignment="Center"/>
 
                 <TextBlock Grid.Column="2" Text="{Binding Name}" FontSize="12" Margin="9,0,8,0"
-                           VerticalAlignment="Center" Foreground="#FFEDEDF2"
+                           VerticalAlignment="Center" Foreground="{StaticResource Ink}"
                            TextTrimming="CharacterEllipsis" ToolTip="{Binding Name}"/>
 
                 <Grid Grid.Column="3" Width="20" Height="20" VerticalAlignment="Center">
-                  <Path Data="M 10,2 A 8,8 0 0 1 18,10" Stroke="#FF8FB8FF" StrokeThickness="2"
+                  <Path Data="M 10,2 A 8,8 0 0 1 18,10" Stroke="{StaticResource Lift}" StrokeThickness="2"
                         StrokeStartLineCap="Round" Stretch="None" Visibility="{Binding SpinnerVis}"
                         RenderTransformOrigin="0.5,0.5">
                     <Path.RenderTransform><RotateTransform/></Path.RenderTransform>
@@ -969,10 +1347,10 @@ $xaml = @'
                 <Setter TargetName="R" Property="Background" Value="#1AFFFFFF"/>
               </Trigger>
               <Trigger Property="IsChecked" Value="True">
-                <Setter TargetName="Check" Property="Background" Value="#FF3D7EF0"/>
-                <Setter TargetName="Check" Property="BorderBrush" Value="#FF3D7EF0"/>
+                <Setter TargetName="Check" Property="Background" Value="{StaticResource Accent}"/>
+                <Setter TargetName="Check" Property="BorderBrush" Value="{StaticResource Accent}"/>
                 <Setter TargetName="Tick" Property="Visibility" Value="Visible"/>
-                <Setter TargetName="R" Property="Background" Value="#153D7EF0"/>
+                <Setter TargetName="R" Property="Background" Value="#152563EB"/>
               </Trigger>
             </ControlTemplate.Triggers>
           </ControlTemplate>
@@ -981,14 +1359,15 @@ $xaml = @'
     </Style>
   </Window.Resources>
 
-  <Border x:Name="RootB" CornerRadius="16" Background="#FF1E1E23" Margin="14" BorderThickness="1"
-          BorderBrush="#FF34343C" RenderTransformOrigin="0.5,0.5">
+  <!-- One rounded panel, because the window itself is transparent. The radius, the border and
+       the absence of a margin all match tools\Catalog-Editor.ps1: both windows are 1060x700, and
+       a 14px margin here made this one's visible panel 1032x672 - the same window on paper and
+       28px smaller on screen. -->
+  <Border x:Name="RootB" CornerRadius="11" Background="#FF1B1B20" BorderThickness="1"
+          BorderBrush="{StaticResource Line}" RenderTransformOrigin="0.5,0.5">
     <Border.RenderTransform>
       <ScaleTransform x:Name="RootScale" ScaleX="0.97" ScaleY="0.97"/>
     </Border.RenderTransform>
-    <Border.Effect>
-      <DropShadowEffect BlurRadius="26" ShadowDepth="0" Opacity="0.55" Color="Black"/>
-    </Border.Effect>
     <Grid>
       <Grid.RowDefinitions>
         <RowDefinition Height="Auto"/>
@@ -1006,6 +1385,9 @@ $xaml = @'
           <RowDefinition Height="Auto"/>
           <RowDefinition Height="Auto"/>
         </Grid.RowDefinitions>
+      <!-- Transparent, not a coloured band. The panel behind it is rounded, and a band with
+           square top corners painted over it is exactly what stopped the window's corners
+           looking round. -->
       <DockPanel x:Name="TitleBar" Grid.Row="0" Height="54" Background="Transparent" LastChildFill="False">
         <StackPanel DockPanel.Dock="Left" Orientation="Horizontal" Margin="22,0,0,0" VerticalAlignment="Center">
           <Border Width="32" Height="32" CornerRadius="10" VerticalAlignment="Center">
@@ -1021,44 +1403,42 @@ $xaml = @'
           <StackPanel Margin="12,0,0,0" VerticalAlignment="Center">
             <StackPanel Orientation="Horizontal">
               <TextBlock Text="PC2Go App Installer" FontSize="14.5" FontWeight="SemiBold"/>
-              <TextBlock x:Name="TxtBuild" Text="" FontSize="10" Foreground="#FF5A5A66"
-                         Margin="8,0,0,0" VerticalAlignment="Bottom"/>
             </StackPanel>
             <StackPanel Orientation="Horizontal" Margin="0,2,0,0">
-              <Ellipse x:Name="DotLive" Width="7" Height="7" Fill="#FF6A6A74" VerticalAlignment="Center"/>
-              <TextBlock x:Name="TxtCatalogInfo" Text="Connecting..." FontSize="11" Foreground="#FF80808C"
+              <Ellipse x:Name="DotLive" Width="7" Height="7" Fill="{StaticResource Dim}" VerticalAlignment="Center"/>
+              <TextBlock x:Name="TxtCatalogInfo" Text="Connecting..." FontSize="11" Foreground="{StaticResource Muted}"
                          Margin="6,0,0,0" VerticalAlignment="Center"/>
             </StackPanel>
           </StackPanel>
         </StackPanel>
         <Button x:Name="BtnWinClose" DockPanel.Dock="Right" Style="{StaticResource CloseBtn}"
                 Margin="0,0,12,0" VerticalAlignment="Center">
-          <Path Data="M 0,0 L 10,10 M 10,0 L 0,10" Stroke="#FFCFCFD8" StrokeThickness="1.4"
+          <Path Data="M 0,0 L 10,10 M 10,0 L 0,10" Stroke="{StaticResource Ink}" StrokeThickness="1.4"
                 StrokeStartLineCap="Round" StrokeEndLineCap="Round" Stretch="None"/>
         </Button>
         <Button x:Name="BtnMin" DockPanel.Dock="Right" Style="{StaticResource IconBtn}" VerticalAlignment="Center">
-          <Rectangle Width="11" Height="1.4" Fill="#FFCFCFD8"/>
+          <Rectangle Width="11" Height="1.4" Fill="{StaticResource Ink}"/>
         </Button>
         <Grid DockPanel.Dock="Right" Width="240" Height="34" Margin="14,0,10,0" VerticalAlignment="Center">
           <TextBox x:Name="TxtSearch" Style="{StaticResource SearchBox}" VerticalContentAlignment="Center"/>
-          <TextBlock x:Name="HintSearch" Text="Search..." Foreground="#FF6E6E7A" FontSize="12"
+          <TextBlock x:Name="HintSearch" Text="Search..." Foreground="{StaticResource Dim}" FontSize="12"
                      Margin="12,0,0,0" VerticalAlignment="Center" HorizontalAlignment="Left"
                      IsHitTestVisible="False"/>
           <Button x:Name="BtnSearchClear" Width="26" Height="26" HorizontalAlignment="Right"
                   Margin="0,0,4,0" Style="{StaticResource IconBtn}" Visibility="Collapsed">
-            <Path Data="M 0,0 L 8,8 M 8,0 L 0,8" Stroke="#FF9A9AA6" StrokeThickness="1.4"
+            <Path Data="M 0,0 L 8,8 M 8,0 L 0,8" Stroke="{StaticResource Muted}" StrokeThickness="1.4"
                   StrokeStartLineCap="Round" StrokeEndLineCap="Round" Stretch="None"/>
           </Button>
         </Grid>
       </DockPanel>
 
-      <Border Grid.Row="1" BorderBrush="#FF2A2A31" BorderThickness="0,0,0,1" Padding="18,0,18,8">
+      <Border Grid.Row="1" BorderBrush="{StaticResource Raised}" BorderThickness="0,0,0,1" Padding="18,0,18,8">
         <StackPanel Orientation="Horizontal">
           <Button x:Name="BtnTabInstall" Content="Install" Style="{StaticResource TabActive}"/>
           <Button x:Name="BtnTabUn" Content="Uninstall" Style="{StaticResource TabIdle}"/>
-          <Button x:Name="BtnTabTweak" Content="Tweaks" Style="{StaticResource TabIdle}"/>
+          <Button x:Name="BtnTabTweak" Content="Optimize" Style="{StaticResource TabIdle}"/>
           <Button x:Name="BtnTabUsers" Content="User Accounts" Style="{StaticResource TabIdle}"/>
-          <Button x:Name="BtnTabMigrate" Content="Data Migration" Style="{StaticResource TabIdle}"/>
+          <Button x:Name="BtnTabMigrate" Content="Data Backup" Style="{StaticResource TabIdle}"/>
           <Button x:Name="BtnTabFw" Content="Firewall" Style="{StaticResource TabIdle}"/>
           <Button x:Name="BtnTabTools" Content="Toolbox" Style="{StaticResource TabIdle}"/>
           <Button x:Name="BtnTabLog" Content="Activity Log" Style="{StaticResource TabIdle}"/>
@@ -1068,7 +1448,7 @@ $xaml = @'
 
       <!-- install tab: 3-column grouped checklist -->
       <Grid x:Name="PanelInstall" Grid.Row="1" Margin="18,2,18,0">
-        <TextBlock x:Name="EmptyInstall" Visibility="Collapsed" Foreground="#FF6E6E7A" FontSize="13"
+        <TextBlock x:Name="EmptyInstall" Visibility="Collapsed" Foreground="{StaticResource Dim}" FontSize="13"
                    HorizontalAlignment="Center" VerticalAlignment="Center" TextAlignment="Center"/>
         <ScrollViewer VerticalScrollBarVisibility="Auto">
         <ItemsControl x:Name="ListApps">
@@ -1082,10 +1462,10 @@ $xaml = @'
               <GroupStyle.HeaderTemplate>
                 <DataTemplate>
                   <StackPanel Orientation="Horizontal" Margin="10,8,0,7">
-                    <Rectangle Width="3" Height="14" Fill="#FF3D7EF0" RadiusX="1.5" RadiusY="1.5" VerticalAlignment="Center"/>
-                    <TextBlock Text="{Binding Name}" FontSize="12.5" FontWeight="Bold" Foreground="#FFB9CFF6"
+                    <Rectangle Width="3" Height="14" Fill="{StaticResource Accent}" RadiusX="1.5" RadiusY="1.5" VerticalAlignment="Center"/>
+                    <TextBlock Text="{Binding Name}" FontSize="12.5" FontWeight="Bold" Foreground="{StaticResource Ink}"
                                Margin="8,0,6,0" VerticalAlignment="Center"/>
-                    <TextBlock Text="{Binding ItemCount}" FontSize="11" Foreground="#FF6E6E7A" VerticalAlignment="Center"/>
+                    <TextBlock Text="{Binding ItemCount}" FontSize="11" Foreground="{StaticResource Dim}" VerticalAlignment="Center"/>
                   </StackPanel>
                 </DataTemplate>
               </GroupStyle.HeaderTemplate>
@@ -1113,13 +1493,38 @@ $xaml = @'
           <RowDefinition Height="*"/>
         </Grid.RowDefinitions>
 
-        <StackPanel Grid.Row="0" Orientation="Horizontal" Margin="4,4,0,8">
-          <Button x:Name="BtnSubDesktop" Content="Desktop programs" Style="{StaticResource TabActive}"/>
-          <Button x:Name="BtnSubStore" Content="Microsoft Store apps" Style="{StaticResource TabIdle}"/>
-          <Button x:Name="BtnRescan" Content="Rescan" Style="{StaticResource TabIdle}"/>
+        <StackPanel Grid.Row="0" Margin="4,4,0,4">
+          <!-- Which list, then what to keep in it. Every pill carries its own count, because
+               "No publisher 6" is an answer on its own - it says whether the filter is worth
+               pressing before you press it. -->
+          <DockPanel LastChildFill="False" Margin="0,0,0,10">
+            <Button x:Name="BtnSubDesktop" Content="Desktop programs" Style="{StaticResource TabActive}"/>
+            <Button x:Name="BtnSubStore"   Content="Microsoft Store apps" Style="{StaticResource TabIdle}"/>
+            <Button x:Name="BtnRescan" DockPanel.Dock="Right" Content="Rescan" Style="{StaticResource TabIdle}"/>
+          </DockPanel>
+
+          <!-- The column header. Every width here matches the row template in UnRow, and the two
+               have to be changed together or the table stops lining up. -->
+          <Grid Margin="12,0,2,0">
+            <Grid.ColumnDefinitions>
+              <ColumnDefinition Width="26"/>
+              <ColumnDefinition Width="34"/>
+              <ColumnDefinition Width="*"/>
+              <ColumnDefinition Width="150"/>
+              <ColumnDefinition Width="100"/>
+              <ColumnDefinition Width="86"/>
+              <ColumnDefinition Width="26"/>
+            </Grid.ColumnDefinitions>
+            <Button x:Name="BtnColName" Grid.Column="2" Content="PROGRAM"   Style="{StaticResource ColHeadOn}" Margin="10,0,0,0"/>
+            <Button x:Name="BtnColPub"  Grid.Column="3" Content="PUBLISHER" Style="{StaticResource ColHead}"/>
+            <Button x:Name="BtnColDate" Grid.Column="4" Content="INSTALLED" Style="{StaticResource ColHead}"/>
+            <Button x:Name="BtnColSize" Grid.Column="5" Content="SIZE"      Style="{StaticResource ColHead}"
+                    HorizontalContentAlignment="Right" Margin="0,0,8,0"/>
+          </Grid>
+          <Border Height="1" Background="{StaticResource LineSoft}" Margin="12,2,2,0"/>
         </StackPanel>
 
-        <TextBlock x:Name="EmptyUn" Grid.Row="1" Visibility="Collapsed" Foreground="#FF6E6E7A" FontSize="13"
+        <TextBlock x:Name="EmptyUn" Grid.Row="1" Visibility="Collapsed" Foreground="{StaticResource Dim}" FontSize="13"
                    HorizontalAlignment="Center" VerticalAlignment="Center" TextAlignment="Center"/>
         <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto">
         <StackPanel>
@@ -1128,7 +1533,7 @@ $xaml = @'
           <StackPanel x:Name="LoadUn" Visibility="Collapsed" HorizontalAlignment="Center" Margin="0,50,0,0">
             <Grid Width="34" Height="34" HorizontalAlignment="Center">
               <Ellipse Stroke="#22FFFFFF" StrokeThickness="3"/>
-              <Path Data="M 17,1.5 A 15.5,15.5 0 0 1 32.5,17" Stroke="#FF4C8DFF" StrokeThickness="3"
+              <Path Data="M 17,1.5 A 15.5,15.5 0 0 1 32.5,17" Stroke="{StaticResource Lift}" StrokeThickness="3"
                     StrokeStartLineCap="Round" Stretch="None" RenderTransformOrigin="0.5,0.5">
                 <Path.RenderTransform><RotateTransform/></Path.RenderTransform>
                 <Path.Triggers>
@@ -1144,9 +1549,9 @@ $xaml = @'
               </Path>
             </Grid>
             <TextBlock x:Name="TxtLoadUn" Text="Scanning installed programs..." FontSize="13"
-                       Foreground="#FFD6D6DE" HorizontalAlignment="Center" Margin="0,14,0,0"/>
+                       Foreground="{StaticResource Ink}" HorizontalAlignment="Center" Margin="0,14,0,0"/>
             <TextBlock x:Name="TxtLoadUn2" Text="" FontSize="11.5"
-                       Foreground="#FF74747E" HorizontalAlignment="Center" Margin="0,5,0,0"/>
+                       Foreground="{StaticResource Dim}" HorizontalAlignment="Center" Margin="0,5,0,0"/>
           </StackPanel>
 
           <ItemsControl x:Name="ListUn">
@@ -1155,18 +1560,21 @@ $xaml = @'
                 <GroupStyle.HeaderTemplate>
                   <DataTemplate>
                     <StackPanel Orientation="Horizontal" Margin="10,10,0,7">
-                      <Rectangle Width="3" Height="14" Fill="#FF3D7EF0" RadiusX="1.5" RadiusY="1.5" VerticalAlignment="Center"/>
-                      <TextBlock Text="{Binding Name}" FontSize="12.5" FontWeight="Bold" Foreground="#FFB9CFF6"
+                      <Rectangle Width="3" Height="14" Fill="{StaticResource Accent}" RadiusX="1.5" RadiusY="1.5" VerticalAlignment="Center"/>
+                      <TextBlock Text="{Binding Name}" FontSize="12.5" FontWeight="Bold" Foreground="{StaticResource Ink}"
                                  Margin="8,0,6,0" VerticalAlignment="Center"/>
-                      <TextBlock Text="{Binding ItemCount}" FontSize="11" Foreground="#FF6E6E7A" VerticalAlignment="Center"/>
+                      <TextBlock Text="{Binding ItemCount}" FontSize="11" Foreground="{StaticResource Dim}" VerticalAlignment="Center"/>
                     </StackPanel>
                   </DataTemplate>
                 </GroupStyle.HeaderTemplate>
                 <!-- the panel must sit on the GROUP: with grouping on, the ItemsControl's
                      own ItemsPanel would arrange the sections themselves, not the apps -->
+                <!-- ONE column. Two columns halve the scrolling and destroy the table: a row
+                     is now a line of aligned cells under a shared header, and there cannot be
+                     two of those side by side. -->
                 <GroupStyle.Panel>
                   <ItemsPanelTemplate>
-                    <UniformGrid Columns="2" VerticalAlignment="Top"/>
+                    <StackPanel VerticalAlignment="Top"/>
                   </ItemsPanelTemplate>
                 </GroupStyle.Panel>
               </GroupStyle>
@@ -1189,45 +1597,113 @@ $xaml = @'
           <RowDefinition Height="*"/>
         </Grid.RowDefinitions>
 
-        <!-- presets: one click to a sensible selection, so nobody hand-ticks 38 rows -->
+        <!-- sub-tabs: each list arrives pre-configured, so the everyday flow is
+             open Optimize, press Apply. Buttons act on the sub-tab on screen only. -->
         <StackPanel Grid.Row="0" Orientation="Horizontal" Margin="4,4,0,8">
-          <Button x:Name="BtnPreStandard" Content="Standard" Style="{StaticResource TabIdle}"/>
-          <Button x:Name="BtnPreMinimal" Content="Minimal" Style="{StaticResource TabIdle}"/>
-          <Button x:Name="BtnPreAdvanced" Content="Advanced" Style="{StaticResource TabIdle}"/>
-          <Border Width="1" Height="18" Background="#FF3C3C45" Margin="10,0,4,0" VerticalAlignment="Center"/>
-          <Button x:Name="BtnPreClear" Content="Clear" Style="{StaticResource TabIdle}"/>
+          <Button x:Name="BtnSubTweaks" Content="Tweaks" Style="{StaticResource TabActive}"/>
+          <Button x:Name="BtnSubClean" Content="Cleanup" Style="{StaticResource TabIdle}"/>
+          <Button x:Name="BtnSubGame" Content="Gaming" Style="{StaticResource TabIdle}"/>
+          <Button x:Name="BtnSubPrefs" Content="Preferences" Style="{StaticResource TabIdle}"/>
+          <Border Width="1" Height="18" Background="{StaticResource Line}" Margin="10,0,4,0" VerticalAlignment="Center"/>
+          <Button x:Name="BtnSelAll" Content="Select All" Style="{StaticResource TabIdle}"/>
+          <Button x:Name="BtnSelNone" Content="Clear All" Style="{StaticResource TabIdle}"/>
+          <Button x:Name="BtnPreClear" Content="Reset" Style="{StaticResource TabIdle}"
+                  ToolTip="Back to the default selection: everything ticked except CAUTION"/>
           <Button x:Name="BtnDetect" Content="Detect Applied" Style="{StaticResource TabIdle}"/>
-          <TextBlock x:Name="TxtTweakHint" Text="" FontSize="11" Foreground="#FF74747E"
+          <Button x:Name="BtnMeasure" Content="Measure" Style="{StaticResource TabIdle}" Visibility="Collapsed"
+                  ToolTip="Read-only latency probe: preemption jitter (micro-stutter), timer granularity, DPC load. ~4 seconds, changes nothing."/>
+          <TextBlock x:Name="TxtTweakHint" Text="" FontSize="11" Foreground="{StaticResource Dim}"
                      VerticalAlignment="Center" Margin="14,0,0,0"/>
         </StackPanel>
 
-        <!-- two columns: the tweak groups stack down the left, preferences fill the right -->
+        <!-- three full-width panels, one per sub-tab, toggled by Select-OptTab -->
         <Grid Grid.Row="1">
-          <Grid.ColumnDefinitions>
-            <ColumnDefinition Width="*"/>
-            <ColumnDefinition Width="*"/>
-          </Grid.ColumnDefinitions>
-
-          <TextBlock x:Name="EmptyTweak" Grid.Column="0" Visibility="Collapsed" Foreground="#FF6E6E7A" FontSize="13"
+          <TextBlock x:Name="EmptyTweak" Visibility="Collapsed" Foreground="{StaticResource Dim}" FontSize="13"
                      HorizontalAlignment="Center" VerticalAlignment="Center" TextAlignment="Center"/>
-          <ScrollViewer Grid.Column="0" VerticalScrollBarVisibility="Auto" Margin="0,0,8,0">
+          <ScrollViewer x:Name="ScrollTweaks" VerticalScrollBarVisibility="Auto">
             <ItemsControl x:Name="ListTweak">
               <ItemsControl.GroupStyle>
                 <GroupStyle>
                   <GroupStyle.HeaderTemplate>
                     <DataTemplate>
                       <StackPanel Orientation="Horizontal" Margin="10,10,0,7">
-                        <Rectangle Width="3" Height="14" Fill="#FF3D7EF0" RadiusX="1.5" RadiusY="1.5" VerticalAlignment="Center"/>
-                        <TextBlock Text="{Binding Name}" FontSize="12.5" FontWeight="Bold" Foreground="#FFB9CFF6"
+                        <Rectangle Width="3" Height="14" Fill="{StaticResource Accent}" RadiusX="1.5" RadiusY="1.5" VerticalAlignment="Center"/>
+                        <TextBlock Text="{Binding Name}" FontSize="12.5" FontWeight="Bold" Foreground="{StaticResource Ink}"
                                    Margin="8,0,6,0" VerticalAlignment="Center"/>
-                        <TextBlock Text="{Binding ItemCount}" FontSize="11" Foreground="#FF6E6E7A" VerticalAlignment="Center"/>
+                        <TextBlock Text="{Binding ItemCount}" FontSize="11" Foreground="{StaticResource Dim}" VerticalAlignment="Center"/>
                       </StackPanel>
                     </DataTemplate>
                   </GroupStyle.HeaderTemplate>
-                  <!-- one column: Essential and Advanced stack as a single list -->
+                  <!-- one column: the default group and CAUTION stack as a single list -->
                   <GroupStyle.Panel>
                     <ItemsPanelTemplate>
-                      <UniformGrid Columns="1" VerticalAlignment="Top"/>
+                      <StackPanel VerticalAlignment="Top"/>
+                    </ItemsPanelTemplate>
+                  </GroupStyle.Panel>
+                </GroupStyle>
+              </ItemsControl.GroupStyle>
+              <ItemsControl.ItemTemplate>
+                <DataTemplate>
+                  <CheckBox Style="{StaticResource TweakRow}"
+                            IsChecked="{Binding IsSelected, UpdateSourceTrigger=PropertyChanged}"/>
+                </DataTemplate>
+              </ItemsControl.ItemTemplate>
+            </ItemsControl>
+          </ScrollViewer>
+
+          <!-- cleanup: one-time disk actions - no detection, no undo, each reports
+               reclaimed space. Kept apart so an hour of disk work never rides along
+               with the 90-second config pass. -->
+          <ScrollViewer x:Name="ScrollClean" Visibility="Collapsed" VerticalScrollBarVisibility="Auto">
+            <ItemsControl x:Name="ListClean">
+              <ItemsControl.GroupStyle>
+                <GroupStyle>
+                  <GroupStyle.HeaderTemplate>
+                    <DataTemplate>
+                      <StackPanel Orientation="Horizontal" Margin="10,10,0,7">
+                        <Rectangle Width="3" Height="14" Fill="{StaticResource Accent}" RadiusX="1.5" RadiusY="1.5" VerticalAlignment="Center"/>
+                        <TextBlock Text="{Binding Name}" FontSize="12.5" FontWeight="Bold" Foreground="{StaticResource Ink}"
+                                   Margin="8,0,6,0" VerticalAlignment="Center"/>
+                        <TextBlock Text="{Binding ItemCount}" FontSize="11" Foreground="{StaticResource Dim}" VerticalAlignment="Center"/>
+                      </StackPanel>
+                    </DataTemplate>
+                  </GroupStyle.HeaderTemplate>
+                  <GroupStyle.Panel>
+                    <ItemsPanelTemplate>
+                      <StackPanel VerticalAlignment="Top"/>
+                    </ItemsPanelTemplate>
+                  </GroupStyle.Panel>
+                </GroupStyle>
+              </ItemsControl.GroupStyle>
+              <ItemsControl.ItemTemplate>
+                <DataTemplate>
+                  <CheckBox Style="{StaticResource TweakRow}"
+                            IsChecked="{Binding IsSelected, UpdateSourceTrigger=PropertyChanged}"/>
+                </DataTemplate>
+              </ItemsControl.ItemTemplate>
+            </ItemsControl>
+          </ScrollViewer>
+
+          <!-- gaming: the gaming-customer persona. Config tweaks with real undo, run only
+               from this sub-tab's Apply, which also un-ticks the two business defaults
+               (Xbox removal, Game DVR off) that are wrong on a gaming machine. -->
+          <ScrollViewer x:Name="ScrollGame" Visibility="Collapsed" VerticalScrollBarVisibility="Auto">
+            <ItemsControl x:Name="ListGame">
+              <ItemsControl.GroupStyle>
+                <GroupStyle>
+                  <GroupStyle.HeaderTemplate>
+                    <DataTemplate>
+                      <StackPanel Orientation="Horizontal" Margin="10,10,0,7">
+                        <Rectangle Width="3" Height="14" Fill="{StaticResource Accent}" RadiusX="1.5" RadiusY="1.5" VerticalAlignment="Center"/>
+                        <TextBlock Text="{Binding Name}" FontSize="12.5" FontWeight="Bold" Foreground="{StaticResource Ink}"
+                                   Margin="8,0,6,0" VerticalAlignment="Center"/>
+                        <TextBlock Text="{Binding ItemCount}" FontSize="11" Foreground="{StaticResource Dim}" VerticalAlignment="Center"/>
+                      </StackPanel>
+                    </DataTemplate>
+                  </GroupStyle.HeaderTemplate>
+                  <GroupStyle.Panel>
+                    <ItemsPanelTemplate>
+                      <StackPanel VerticalAlignment="Top"/>
                     </ItemsPanelTemplate>
                   </GroupStyle.Panel>
                 </GroupStyle>
@@ -1243,23 +1719,23 @@ $xaml = @'
 
           <!-- preferences are TOGGLES: the tick is the state you want the machine in,
                pre-set from what it actually is, so only what you change gets applied -->
-          <ScrollViewer Grid.Column="1" VerticalScrollBarVisibility="Auto" Margin="8,0,0,0">
+          <ScrollViewer x:Name="ScrollPrefs" Visibility="Collapsed" VerticalScrollBarVisibility="Auto">
             <ItemsControl x:Name="ListPref">
               <ItemsControl.GroupStyle>
                 <GroupStyle>
                   <GroupStyle.HeaderTemplate>
                     <DataTemplate>
                       <StackPanel Orientation="Horizontal" Margin="10,10,0,7">
-                        <Rectangle Width="3" Height="14" Fill="#FF34D399" RadiusX="1.5" RadiusY="1.5" VerticalAlignment="Center"/>
-                        <TextBlock Text="{Binding Name}" FontSize="12.5" FontWeight="Bold" Foreground="#FFB9CFF6"
+                        <Rectangle Width="3" Height="14" Fill="{StaticResource Good}" RadiusX="1.5" RadiusY="1.5" VerticalAlignment="Center"/>
+                        <TextBlock Text="{Binding Name}" FontSize="12.5" FontWeight="Bold" Foreground="{StaticResource Ink}"
                                    Margin="8,0,6,0" VerticalAlignment="Center"/>
-                        <TextBlock Text="{Binding ItemCount}" FontSize="11" Foreground="#FF6E6E7A" VerticalAlignment="Center"/>
+                        <TextBlock Text="{Binding ItemCount}" FontSize="11" Foreground="{StaticResource Dim}" VerticalAlignment="Center"/>
                       </StackPanel>
                     </DataTemplate>
                   </GroupStyle.HeaderTemplate>
                   <GroupStyle.Panel>
                     <ItemsPanelTemplate>
-                      <UniformGrid Columns="1" VerticalAlignment="Top"/>
+                      <StackPanel VerticalAlignment="Top"/>
                     </ItemsPanelTemplate>
                   </GroupStyle.Panel>
                 </GroupStyle>
@@ -1300,8 +1776,8 @@ $xaml = @'
             </StackPanel>
           </Button>
           <StackPanel VerticalAlignment="Center">
-            <TextBlock Text="Accounts on this PC" FontSize="15" FontWeight="SemiBold" Foreground="#FFEDEDF2"/>
-            <TextBlock x:Name="TxtAcctHint" Text="" FontSize="11.5" Foreground="#FF80808C" Margin="0,3,0,0"
+            <TextBlock Text="Accounts on this PC" FontSize="15" FontWeight="SemiBold" Foreground="{StaticResource Ink}"/>
+            <TextBlock x:Name="TxtAcctHint" Text="" FontSize="11.5" Foreground="{StaticResource Muted}" Margin="0,3,0,0"
                        TextWrapping="Wrap"/>
           </StackPanel>
         </DockPanel>
@@ -1309,6 +1785,61 @@ $xaml = @'
         <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto">
           <StackPanel>
             <ItemsControl x:Name="ListAccounts">
+              <!-- Two sections, and the second one is FOLDED. Grouping alone still left seven
+                   rows to read past on a machine with one real user; the point was to stop
+                   the accounts Windows owns competing for attention with the ones people
+                   sign in with. The header stays visible and says how many are inside, so
+                   nothing is hidden - one click opens it. -->
+              <ItemsControl.GroupStyle>
+                <GroupStyle>
+                  <GroupStyle.ContainerStyle>
+                    <Style TargetType="GroupItem">
+                      <Setter Property="Template">
+                        <Setter.Value>
+                          <ControlTemplate TargetType="GroupItem">
+                            <StackPanel Margin="0,0,0,6">
+                              <ToggleButton x:Name="Head" IsChecked="True" Focusable="False" Cursor="Hand">
+                                <ToggleButton.Template>
+                                  <ControlTemplate TargetType="ToggleButton">
+                                    <Border Background="Transparent" Padding="8,10,0,5">
+                                      <StackPanel Orientation="Horizontal">
+                                        <Path x:Name="Chev" Data="M 3,5 L 7,9 L 11,5" Stroke="{StaticResource Dim}"
+                                              StrokeThickness="1.8" StrokeStartLineCap="Round" StrokeEndLineCap="Round"
+                                              Stretch="None" VerticalAlignment="Center" Margin="0,0,7,0"/>
+                                        <Rectangle Width="3" Height="14" Fill="{StaticResource Accent}" RadiusX="1.5" RadiusY="1.5"
+                                                   VerticalAlignment="Center"/>
+                                        <TextBlock Text="{Binding Name}" FontSize="12.5" FontWeight="Bold"
+                                                   Foreground="{StaticResource Ink}" Margin="8,0,6,0" VerticalAlignment="Center"/>
+                                        <TextBlock Text="{Binding ItemCount}" FontSize="11" Foreground="{StaticResource Dim}"
+                                                   VerticalAlignment="Center"/>
+                                      </StackPanel>
+                                    </Border>
+                                    <ControlTemplate.Triggers>
+                                      <Trigger Property="IsChecked" Value="False">
+                                        <Setter TargetName="Chev" Property="Data" Value="M 5,3 L 9,7 L 5,11"/>
+                                      </Trigger>
+                                    </ControlTemplate.Triggers>
+                                  </ControlTemplate>
+                                </ToggleButton.Template>
+                              </ToggleButton>
+                              <ItemsPresenter x:Name="Body"/>
+                            </StackPanel>
+                            <ControlTemplate.Triggers>
+                              <!-- folded by name, so the section that matters is the one you see -->
+                              <DataTrigger Binding="{Binding Name}" Value="Built into Windows, or switched off">
+                                <Setter TargetName="Head" Property="IsChecked" Value="False"/>
+                              </DataTrigger>
+                              <Trigger SourceName="Head" Property="IsChecked" Value="False">
+                                <Setter TargetName="Body" Property="Visibility" Value="Collapsed"/>
+                              </Trigger>
+                            </ControlTemplate.Triggers>
+                          </ControlTemplate>
+                        </Setter.Value>
+                      </Setter>
+                    </Style>
+                  </GroupStyle.ContainerStyle>
+                </GroupStyle>
+              </ItemsControl.GroupStyle>
               <ItemsControl.ItemTemplate>
                 <DataTemplate>
                   <CheckBox Style="{StaticResource AcctRow}"
@@ -1316,36 +1847,44 @@ $xaml = @'
                 </DataTemplate>
               </ItemsControl.ItemTemplate>
             </ItemsControl>
-            <TextBlock x:Name="EmptyAccounts" Visibility="Collapsed" Foreground="#FF6E6E7A" FontSize="12"
+            <TextBlock x:Name="EmptyAccounts" Visibility="Collapsed" Foreground="{StaticResource Dim}" FontSize="12"
                        TextWrapping="Wrap" Margin="12,16,10,0"/>
           </StackPanel>
         </ScrollViewer>
       </Grid>
 
-      <!-- DATA MIGRATION: unchanged for now, just promoted to its own tab -->
+      <!-- DATA BACKUP: one engine, three destinations. The mode strip decides which of the
+           two right-hand panels is shown; everything below it is shared. -->
       <Grid x:Name="PanelMigrate" Grid.Row="1" Visibility="Collapsed" Margin="18,8,18,0">
         <Grid.RowDefinitions>
+          <RowDefinition Height="Auto"/>
           <RowDefinition Height="Auto"/>
           <RowDefinition Height="Auto"/>
           <RowDefinition Height="*"/>
         </Grid.RowDefinitions>
 
-        <TextBlock Grid.Row="0" x:Name="TxtUserHint" Text="" FontSize="11.5" Foreground="#FF80808C"
+        <StackPanel Grid.Row="0" Orientation="Horizontal" Margin="2,0,0,10">
+          <Button x:Name="BtnModeProfile" Content="To another account" Style="{StaticResource TabActive}"/>
+          <Button x:Name="BtnModeFolder"  Content="To a drive, USB or PC" Style="{StaticResource TabIdle}"/>
+          <Button x:Name="BtnModeRestore" Content="Restore a backup"   Style="{StaticResource TabIdle}"/>
+        </StackPanel>
+
+        <TextBlock Grid.Row="1" x:Name="TxtUserHint" Text="" FontSize="11.5" Foreground="{StaticResource Muted}"
                    Margin="4,0,4,8" TextWrapping="Wrap"/>
 
-        <Grid Grid.Row="1" Margin="0,0,0,8">
+        <Grid Grid.Row="2" Margin="0,0,0,8">
           <Grid.ColumnDefinitions>
             <ColumnDefinition Width="*"/>
             <ColumnDefinition Width="Auto"/>
             <ColumnDefinition Width="*"/>
           </Grid.ColumnDefinitions>
 
-          <Border Grid.Column="0" CornerRadius="10" Background="#FF232329" BorderBrush="#FF34343C" BorderThickness="1" Padding="4,6">
-            <StackPanel>
+          <Border Grid.Column="0" CornerRadius="10" Background="{StaticResource Panel}" BorderBrush="{StaticResource Line}" BorderThickness="1" Padding="4,6">
+            <StackPanel x:Name="SrcColumn">
               <StackPanel Orientation="Horizontal" Margin="10,2,0,4">
-                <Rectangle Width="3" Height="13" Fill="#FFF87171" RadiusX="1.5" RadiusY="1.5" VerticalAlignment="Center"/>
-                <TextBlock Text="Copy FROM" FontSize="12" FontWeight="Bold" Foreground="#FFB9CFF6" Margin="8,0,6,0"/>
-                <TextBlock Text="the broken profile" FontSize="10.5" Foreground="#FF6E6E7A" VerticalAlignment="Center"/>
+                <Rectangle Width="3" Height="13" Fill="{StaticResource Bad}" RadiusX="1.5" RadiusY="1.5" VerticalAlignment="Center"/>
+                <TextBlock x:Name="TxtFromTitle" Text="Copy FROM" FontSize="12" FontWeight="Bold" Foreground="{StaticResource Ink}" Margin="8,0,6,0"/>
+                <TextBlock x:Name="TxtFromWhat" Text="the broken profile" FontSize="10.5" Foreground="{StaticResource Dim}" VerticalAlignment="Center"/>
               </StackPanel>
               <ScrollViewer MaxHeight="150" VerticalScrollBarVisibility="Auto">
                 <StackPanel>
@@ -1357,22 +1896,22 @@ $xaml = @'
                       </DataTemplate>
                     </ItemsControl.ItemTemplate>
                   </ItemsControl>
-                  <TextBlock x:Name="EmptySrc" Visibility="Collapsed" Foreground="#FF6E6E7A" FontSize="11.5"
+                  <TextBlock x:Name="EmptySrc" Visibility="Collapsed" Foreground="{StaticResource Dim}" FontSize="11.5"
                              TextWrapping="Wrap" Margin="12,8,10,6"/>
                 </StackPanel>
               </ScrollViewer>
             </StackPanel>
           </Border>
 
-          <TextBlock Grid.Column="1" Text="&#x2192;" FontSize="22" Foreground="#FF5A5A66"
+          <TextBlock Grid.Column="1" Text="&#x2192;" FontSize="22" Foreground="{StaticResource Dim}"
                      VerticalAlignment="Center" Margin="12,0,12,0"/>
 
-          <Border Grid.Column="2" CornerRadius="10" Background="#FF232329" BorderBrush="#FF34343C" BorderThickness="1" Padding="4,6">
-            <StackPanel>
+          <Border Grid.Column="2" CornerRadius="10" Background="{StaticResource Panel}" BorderBrush="{StaticResource Line}" BorderThickness="1" Padding="4,6">
+            <StackPanel x:Name="DstColumn">
               <StackPanel Orientation="Horizontal" Margin="10,2,0,4">
-                <Rectangle Width="3" Height="13" Fill="#FF34D399" RadiusX="1.5" RadiusY="1.5" VerticalAlignment="Center"/>
-                <TextBlock Text="Copy TO" FontSize="12" FontWeight="Bold" Foreground="#FFB9CFF6" Margin="8,0,6,0"/>
-                <TextBlock Text="the new profile" FontSize="10.5" Foreground="#FF6E6E7A" VerticalAlignment="Center"/>
+                <Rectangle Width="3" Height="13" Fill="{StaticResource Good}" RadiusX="1.5" RadiusY="1.5" VerticalAlignment="Center"/>
+                <TextBlock x:Name="TxtToTitle" Text="Copy TO" FontSize="12" FontWeight="Bold" Foreground="{StaticResource Ink}" Margin="8,0,6,0"/>
+                <TextBlock x:Name="TxtToWhat" Text="the new profile" FontSize="10.5" Foreground="{StaticResource Dim}" VerticalAlignment="Center"/>
               </StackPanel>
               <ScrollViewer MaxHeight="150" VerticalScrollBarVisibility="Auto">
                 <StackPanel>
@@ -1384,15 +1923,32 @@ $xaml = @'
                       </DataTemplate>
                     </ItemsControl.ItemTemplate>
                   </ItemsControl>
-                  <TextBlock x:Name="EmptyDst" Visibility="Collapsed" Foreground="#FF6E6E7A" FontSize="11.5"
+                      <TextBlock x:Name="EmptyDst" Visibility="Collapsed" Foreground="{StaticResource Dim}" FontSize="11.5"
                              TextWrapping="Wrap" Margin="12,8,10,6"/>
                 </StackPanel>
               </ScrollViewer>
+              <!-- Shown instead of the account list for a drive/USB backup or a restore. Same
+                   column, so the layout does not jump when the mode changes. -->
+              <StackPanel x:Name="PanelFolderPick" Visibility="Collapsed" Margin="10,2,10,6">
+                <TextBlock x:Name="TxtFolderWhat" Text="" FontSize="11.5" Foreground="{StaticResource Muted}"
+                           TextWrapping="Wrap" Margin="0,0,0,7"/>
+                <Border CornerRadius="7" Background="{StaticResource Raised}" BorderBrush="{StaticResource Line}"
+                        BorderThickness="1" Padding="9,7">
+                  <TextBlock x:Name="TxtFolderPath" Text="No folder chosen yet" FontSize="11.5"
+                             Foreground="{StaticResource Ink}" TextWrapping="Wrap"/>
+                </Border>
+                <StackPanel Orientation="Horizontal" Margin="0,8,0,0">
+                  <Button x:Name="BtnFolderPick" Content="Choose folder..." Style="{StaticResource GhostBtn}"/>
+                  <Button x:Name="BtnNetFind" Content="Find a PC..." Style="{StaticResource GhostBtn}" Margin="6,0,0,0"/>
+                </StackPanel>
+                <TextBlock x:Name="TxtFolderNote" Text="" FontSize="11" Foreground="{StaticResource Dim}"
+                           TextWrapping="Wrap" Margin="0,8,0,0"/>
+              </StackPanel>
             </StackPanel>
           </Border>
         </Grid>
 
-        <ScrollViewer Grid.Row="2" VerticalScrollBarVisibility="Auto">
+        <ScrollViewer Grid.Row="3" VerticalScrollBarVisibility="Auto">
           <StackPanel>
             <ItemsControl x:Name="ListMigrate">
               <ItemsControl.GroupStyle>
@@ -1400,10 +1956,10 @@ $xaml = @'
                   <GroupStyle.HeaderTemplate>
                     <DataTemplate>
                       <StackPanel Orientation="Horizontal" Margin="10,6,0,6">
-                        <Rectangle Width="3" Height="14" Fill="#FF3D7EF0" RadiusX="1.5" RadiusY="1.5" VerticalAlignment="Center"/>
-                        <TextBlock Text="{Binding Name}" FontSize="12" FontWeight="Bold" Foreground="#FFB9CFF6"
+                        <Rectangle Width="3" Height="14" Fill="{StaticResource Accent}" RadiusX="1.5" RadiusY="1.5" VerticalAlignment="Center"/>
+                        <TextBlock Text="{Binding Name}" FontSize="12" FontWeight="Bold" Foreground="{StaticResource Ink}"
                                    Margin="8,0,6,0" VerticalAlignment="Center"/>
-                        <TextBlock Text="{Binding ItemCount}" FontSize="11" Foreground="#FF6E6E7A" VerticalAlignment="Center"/>
+                        <TextBlock Text="{Binding ItemCount}" FontSize="11" Foreground="{StaticResource Dim}" VerticalAlignment="Center"/>
                       </StackPanel>
                     </DataTemplate>
                   </GroupStyle.HeaderTemplate>
@@ -1419,7 +1975,7 @@ $xaml = @'
                 </DataTemplate>
               </ItemsControl.ItemTemplate>
             </ItemsControl>
-            <TextBlock x:Name="EmptyMigrate" Visibility="Collapsed" Foreground="#FF6E6E7A" FontSize="12"
+            <TextBlock x:Name="EmptyMigrate" Visibility="Collapsed" Foreground="{StaticResource Dim}" FontSize="12"
                        TextWrapping="Wrap" Margin="12,20,10,0" HorizontalAlignment="Center" TextAlignment="Center"/>
           </StackPanel>
         </ScrollViewer>
@@ -1438,7 +1994,7 @@ $xaml = @'
 
         <DockPanel Grid.Row="0" Margin="4,4,0,8">
           <Button x:Name="BtnFwRescan" DockPanel.Dock="Right" Content="Rescan" Style="{StaticResource TabIdle}"/>
-          <TextBlock x:Name="TxtFwHint" Text="" FontSize="11" Foreground="#FF74747E"
+          <TextBlock x:Name="TxtFwHint" Text="" FontSize="11" Foreground="{StaticResource Dim}"
                      VerticalAlignment="Center" TextWrapping="Wrap"/>
         </DockPanel>
 
@@ -1446,7 +2002,7 @@ $xaml = @'
                     VerticalAlignment="Top" Margin="0,60,0,0">
           <Grid Width="34" Height="34" HorizontalAlignment="Center">
             <Ellipse Stroke="#22FFFFFF" StrokeThickness="3"/>
-            <Path Data="M 17,1.5 A 15.5,15.5 0 0 1 32.5,17" Stroke="#FF4C8DFF" StrokeThickness="3"
+            <Path Data="M 17,1.5 A 15.5,15.5 0 0 1 32.5,17" Stroke="{StaticResource Lift}" StrokeThickness="3"
                   StrokeStartLineCap="Round" Stretch="None" RenderTransformOrigin="0.5,0.5">
               <Path.RenderTransform><RotateTransform/></Path.RenderTransform>
               <Path.Triggers>
@@ -1460,7 +2016,7 @@ $xaml = @'
             </Path>
           </Grid>
           <TextBlock x:Name="TxtLoadFw" Text="Reading firewall rules..." FontSize="13"
-                     Foreground="#FFD6D6DE" HorizontalAlignment="Center" Margin="0,14,0,0"/>
+                     Foreground="{StaticResource Ink}" HorizontalAlignment="Center" Margin="0,14,0,0"/>
         </StackPanel>
 
         <Grid x:Name="FwSplit" Grid.Row="1">
@@ -1470,7 +2026,7 @@ $xaml = @'
           </Grid.ColumnDefinitions>
 
           <!-- left: blocked -->
-          <Border Grid.Column="0" CornerRadius="10" Background="#FF232329" BorderBrush="#FF34343C"
+          <Border Grid.Column="0" CornerRadius="10" Background="{StaticResource Panel}" BorderBrush="{StaticResource Line}"
                   BorderThickness="1" Margin="0,0,6,0" Padding="4,8">
             <Grid>
               <Grid.RowDefinitions>
@@ -1478,10 +2034,10 @@ $xaml = @'
                 <RowDefinition Height="*"/>
               </Grid.RowDefinitions>
               <StackPanel Grid.Row="0" Orientation="Horizontal" Margin="10,0,0,6">
-                <Rectangle Width="3" Height="14" Fill="#FFF87171" RadiusX="1.5" RadiusY="1.5" VerticalAlignment="Center"/>
+                <Rectangle Width="3" Height="14" Fill="{StaticResource Bad}" RadiusX="1.5" RadiusY="1.5" VerticalAlignment="Center"/>
                 <TextBlock x:Name="TxtFwBlockedHdr" Text="Blocked" FontSize="12.5" FontWeight="Bold"
-                           Foreground="#FFB9CFF6" Margin="8,0,6,0" VerticalAlignment="Center"/>
-                <TextBlock Text="no internet access" FontSize="10.5" Foreground="#FF6E6E7A" VerticalAlignment="Center"/>
+                           Foreground="{StaticResource Ink}" Margin="8,0,6,0" VerticalAlignment="Center"/>
+                <TextBlock Text="no internet access" FontSize="10.5" Foreground="{StaticResource Dim}" VerticalAlignment="Center"/>
               </StackPanel>
               <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto">
                 <StackPanel>
@@ -1491,10 +2047,10 @@ $xaml = @'
                         <GroupStyle.HeaderTemplate>
                           <DataTemplate>
                             <StackPanel Orientation="Horizontal" Margin="10,10,0,5">
-                              <Rectangle Width="3" Height="12" Fill="#FFF59E0B" RadiusX="1.5" RadiusY="1.5" VerticalAlignment="Center"/>
-                              <TextBlock Text="{Binding Name}" FontSize="11.5" FontWeight="Bold" Foreground="#FFB9CFF6"
+                              <Rectangle Width="3" Height="12" Fill="{StaticResource Warn}" RadiusX="1.5" RadiusY="1.5" VerticalAlignment="Center"/>
+                              <TextBlock Text="{Binding Name}" FontSize="11.5" FontWeight="Bold" Foreground="{StaticResource Ink}"
                                          Margin="8,0,6,0" VerticalAlignment="Center"/>
-                              <TextBlock Text="{Binding ItemCount}" FontSize="10.5" Foreground="#FF6E6E7A" VerticalAlignment="Center"/>
+                              <TextBlock Text="{Binding ItemCount}" FontSize="10.5" Foreground="{StaticResource Dim}" VerticalAlignment="Center"/>
                             </StackPanel>
                           </DataTemplate>
                         </GroupStyle.HeaderTemplate>
@@ -1507,7 +2063,7 @@ $xaml = @'
                       </DataTemplate>
                     </ItemsControl.ItemTemplate>
                   </ItemsControl>
-                  <TextBlock x:Name="EmptyFw" Visibility="Collapsed" Foreground="#FF6E6E7A" FontSize="11.5"
+                  <TextBlock x:Name="EmptyFw" Visibility="Collapsed" Foreground="{StaticResource Dim}" FontSize="11.5"
                              TextWrapping="Wrap" Margin="12,14,10,0"/>
                 </StackPanel>
               </ScrollViewer>
@@ -1515,7 +2071,7 @@ $xaml = @'
           </Border>
 
           <!-- right: everything else, with the stray rules grouped at the bottom -->
-          <Border Grid.Column="1" CornerRadius="10" Background="#FF232329" BorderBrush="#FF34343C"
+          <Border Grid.Column="1" CornerRadius="10" Background="{StaticResource Panel}" BorderBrush="{StaticResource Line}"
                   BorderThickness="1" Margin="6,0,0,0" Padding="4,8">
             <Grid>
               <Grid.RowDefinitions>
@@ -1523,10 +2079,10 @@ $xaml = @'
                 <RowDefinition Height="*"/>
               </Grid.RowDefinitions>
               <StackPanel Grid.Row="0" Orientation="Horizontal" Margin="10,0,0,6">
-                <Rectangle Width="3" Height="14" Fill="#FF64748B" RadiusX="1.5" RadiusY="1.5" VerticalAlignment="Center"/>
+                <Rectangle Width="3" Height="14" Fill="{StaticResource Dim}" RadiusX="1.5" RadiusY="1.5" VerticalAlignment="Center"/>
                 <TextBlock x:Name="TxtFwOpenHdr" Text="Not blocked" FontSize="12.5" FontWeight="Bold"
-                           Foreground="#FFB9CFF6" Margin="8,0,6,0" VerticalAlignment="Center"/>
-                <TextBlock Text="tick to block" FontSize="10.5" Foreground="#FF6E6E7A" VerticalAlignment="Center"/>
+                           Foreground="{StaticResource Ink}" Margin="8,0,6,0" VerticalAlignment="Center"/>
+                <TextBlock Text="tick to block" FontSize="10.5" Foreground="{StaticResource Dim}" VerticalAlignment="Center"/>
               </StackPanel>
               <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto">
                 <StackPanel>
@@ -1538,7 +2094,7 @@ $xaml = @'
                       </DataTemplate>
                     </ItemsControl.ItemTemplate>
                   </ItemsControl>
-                  <TextBlock x:Name="EmptyFwOpen" Visibility="Collapsed" Foreground="#FF6E6E7A" FontSize="11.5"
+                  <TextBlock x:Name="EmptyFwOpen" Visibility="Collapsed" Foreground="{StaticResource Dim}" FontSize="11.5"
                              TextWrapping="Wrap" Margin="12,14,10,0"/>
                 </StackPanel>
               </ScrollViewer>
@@ -1565,15 +2121,15 @@ $xaml = @'
                   <GroupStyle.HeaderTemplate>
                     <DataTemplate>
                       <StackPanel Orientation="Horizontal" Margin="10,6,0,6">
-                        <Rectangle Width="3" Height="14" Fill="#FF3D7EF0" RadiusX="1.5" RadiusY="1.5" VerticalAlignment="Center"/>
-                        <TextBlock Text="{Binding Name}" FontSize="12" FontWeight="Bold" Foreground="#FFB9CFF6"
+                        <Rectangle Width="3" Height="14" Fill="{StaticResource Accent}" RadiusX="1.5" RadiusY="1.5" VerticalAlignment="Center"/>
+                        <TextBlock Text="{Binding Name}" FontSize="12" FontWeight="Bold" Foreground="{StaticResource Ink}"
                                    Margin="8,0,6,0" VerticalAlignment="Center"/>
-                        <TextBlock Text="{Binding ItemCount}" FontSize="11" Foreground="#FF6E6E7A" VerticalAlignment="Center"/>
+                        <TextBlock Text="{Binding ItemCount}" FontSize="11" Foreground="{StaticResource Dim}" VerticalAlignment="Center"/>
                       </StackPanel>
                     </DataTemplate>
                   </GroupStyle.HeaderTemplate>
                   <GroupStyle.Panel>
-                    <ItemsPanelTemplate><UniformGrid Columns="1" VerticalAlignment="Top"/></ItemsPanelTemplate>
+                    <ItemsPanelTemplate><StackPanel VerticalAlignment="Top"/></ItemsPanelTemplate>
                   </GroupStyle.Panel>
                 </GroupStyle>
               </ItemsControl.GroupStyle>
@@ -1590,10 +2146,9 @@ $xaml = @'
         <ScrollViewer Grid.Column="1" VerticalScrollBarVisibility="Auto" Margin="8,0,0,0">
           <StackPanel>
             <StackPanel Orientation="Horizontal" Margin="10,6,0,6">
-              <Rectangle Width="3" Height="14" Fill="#FF34D399" RadiusX="1.5" RadiusY="1.5" VerticalAlignment="Center"/>
-              <TextBlock Text="Legacy Windows Panels" FontSize="12" FontWeight="Bold" Foreground="#FFB9CFF6"
+              <Rectangle Width="3" Height="14" Fill="{StaticResource Good}" RadiusX="1.5" RadiusY="1.5" VerticalAlignment="Center"/>
+              <TextBlock Text="Legacy Windows Panels" FontSize="12" FontWeight="Bold" Foreground="{StaticResource Ink}"
                          Margin="8,0,6,0" VerticalAlignment="Center"/>
-              <TextBlock Text="hover for the name, click to open" FontSize="10.5" Foreground="#FF6E6E7A" VerticalAlignment="Center"/>
             </StackPanel>
             <WrapPanel x:Name="PanelGrid" Orientation="Horizontal" Margin="6,4,0,0"/>
           </StackPanel>
@@ -1603,30 +2158,30 @@ $xaml = @'
       <!-- AutoLogon needs credentials, so it gets its own dialog rather than a checkbox -->
       <Border x:Name="AutoLogonOverlay" Grid.Row="0" Grid.RowSpan="3" CornerRadius="16" Background="#DD0E0E12"
               Visibility="Collapsed">
-        <Border CornerRadius="14" Background="#FF2A2A31" BorderThickness="1" BorderBrush="#FF3C3C45"
+        <Border CornerRadius="14" Background="{StaticResource Raised}" BorderThickness="1" BorderBrush="{StaticResource Line}"
                 Width="470" Padding="28,24" VerticalAlignment="Center" HorizontalAlignment="Center">
           <StackPanel>
             <TextBlock Text="Set up automatic sign-in" FontSize="17" FontWeight="SemiBold"/>
             <TextBlock Text="This PC will sign in as the account below every time it starts, with no prompt."
-                       FontSize="11.5" Foreground="#FF80808C" Margin="0,6,0,0" TextWrapping="Wrap"/>
+                       FontSize="11.5" Foreground="{StaticResource Muted}" Margin="0,6,0,0" TextWrapping="Wrap"/>
 
-            <TextBlock Text="Account name" FontSize="11.5" Foreground="#FFB6B6C0" Margin="0,18,0,5"/>
+            <TextBlock Text="Account name" FontSize="11.5" Foreground="{StaticResource Muted}" Margin="0,18,0,5"/>
             <Grid Height="34">
               <TextBox x:Name="TxtAlUser" Style="{StaticResource SearchBox}" VerticalContentAlignment="Center"/>
-              <TextBlock x:Name="HintAlUser" Text="an existing local account" Foreground="#FF6E6E7A"
+              <TextBlock x:Name="HintAlUser" Text="an existing local account" Foreground="{StaticResource Dim}"
                          FontSize="11.5" Margin="12,0,0,0" VerticalAlignment="Center" IsHitTestVisible="False"/>
             </Grid>
 
-            <TextBlock Text="Password" FontSize="11.5" Foreground="#FFB6B6C0" Margin="0,12,0,5"/>
+            <TextBlock Text="Password" FontSize="11.5" Foreground="{StaticResource Muted}" Margin="0,12,0,5"/>
             <Grid Height="34">
               <TextBox x:Name="TxtAlPw" Style="{StaticResource SearchBox}" VerticalContentAlignment="Center"/>
-              <TextBlock x:Name="HintAlPw" Text="blank if the account has none" Foreground="#FF6E6E7A"
+              <TextBlock x:Name="HintAlPw" Text="blank if the account has none" Foreground="{StaticResource Dim}"
                          FontSize="11.5" Margin="12,0,0,0" VerticalAlignment="Center" IsHitTestVisible="False"/>
             </Grid>
 
-            <Border CornerRadius="8" Background="#33F59E0B" BorderBrush="#FFF59E0B" BorderThickness="1"
+            <Border CornerRadius="8" Background="#33F59E0B" BorderBrush="{StaticResource Warn}" BorderThickness="1"
                     Padding="12,10" Margin="0,16,0,0">
-              <TextBlock TextWrapping="Wrap" FontSize="11.5" Foreground="#FFFBBF24"
+              <TextBlock TextWrapping="Wrap" FontSize="11.5" Foreground="{StaticResource Warn}"
                          Text="Windows stores this password in the registry in CLEAR TEXT, readable by any administrator on the machine. Anyone who reaches the keyboard is signed in as this user. Only use it on a kiosk or a machine that is already physically secured."/>
             </Border>
 
@@ -1638,17 +2193,255 @@ $xaml = @'
         </Border>
       </Border>
 
-      <!-- log tab -->
-      <Border x:Name="PanelLog" Grid.Row="1" Visibility="Collapsed" Margin="22,6,22,4"
-              CornerRadius="10" Background="#FF17171B" BorderThickness="1" BorderBrush="#FF2A2A31">
-        <!-- RichTextBox, not TextBox: each line is coloured by severity, and a TextBox has a
-             single Foreground for the whole control. The window-level implicit ScrollBar
-             style still applies inside it. -->
-        <RichTextBox x:Name="TxtLog" IsReadOnly="True" IsDocumentEnabled="False" BorderThickness="0"
-                     Background="Transparent" Foreground="#FF93C99B" FontFamily="Cascadia Mono, Consolas"
-                     FontSize="12" Padding="14,10" VerticalScrollBarVisibility="Auto"
-                     HorizontalScrollBarVisibility="Disabled"/>
+      <!-- Finding the other PC.
+           Its own dialog rather than fields crammed into the picker column: a scan produces one
+           list of machines, then a second list of the folders the chosen one shares. None of that
+           fits beside a folder path. It starts on its own when the dialog opens - that is the only
+           reason to be here - and the button is a retry. -->
+      <Border x:Name="NetOverlay" Grid.Row="0" Grid.RowSpan="3" CornerRadius="16" Background="#DD0E0E12"
+              Visibility="Collapsed">
+        <Border CornerRadius="14" Background="{StaticResource Raised}" BorderThickness="1" BorderBrush="{StaticResource Line}"
+                Width="640" Padding="28,24" VerticalAlignment="Center" HorizontalAlignment="Center">
+          <StackPanel>
+            <TextBlock Text="Find a PC on this network" FontSize="17" FontWeight="SemiBold"/>
+            <TextBlock Text="Windows cannot list the PCs on a network any more, so this asks every address on yours whether it will accept a file. It takes a few seconds. If a PC wants a sign-in, Windows will ask for it."
+                       FontSize="11.5" Foreground="{StaticResource Muted}" Margin="0,6,0,0" TextWrapping="Wrap"/>
+
+            <StackPanel Orientation="Horizontal" Margin="0,16,0,0">
+              <Button x:Name="BtnNetScan" Content="Scan again" Style="{StaticResource AccentBtn}" Padding="18,7"/>
+              <Button x:Name="BtnNetStop" Content="Stop" Style="{StaticResource GhostBtn}" Padding="18,7"
+                      Margin="8,0,0,0" Visibility="Collapsed"/>
+              <TextBlock x:Name="TxtNetStatus" Text="" FontSize="11.5" Foreground="{StaticResource Muted}"
+                         VerticalAlignment="Center" Margin="12,0,0,0" TextWrapping="Wrap"/>
+            </StackPanel>
+
+            <Grid Margin="0,14,0,0">
+              <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="*"/>
+              </Grid.ColumnDefinitions>
+              <StackPanel Grid.Column="0" Margin="0,0,6,0">
+                <TextBlock Text="PCs FOUND" FontSize="10" Foreground="{StaticResource Dim}" Margin="2,0,0,5"/>
+                <Border CornerRadius="8" Background="{StaticResource Panel}" BorderBrush="{StaticResource Line}" BorderThickness="1">
+                  <!-- Segoe MDL2 Assets is the icon font Windows draws Explorer with, and it is in-box
+                       on every machine this will run on - no image files to carry, and the glyphs
+                       match what the technician sees everywhere else in the OS. E977 is the
+                       desktop-PC glyph. -->
+                  <ListBox x:Name="ListNetHosts" Background="Transparent" BorderThickness="0" Height="152"
+                           ItemContainerStyle="{StaticResource NetRow}"
+                           Foreground="{StaticResource Ink}" FontSize="11.5"
+                           ScrollViewer.HorizontalScrollBarVisibility="Disabled">
+                    <ListBox.ItemTemplate>
+                      <DataTemplate>
+                        <StackPanel Orientation="Horizontal">
+                          <TextBlock Text="&#xE977;" FontFamily="Segoe MDL2 Assets" FontSize="19"
+                                     Foreground="{StaticResource Lift}" VerticalAlignment="Center" Margin="0,0,11,0"/>
+                          <StackPanel VerticalAlignment="Center">
+                            <TextBlock Text="{Binding Title}" FontSize="12" Foreground="{StaticResource Ink}"
+                                       TextTrimming="CharacterEllipsis"/>
+                            <TextBlock Text="{Binding Sub}" FontSize="10.5" Foreground="{StaticResource Dim}"
+                                       Margin="0,1,0,0" TextTrimming="CharacterEllipsis"/>
+                          </StackPanel>
+                        </StackPanel>
+                      </DataTemplate>
+                    </ListBox.ItemTemplate>
+                  </ListBox>
+                </Border>
+              </StackPanel>
+              <StackPanel Grid.Column="1" Margin="6,0,0,0">
+                <TextBlock Text="WHAT IT SHARES - OPEN ONE TO GO INSIDE" FontSize="10" Foreground="{StaticResource Dim}" Margin="2,0,0,5"/>
+                <Border CornerRadius="8" Background="{StaticResource Panel}" BorderBrush="{StaticResource Line}" BorderThickness="1">
+                  <!-- A TREE, not a flat list, because a share is a door and not a destination.
+                       The technician wants the backup in a folder INSIDE it - and on this very
+                       network three of the four shares are whole drives, so the share root is
+                       almost never the right answer.
+                       Children load when a node is opened, never up front: expanding the root of
+                       a shared drive across a network would otherwise mean enumerating somebody
+                       entire disk before the window would paint. -->
+                  <TreeView x:Name="TreeNetShares" Background="Transparent" BorderThickness="0" Height="152"
+                            ItemContainerStyle="{StaticResource NetTree}"
+                            Foreground="{StaticResource Ink}" FontSize="11.5"/>
+                </Border>
+              </StackPanel>
+            </Grid>
+
+            <!-- No username and password boxes here, on purpose.
+                 Two boxes sitting there permanently say nothing about whether a sign-in is even
+                 needed, and most of the time it is not. Windows own credential prompt is raised
+                 instead, and only once the machine has been reached and has actually refused - so
+                 the box appearing is itself the proof that the PC was found. -->
+            <TextBlock Text="Or type the folder in yourself" FontSize="11.5" Foreground="{StaticResource Muted}" Margin="0,13,0,5"/>
+            <Grid Height="34">
+              <TextBox x:Name="TxtNetManual" Style="{StaticResource SearchBox}" VerticalContentAlignment="Center"/>
+              <TextBlock x:Name="HintNetManual" Text="\\PC-NAME\SharedFolder" Foreground="{StaticResource Dim}"
+                         FontSize="11.5" Margin="12,0,0,0" VerticalAlignment="Center" IsHitTestVisible="False"/>
+            </Grid>
+
+            <TextBlock x:Name="TxtNetNote" Text="" FontSize="11" Foreground="{StaticResource Dim}"
+                       TextWrapping="Wrap" Margin="0,11,0,0"/>
+
+            <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,18,0,0">
+              <Button x:Name="BtnNetCancel" Content="Cancel" Style="{StaticResource GhostBtn}" Padding="22,8"/>
+              <Button x:Name="BtnNetUse" Content="Use this folder" Style="{StaticResource AccentBtn}" Padding="26,8"/>
+            </StackPanel>
+          </StackPanel>
+        </Border>
       </Border>
+
+      <!-- log tab -->
+      <!-- Activity: a list of runs on the left, and either one run's report or the live log
+           on the right.
+
+           It used to be this tab and nothing else: one RichTextBox that Add-Log appended to.
+           After twenty applications that is a wall of interleaved lines, and finding which two
+           failed means reading all of it. Worse, the per-app outcomes DID exist - $script:BatchRows
+           carries them, and carries them well - and were then thrown away, because that
+           collection is cleared when the next batch starts.
+
+           So a finished batch now writes itself down, and this is where you read it. It does not
+           open by itself: it waits here until you come and look. -->
+      <Grid x:Name="PanelLog" Grid.Row="1" Visibility="Collapsed" Margin="22,6,22,4">
+        <Grid.ColumnDefinitions>
+          <ColumnDefinition Width="212"/>
+          <ColumnDefinition Width="*"/>
+        </Grid.ColumnDefinitions>
+
+        <Border Grid.Column="0" CornerRadius="10" Background="{StaticResource Panel}" BorderThickness="1"
+                BorderBrush="{StaticResource Raised}" Margin="0,0,10,0">
+          <DockPanel>
+            <TextBlock DockPanel.Dock="Top" Text="RUNS" FontSize="10" Foreground="{StaticResource Dim}"
+                       Margin="14,12,0,8"/>
+            <ListBox x:Name="ListRuns" Background="Transparent" BorderThickness="0" Padding="6,0,6,8"
+                     ScrollViewer.HorizontalScrollBarVisibility="Disabled">
+              <ListBox.ItemContainerStyle>
+                <Style TargetType="ListBoxItem">
+                  <Setter Property="Padding" Value="0"/>
+                  <Setter Property="Margin" Value="0,0,0,3"/>
+                  <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
+                  <Setter Property="Template">
+                    <Setter.Value>
+                      <ControlTemplate TargetType="ListBoxItem">
+                        <Border x:Name="rb" CornerRadius="7" Background="Transparent" Padding="9,7">
+                          <ContentPresenter/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                          <Trigger Property="IsMouseOver" Value="True">
+                            <Setter TargetName="rb" Property="Background" Value="{StaticResource Raised}"/>
+                          </Trigger>
+                          <Trigger Property="IsSelected" Value="True">
+                            <Setter TargetName="rb" Property="Background" Value="#FF1B2233"/>
+                          </Trigger>
+                        </ControlTemplate.Triggers>
+                      </ControlTemplate>
+                    </Setter.Value>
+                  </Setter>
+                </Style>
+              </ListBox.ItemContainerStyle>
+              <ListBox.ItemTemplate>
+                <DataTemplate>
+                  <StackPanel>
+                    <TextBlock Text="{Binding Head}" FontSize="12" Foreground="{StaticResource Ink}"
+                               TextTrimming="CharacterEllipsis"/>
+                    <TextBlock Text="{Binding Sub}" FontSize="10.5" Foreground="{Binding SubColour}"
+                               Margin="0,2,0,0" TextTrimming="CharacterEllipsis"/>
+                  </StackPanel>
+                </DataTemplate>
+              </ListBox.ItemTemplate>
+            </ListBox>
+          </DockPanel>
+        </Border>
+
+        <Border Grid.Column="1" CornerRadius="10" Background="{StaticResource Panel}" BorderThickness="1"
+                BorderBrush="{StaticResource Raised}">
+          <Grid>
+            <!-- RichTextBox, not TextBox: each line is coloured by severity, and a TextBox has a
+                 single Foreground for the whole control. -->
+            <RichTextBox x:Name="TxtLog" IsReadOnly="True" IsDocumentEnabled="False" BorderThickness="0"
+                         Background="Transparent" Foreground="{StaticResource Good}" FontFamily="Cascadia Mono, Consolas"
+                         FontSize="12" Padding="14,10" VerticalScrollBarVisibility="Auto"
+                         HorizontalScrollBarVisibility="Disabled"/>
+
+            <Grid x:Name="RunReport" Visibility="Collapsed" Margin="16,14,16,12">
+              <Grid.RowDefinitions>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="*"/>
+                <RowDefinition Height="Auto"/>
+              </Grid.RowDefinitions>
+
+              <StackPanel Grid.Row="0">
+                <TextBlock x:Name="TxtRunTitle" Text="" FontSize="15" FontWeight="SemiBold"/>
+                <TextBlock x:Name="TxtRunSub" Text="" FontSize="11.5" Foreground="{StaticResource Dim}"
+                           Margin="0,3,0,0"/>
+              </StackPanel>
+
+              <!-- the counts double as the filter: press one and the list below shows only those -->
+              <ItemsControl x:Name="ListRunCounts" Grid.Row="1" Margin="0,12,0,10">
+                <ItemsControl.ItemsPanel>
+                  <ItemsPanelTemplate><WrapPanel/></ItemsPanelTemplate>
+                </ItemsControl.ItemsPanel>
+                <ItemsControl.ItemTemplate>
+                  <DataTemplate>
+                    <Button Tag="{Binding Key}" Margin="0,0,7,0" Padding="0" BorderThickness="0"
+                            Background="Transparent" Cursor="Hand">
+                      <Button.Template>
+                        <ControlTemplate TargetType="Button">
+                          <Border CornerRadius="8" Padding="12,7" Background="{Binding Fill}"
+                                  BorderThickness="1" BorderBrush="{Binding Edge}">
+                            <StackPanel Orientation="Horizontal">
+                              <TextBlock Text="{Binding Count}" FontSize="16" FontWeight="Bold"
+                                         Foreground="{Binding Ink}"/>
+                              <TextBlock Text="{Binding Label}" FontSize="11.5" Margin="7,0,0,0"
+                                         VerticalAlignment="Bottom" Foreground="{StaticResource Dim}"/>
+                            </StackPanel>
+                          </Border>
+                        </ControlTemplate>
+                      </Button.Template>
+                    </Button>
+                  </DataTemplate>
+                </ItemsControl.ItemTemplate>
+              </ItemsControl>
+
+              <ScrollViewer Grid.Row="2" VerticalScrollBarVisibility="Auto">
+                <ItemsControl x:Name="ListRunItems">
+                  <ItemsControl.ItemTemplate>
+                    <DataTemplate>
+                      <Border CornerRadius="8" Padding="11,8" Margin="0,0,0,4"
+                              Background="{StaticResource Sunken}">
+                        <DockPanel LastChildFill="True">
+                          <Border DockPanel.Dock="Right" CornerRadius="5" Padding="8,2" VerticalAlignment="Center"
+                                  Background="{Binding Fill}" BorderThickness="1" BorderBrush="{Binding Edge}">
+                            <TextBlock Text="{Binding Outcome}" FontSize="10.5" Foreground="{Binding Ink}"/>
+                          </Border>
+                          <TextBlock DockPanel.Dock="Right" Text="{Binding SizeText}" FontSize="11"
+                                     Foreground="{StaticResource Dim}" VerticalAlignment="Center" Margin="10,0,10,0"/>
+                          <StackPanel>
+                            <TextBlock Text="{Binding Name}" FontSize="12.3" Foreground="{StaticResource Ink}"
+                                       TextTrimming="CharacterEllipsis"/>
+                            <TextBlock Text="{Binding Detail}" FontSize="11" Foreground="{Binding DetailInk}"
+                                       Margin="0,2,0,0" TextWrapping="Wrap"/>
+                          </StackPanel>
+                        </DockPanel>
+                      </Border>
+                    </DataTemplate>
+                  </ItemsControl.ItemTemplate>
+                </ItemsControl>
+              </ScrollViewer>
+
+              <DockPanel Grid.Row="3" Margin="0,10,0,0" LastChildFill="True">
+                <Button x:Name="BtnRunRetry" DockPanel.Dock="Right" Content="Retry failed"
+                        Style="{StaticResource AccentBtn}" Padding="18,7" Visibility="Collapsed"/>
+                <Button x:Name="BtnRunSave" DockPanel.Dock="Right" Content="Save report..."
+                        Style="{StaticResource GhostBtn}" Padding="14,7" Margin="0,0,8,0"/>
+                <Button x:Name="BtnRunCopy" DockPanel.Dock="Right" Content="Copy report"
+                        Style="{StaticResource GhostBtn}" Padding="14,7" Margin="0,0,8,0"/>
+                <TextBlock x:Name="TxtRunFoot" Text="" FontSize="11" Foreground="{StaticResource Dim}"
+                           VerticalAlignment="Center" TextTrimming="CharacterEllipsis" Margin="0,0,12,0"/>
+              </DockPanel>
+            </Grid>
+          </Grid>
+        </Border>
+      </Grid>
 
       <!-- bottom bar -->
       <Grid Grid.Row="2" Margin="22,10,22,18">
@@ -1656,31 +2449,149 @@ $xaml = @'
           <RowDefinition Height="Auto"/>
           <RowDefinition Height="Auto"/>
           <RowDefinition Height="Auto"/>
+          <RowDefinition Height="Auto"/>
         </Grid.RowDefinitions>
-        <StackPanel x:Name="RowNow" Grid.Row="0" Orientation="Horizontal" Margin="2,0,2,8" Visibility="Collapsed">
-          <Ellipse x:Name="DotNow" Width="9" Height="9" Fill="#FF6A6A74" VerticalAlignment="Center"/>
-          <TextBlock x:Name="TxtNow" Text="" FontSize="12.5" FontWeight="SemiBold" Foreground="#FFD6D6DE"
+
+        <!-- Batch strip: the progress view, kept OFF the catalog.
+
+             The list above is a catalog and stays one: it never reorders, and ticking a row
+             changes a checkbox and nothing else, so a row stays where the technician learned
+             it was. Selecting two apps whose names start with A and Y used to mean scrolling
+             between them to watch both - the list was the catalog AND the progress view, and
+             those want opposite layouts. The batch gets its own surface instead.
+
+             Bounded height with its OWN scrollbar is not decoration: without the cap, eight
+             selected apps fill the window and the scrolling problem comes back wearing a
+             different hat.
+
+             It stays on screen after the batch finishes, until dismissed. Snapping back to the
+             catalog at completion hides the results at the exact moment they want reading. -->
+        <Border x:Name="BatchStrip" Grid.Row="0" Visibility="Collapsed" Margin="2,0,2,10"
+                CornerRadius="10" Background="{StaticResource Panel}" BorderBrush="{StaticResource Line}" BorderThickness="1">
+          <Grid>
+            <Grid.RowDefinitions>
+              <RowDefinition Height="Auto"/>
+              <RowDefinition Height="Auto"/>
+            </Grid.RowDefinitions>
+            <!-- The header never moves and never goes away while a batch exists. It is the one
+                 place the batch is controlled from, and collapsed it still carries the counts -
+                 so getting the strip out of the way never costs you the information.
+
+                 Collapse, not dismiss. During a two-hour download the catalog above is dead
+                 weight and the strip is the only thing being read; between batches it is the
+                 other way round. What was wanted was a way to give the space back, reversibly,
+                 from the same spot every time - not a way to make the progress view vanish with
+                 the way back hidden somewhere else. -->
+            <DockPanel x:Name="BatchHead" Grid.Row="0" Margin="12,8,6,2" Background="Transparent"
+                       Cursor="Hand" ToolTip="Click to collapse or expand">
+              <Rectangle DockPanel.Dock="Left" Width="3" Height="12" Fill="{StaticResource Accent}" RadiusX="1.5" RadiusY="1.5"
+                         VerticalAlignment="Center"/>
+              <!-- a real close, offered only once the batch has ended: there is nothing live left
+                   to lose track of, and the next batch brings the strip back by itself -->
+              <Button x:Name="BtnBatchClose" DockPanel.Dock="Right" Style="{StaticResource IconBtn}"
+                      Width="26" Height="22" Visibility="Collapsed" ToolTip="Clear these results">
+                <Path Data="M 5,5 L 13,13 M 13,5 L 5,13" Stroke="{StaticResource Muted}" StrokeThickness="1.5"
+                      StrokeStartLineCap="Round" StrokeEndLineCap="Round"/>
+              </Button>
+              <Button x:Name="BtnBatchFold" DockPanel.Dock="Right" Style="{StaticResource IconBtn}"
+                      Width="26" Height="22" ToolTip="Collapse or expand">
+                <Path x:Name="BatchChevron" Data="M 4,11 L 9,6 L 14,11" Stroke="{StaticResource Muted}"
+                      StrokeThickness="1.6" StrokeStartLineCap="Round" StrokeEndLineCap="Round"
+                      StrokeLineJoin="Round"/>
+              </Button>
+              <TextBlock x:Name="TxtBatchHead" Text="BATCH" FontSize="11" FontWeight="Bold"
+                         Foreground="{StaticResource Ink}" Margin="8,0,8,0" VerticalAlignment="Center"
+                         TextTrimming="CharacterEllipsis"/>
+            </DockPanel>
+            <!-- 230 = eight rows with no scrollbar. Measured off the render, not guessed: rows sit 27px
+                 apart, and eight is the biggest batch worth planning for. Past that it scrolls,
+                 which is the point of the cap - the alternative is the strip eating the window
+                 and bringing back the scrolling problem it exists to remove. -->
+            <ScrollViewer x:Name="BatchScroll" Grid.Row="1" MaxHeight="230" VerticalScrollBarVisibility="Auto" Margin="4,0,4,6">
+              <ItemsControl x:Name="ListBatch">
+                <ItemsControl.ItemTemplate>
+                  <DataTemplate>
+                    <Grid Margin="8,1">
+                      <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="160"/>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="Auto"/>
+                      </Grid.ColumnDefinitions>
+                      <!-- the same indicator the catalog row uses, so one app reads identically
+                           in both places -->
+                      <Grid Grid.Column="0" Width="26" Height="26" VerticalAlignment="Center">
+                        <Ellipse Margin="5" Stroke="#2AFFFFFF" StrokeThickness="2" Visibility="{Binding RingTrackVis}"/>
+                        <Path Data="{Binding RingData}" Stroke="{StaticResource Lift}" StrokeThickness="2"
+                              StrokeStartLineCap="Round" StrokeEndLineCap="Round" Stretch="None"
+                              Visibility="{Binding RingTrackVis}"/>
+                        <Path Data="M 13,3 A 10,10 0 0 1 23,13" Stroke="{StaticResource Lift}" StrokeThickness="2"
+                              StrokeStartLineCap="Round" Stretch="None" Visibility="{Binding SpinnerVis}"
+                              RenderTransformOrigin="0.5,0.5">
+                          <Path.RenderTransform><RotateTransform/></Path.RenderTransform>
+                          <Path.Triggers>
+                            <EventTrigger RoutedEvent="FrameworkElement.Loaded">
+                              <BeginStoryboard>
+                                <Storyboard>
+                                  <DoubleAnimation Storyboard.TargetProperty="(UIElement.RenderTransform).(RotateTransform.Angle)"
+                                                   From="0" To="360" Duration="0:0:0.9" RepeatBehavior="Forever"/>
+                                </Storyboard>
+                              </BeginStoryboard>
+                            </EventTrigger>
+                          </Path.Triggers>
+                        </Path>
+                        <Border CornerRadius="13" Margin="4" Background="{Binding BadgeBg}"
+                                Visibility="{Binding BadgeVis}">
+                          <Path Data="{Binding BadgeData}" Stroke="White" StrokeThickness="2"
+                                StrokeStartLineCap="Round" StrokeEndLineCap="Round" StrokeLineJoin="Round"
+                                Stretch="Uniform" Margin="4"/>
+                        </Border>
+                      </Grid>
+                      <TextBlock Grid.Column="1" Text="{Binding Name}" FontSize="12" Foreground="{StaticResource Ink}"
+                                 VerticalAlignment="Center" Margin="8,0,8,0"
+                                 TextTrimming="CharacterEllipsis" ToolTip="{Binding Name}"/>
+                      <TextBlock Grid.Column="2" Text="{Binding Status}" FontSize="11.5" FontWeight="SemiBold"
+                                 Foreground="{Binding StatusFg}" VerticalAlignment="Center"
+                                 TextTrimming="CharacterEllipsis" ToolTip="{Binding Status}"/>
+                      <!-- shown only while this app can still be pulled out; see Test-Removable -->
+                      <Button Grid.Column="3" Style="{StaticResource IconBtn}" Width="26" Height="22"
+                              Tag="{Binding}" Visibility="{Binding RemoveVis}"
+                              ToolTip="Remove from this batch">
+                        <Path Data="M 5,5 L 13,13 M 13,5 L 5,13" Stroke="{StaticResource Muted}" StrokeThickness="1.5"
+                              StrokeStartLineCap="Round" StrokeEndLineCap="Round"/>
+                      </Button>
+                    </Grid>
+                  </DataTemplate>
+                </ItemsControl.ItemTemplate>
+              </ItemsControl>
+            </ScrollViewer>
+          </Grid>
+        </Border>
+
+        <StackPanel x:Name="RowNow" Grid.Row="1" Orientation="Horizontal" Margin="2,0,2,8" Visibility="Collapsed">
+          <Ellipse x:Name="DotNow" Width="9" Height="9" Fill="{StaticResource Dim}" VerticalAlignment="Center"/>
+          <TextBlock x:Name="TxtNow" Text="" FontSize="12.5" FontWeight="SemiBold" Foreground="{StaticResource Ink}"
                      Margin="9,0,0,0" VerticalAlignment="Center"/>
         </StackPanel>
-        <Grid x:Name="RowProgress" Grid.Row="1" Margin="2,0,2,10" Visibility="Collapsed">
+        <Grid x:Name="RowProgress" Grid.Row="2" Margin="2,0,2,10" Visibility="Collapsed">
           <Grid.ColumnDefinitions>
             <ColumnDefinition Width="*"/>
             <ColumnDefinition Width="Auto"/>
           </Grid.ColumnDefinitions>
           <ProgressBar x:Name="BarOverall" Style="{StaticResource ThinProgress}" Height="5" Minimum="0" Maximum="100"
                        VerticalAlignment="Center"/>
-          <TextBlock x:Name="TxtOverall" Grid.Column="1" Text="" FontSize="11" Foreground="#FF80808C"
+          <TextBlock x:Name="TxtOverall" Grid.Column="1" Text="" FontSize="11" Foreground="{StaticResource Muted}"
                      Margin="12,0,0,0" VerticalAlignment="Center"/>
         </Grid>
-        <DockPanel Grid.Row="2">
-          <TextBlock x:Name="TxtStatus" Text="Ready" Foreground="#FF80808C" VerticalAlignment="Center" FontSize="12"/>
+        <DockPanel Grid.Row="3">
+          <TextBlock x:Name="TxtStatus" Text="Ready" Foreground="{StaticResource Muted}" VerticalAlignment="Center" FontSize="12"/>
           <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
             <Button x:Name="BtnPause" Content="Pause" Style="{StaticResource GhostBtn}" Visibility="Collapsed"/>
             <Button x:Name="BtnCancel" Content="Cancel" Style="{StaticResource GhostBtn}" Visibility="Collapsed"/>
             <Button x:Name="BtnRefresh" Style="{StaticResource GhostBtn}">
               <StackPanel Orientation="Horizontal">
                 <Path Data="M 4,10 A 8,8 0 0 1 18.5,7 M 18.5,2.5 L 18.5,7 L 14,7 M 20,14 A 8,8 0 0 1 5.5,17 M 5.5,21.5 L 5.5,17 L 10,17"
-                      Stroke="#FFD6D6DE" StrokeThickness="1.7" StrokeStartLineCap="Round" StrokeEndLineCap="Round"
+                      Stroke="{StaticResource Ink}" StrokeThickness="1.7" StrokeStartLineCap="Round" StrokeEndLineCap="Round"
                       Width="15" Height="15" Stretch="Uniform"/>
                 <TextBlock Text="Refresh" Margin="8,0,0,0"/>
               </StackPanel>
@@ -1698,7 +2609,7 @@ $xaml = @'
             <Button x:Name="BtnSaveLog" Content="Save Log..." Style="{StaticResource GhostBtn}"
                     Visibility="Collapsed"/>
             <Button x:Name="BtnFwRemoveAll" Content="Remove ALL blocks" Style="{StaticResource GhostBtn}"
-                    Foreground="#FFF87171" Visibility="Collapsed"
+                    Foreground="{StaticResource Bad}" Visibility="Collapsed"
                     ToolTip="Deletes every outbound block rule this tool can account for, including ones left by other scripts."/>
             <Button x:Name="BtnRunFix" Content="Run Selected" Style="{StaticResource AccentBtn}"
                     Visibility="Collapsed"/>
@@ -1706,7 +2617,7 @@ $xaml = @'
                     Visibility="Collapsed"/>
             <Button x:Name="BtnFwBlock" Content="Block Internet Access" Style="{StaticResource AccentBtn}"
                     Visibility="Collapsed"/>
-            <Button x:Name="BtnMigrate" Content="Copy Profile Data" Style="{StaticResource AccentBtn}"
+            <Button x:Name="BtnMigrate" Content="Back Up Data" Style="{StaticResource AccentBtn}"
                     Visibility="Collapsed"/>
             <Button x:Name="BtnTweakUndo" Content="Undo Selected" Style="{StaticResource GhostBtn}"
                     Visibility="Collapsed"/>
@@ -1715,7 +2626,7 @@ $xaml = @'
                 <Path Data="M 5,13 L 10,18 L 19,6" Stroke="White" StrokeThickness="2"
                       StrokeStartLineCap="Round" StrokeEndLineCap="Round" StrokeLineJoin="Round"
                       Width="15" Height="15" Stretch="Uniform"/>
-                <TextBlock Text="Apply Tweaks" Margin="8,0,0,0"/>
+                <TextBlock x:Name="TxtTweakApplyBtn" Text="Apply Tweaks" Margin="8,0,0,0"/>
               </StackPanel>
             </Button>
             <Button x:Name="BtnForce" Content="Force Remove" Style="{StaticResource GhostBtn}"
@@ -1729,7 +2640,7 @@ $xaml = @'
       <!-- deep-clean preview overlay: the kill list, reviewed before anything is deleted -->
       <Border x:Name="WipeOverlay" Grid.Row="0" Grid.RowSpan="3" CornerRadius="16" Background="#DD0E0E12"
               Visibility="Collapsed">
-        <Border CornerRadius="14" Background="#FF2A2A31" BorderThickness="1" BorderBrush="#FF3C3C45"
+        <Border CornerRadius="14" Background="{StaticResource Raised}" BorderThickness="1" BorderBrush="{StaticResource Line}"
                 Width="620" MaxHeight="520" Padding="26,22" VerticalAlignment="Center" HorizontalAlignment="Center">
           <Grid>
             <Grid.RowDefinitions>
@@ -1739,9 +2650,9 @@ $xaml = @'
               <RowDefinition Height="Auto"/>
             </Grid.RowDefinitions>
             <TextBlock Grid.Row="0" Text="Leftovers found" FontSize="16" FontWeight="SemiBold"/>
-            <TextBlock x:Name="TxtWipeSub" Grid.Row="1" Text="" Foreground="#FFB6B6C0" TextWrapping="Wrap"
+            <TextBlock x:Name="TxtWipeSub" Grid.Row="1" Text="" Foreground="{StaticResource Muted}" TextWrapping="Wrap"
                        Margin="0,8,0,12" FontSize="12.5"/>
-            <Border Grid.Row="2" CornerRadius="9" Background="#FF17171B" BorderThickness="1" BorderBrush="#FF33333B">
+            <Border Grid.Row="2" CornerRadius="9" Background="{StaticResource Panel}" BorderThickness="1" BorderBrush="{StaticResource Raised}">
               <ScrollViewer VerticalScrollBarVisibility="Auto" Margin="4">
                 <ItemsControl x:Name="ListWipe">
                   <ItemsControl.GroupStyle>
@@ -1749,10 +2660,10 @@ $xaml = @'
                       <GroupStyle.HeaderTemplate>
                         <DataTemplate>
                           <StackPanel Orientation="Horizontal" Margin="8,10,0,4">
-                            <Rectangle Width="3" Height="12" Fill="#FFF87171" RadiusX="1.5" RadiusY="1.5" VerticalAlignment="Center"/>
-                            <TextBlock Text="{Binding Name}" FontSize="11.5" FontWeight="Bold" Foreground="#FFE9E9EE"
+                            <Rectangle Width="3" Height="12" Fill="{StaticResource Bad}" RadiusX="1.5" RadiusY="1.5" VerticalAlignment="Center"/>
+                            <TextBlock Text="{Binding Name}" FontSize="11.5" FontWeight="Bold" Foreground="{StaticResource Ink}"
                                        Margin="7,0,6,0" VerticalAlignment="Center"/>
-                            <TextBlock Text="{Binding ItemCount}" FontSize="10.5" Foreground="#FF6E6E7A" VerticalAlignment="Center"/>
+                            <TextBlock Text="{Binding ItemCount}" FontSize="10.5" Foreground="{StaticResource Dim}" VerticalAlignment="Center"/>
                           </StackPanel>
                         </DataTemplate>
                       </GroupStyle.HeaderTemplate>
@@ -1760,7 +2671,7 @@ $xaml = @'
                   </ItemsControl.GroupStyle>
                   <ItemsControl.ItemTemplate>
                     <DataTemplate>
-                      <Grid Margin="8,4">
+                      <Grid Margin="8,4" Opacity="{Binding RowOpacity}">
                         <Grid.ColumnDefinitions>
                           <ColumnDefinition Width="Auto"/>
                           <ColumnDefinition Width="Auto"/>
@@ -1768,19 +2679,24 @@ $xaml = @'
                           <ColumnDefinition Width="Auto"/>
                         </Grid.ColumnDefinitions>
                         <CheckBox Grid.Column="0" IsChecked="{Binding Del, Mode=TwoWay}" VerticalAlignment="Center"/>
-                        <Border Grid.Column="1" CornerRadius="4" Padding="5,1" Margin="8,0,0,0" Background="#FF33333B"
+                        <Border Grid.Column="1" CornerRadius="4" Padding="5,1" Margin="8,0,0,0" Background="{StaticResource Raised}"
                                 VerticalAlignment="Center" Width="62">
-                          <TextBlock Text="{Binding Kind}" FontSize="9.5" Foreground="#FFB9CFF6" FontWeight="SemiBold"
+                          <TextBlock Text="{Binding Kind}" FontSize="9.5" Foreground="{StaticResource Ink}" FontWeight="SemiBold"
                                      HorizontalAlignment="Center"/>
                         </Border>
                         <StackPanel Grid.Column="2" Margin="8,0,8,0" VerticalAlignment="Center">
-                          <TextBlock Text="{Binding Path}" FontSize="11.5" Foreground="#FFD6D6DE"
+                          <TextBlock Text="{Binding Path}" FontSize="11.5" Foreground="{StaticResource Ink}"
                                      TextTrimming="CharacterEllipsis" ToolTip="{Binding Path}"/>
                           <TextBlock Text="shared with other products of this suite - removing it can break them"
-                                     FontSize="10" Foreground="#FFFBBF24" Visibility="{Binding SharedVis}"
+                                     FontSize="10" Foreground="{StaticResource Warn}" Visibility="{Binding SharedVis}"
                                      TextTrimming="CharacterEllipsis"/>
+                          <TextBlock Text="name match only - nothing else ties it to this product"
+                                     FontSize="10" Foreground="{StaticResource Dim}" Visibility="{Binding WeakVis}"
+                                     TextTrimming="CharacterEllipsis"/>
+                          <TextBlock Text="{Binding Name}" FontSize="10" Foreground="{StaticResource Muted}"
+                                     Visibility="{Binding NameVis}" TextTrimming="CharacterEllipsis"/>
                         </StackPanel>
-                        <TextBlock Grid.Column="3" Text="{Binding SizeText}" FontSize="11" Foreground="#FF80808C"
+                        <TextBlock Grid.Column="3" Text="{Binding SizeText}" FontSize="11" Foreground="{StaticResource Muted}"
                                    VerticalAlignment="Center"/>
                       </Grid>
                     </DataTemplate>
@@ -1790,8 +2706,11 @@ $xaml = @'
             </Border>
             <DockPanel Grid.Row="3" Margin="0,16,0,0">
               <TextBlock Text="Checked = known app data, will be deleted. Unchecked = name match only, tick to include."
-                         Foreground="#FF80808C" FontSize="11" VerticalAlignment="Center" TextWrapping="Wrap" MaxWidth="300"/>
+                         Foreground="{StaticResource Muted}" FontSize="11" VerticalAlignment="Center" TextWrapping="Wrap" MaxWidth="300"/>
               <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+                <Button x:Name="BtnWipeAll" Content="Select all" Style="{StaticResource GhostBtn}"/>
+                <Button x:Name="BtnWipeNone" Content="Clear all" Style="{StaticResource GhostBtn}"/>
+                <Button x:Name="BtnWipeWeak" Content="Show possible matches" Style="{StaticResource GhostBtn}" Visibility="Collapsed"/>
                 <Button x:Name="BtnWipeSkip" Content="Skip cleanup" Style="{StaticResource GhostBtn}"/>
                 <Button x:Name="BtnWipeGo" Content="Wipe checked" Style="{StaticResource AccentBtn}"/>
               </StackPanel>
@@ -1804,37 +2723,37 @@ $xaml = @'
            top of the tab where they are noise 99% of the time. -->
       <Border x:Name="NewUserOverlay" Grid.Row="0" Grid.RowSpan="3" CornerRadius="16" Background="#DD0E0E12"
               Visibility="Collapsed">
-        <Border CornerRadius="14" Background="#FF2A2A31" BorderThickness="1" BorderBrush="#FF3C3C45"
+        <Border CornerRadius="14" Background="{StaticResource Raised}" BorderThickness="1" BorderBrush="{StaticResource Line}"
                 Width="460" Padding="28,24" VerticalAlignment="Center" HorizontalAlignment="Center">
           <StackPanel>
             <TextBlock Text="Add an account" FontSize="17" FontWeight="SemiBold"/>
-            <TextBlock Text="Created as a local account on this PC." FontSize="11.5" Foreground="#FF80808C" Margin="0,6,0,0"/>
+            <TextBlock Text="Created as a local account on this PC." FontSize="11.5" Foreground="{StaticResource Muted}" Margin="0,6,0,0"/>
 
-            <TextBlock Text="Sign-in name" FontSize="11.5" Foreground="#FFB6B6C0" Margin="0,18,0,5"/>
+            <TextBlock Text="Sign-in name" FontSize="11.5" Foreground="{StaticResource Muted}" Margin="0,18,0,5"/>
             <Grid Height="34">
               <TextBox x:Name="TxtNewUser" Style="{StaticResource SearchBox}" VerticalContentAlignment="Center"/>
-              <TextBlock x:Name="HintNewUser" Text="also the C:\Users folder name" Foreground="#FF6E6E7A"
+              <TextBlock x:Name="HintNewUser" Text="also the C:\Users folder name" Foreground="{StaticResource Dim}"
                          FontSize="11.5" Margin="12,0,0,0" VerticalAlignment="Center" IsHitTestVisible="False"/>
             </Grid>
 
-            <TextBlock Text="Display name" FontSize="11.5" Foreground="#FFB6B6C0" Margin="0,12,0,5"/>
+            <TextBlock Text="Display name" FontSize="11.5" Foreground="{StaticResource Muted}" Margin="0,12,0,5"/>
             <Grid Height="34">
               <TextBox x:Name="TxtNewFull" Style="{StaticResource SearchBox}" VerticalContentAlignment="Center"/>
-              <TextBlock x:Name="HintNewFull" Text="blank = same as sign-in name" Foreground="#FF6E6E7A"
+              <TextBlock x:Name="HintNewFull" Text="blank = same as sign-in name" Foreground="{StaticResource Dim}"
                          FontSize="11.5" Margin="12,0,0,0" VerticalAlignment="Center" IsHitTestVisible="False"/>
             </Grid>
 
-            <TextBlock Text="Password" FontSize="11.5" Foreground="#FFB6B6C0" Margin="0,12,0,5"/>
+            <TextBlock Text="Password" FontSize="11.5" Foreground="{StaticResource Muted}" Margin="0,12,0,5"/>
             <Grid Height="34">
               <TextBox x:Name="TxtNewPw" Style="{StaticResource SearchBox}" VerticalContentAlignment="Center"/>
-              <TextBlock x:Name="HintNewPw" Text="blank = no password" Foreground="#FF6E6E7A"
+              <TextBlock x:Name="HintNewPw" Text="blank = no password" Foreground="{StaticResource Dim}"
                          FontSize="11.5" Margin="12,0,0,0" VerticalAlignment="Center" IsHitTestVisible="False"/>
             </Grid>
             <TextBlock Text="Shown as you type on purpose - you are setting this to hand to the client, not entering a secret."
-                       FontSize="10.5" Foreground="#FF6E6E7A" TextWrapping="Wrap" Margin="0,5,0,0"/>
+                       FontSize="10.5" Foreground="{StaticResource Dim}" TextWrapping="Wrap" Margin="0,5,0,0"/>
 
             <CheckBox x:Name="ChkNewAdmin" Content="Administrator (not a standard user)" IsChecked="True"
-                      Foreground="#FFD6D6DE" FontSize="12" Margin="0,14,0,0"/>
+                      Foreground="{StaticResource Ink}" FontSize="12" Margin="0,14,0,0"/>
 
             <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,20,0,0">
               <Button x:Name="BtnNewUserCancel" Content="Cancel" Style="{StaticResource GhostBtn}" Padding="22,8"/>
@@ -1848,22 +2767,22 @@ $xaml = @'
            drills into one user rather than showing every verb against a list. -->
       <Border x:Name="AcctOverlay" Grid.Row="0" Grid.RowSpan="3" CornerRadius="16" Background="#DD0E0E12"
               Visibility="Collapsed">
-        <Border CornerRadius="14" Background="#FF2A2A31" BorderThickness="1" BorderBrush="#FF3C3C45"
+        <Border CornerRadius="14" Background="{StaticResource Raised}" BorderThickness="1" BorderBrush="{StaticResource Line}"
                 Width="440" Padding="26,22" VerticalAlignment="Center" HorizontalAlignment="Center">
           <StackPanel>
             <StackPanel Orientation="Horizontal">
-              <Border Width="46" Height="46" CornerRadius="23" Background="#FF3D7EF0" VerticalAlignment="Center">
+              <Border Width="46" Height="46" CornerRadius="23" Background="{StaticResource Accent}" VerticalAlignment="Center">
                 <TextBlock x:Name="TxtAcctInitial" Text="" Foreground="White" FontSize="19" FontWeight="SemiBold"
                            HorizontalAlignment="Center" VerticalAlignment="Center"/>
               </Border>
               <StackPanel Margin="14,0,0,0" VerticalAlignment="Center">
                 <TextBlock x:Name="TxtAcctName" Text="" FontSize="16" FontWeight="SemiBold"/>
-                <TextBlock x:Name="TxtAcctMeta" Text="" FontSize="11.5" Foreground="#FF8A8A94" Margin="0,3,0,0"
+                <TextBlock x:Name="TxtAcctMeta" Text="" FontSize="11.5" Foreground="{StaticResource Muted}" Margin="0,3,0,0"
                            TextWrapping="Wrap" MaxWidth="330"/>
               </StackPanel>
             </StackPanel>
 
-            <Border Height="1" Background="#FF3C3C45" Margin="0,18,0,14"/>
+            <Border Height="1" Background="{StaticResource Line}" Margin="0,18,0,14"/>
 
             <Button x:Name="BtnActAdmin" Content="Make Administrator" Style="{StaticResource GhostBtn}"
                     HorizontalContentAlignment="Left" Margin="0,0,0,7" Padding="14,10"/>
@@ -1876,7 +2795,7 @@ $xaml = @'
             <Button x:Name="BtnActLocal" Content="Replace with a local admin" Style="{StaticResource GhostBtn}"
                     HorizontalContentAlignment="Left" Margin="0,0,0,7" Padding="14,10"/>
             <Button x:Name="BtnActDelete" Content="Delete account" Style="{StaticResource GhostBtn}"
-                    HorizontalContentAlignment="Left" Foreground="#FFF87171" Margin="0,0,0,7" Padding="14,10"/>
+                    HorizontalContentAlignment="Left" Foreground="{StaticResource Bad}" Margin="0,0,0,7" Padding="14,10"/>
 
             <Button x:Name="BtnAcctClose" Content="Close" Style="{StaticResource AccentBtn}"
                     HorizontalAlignment="Right" Margin="0,12,0,0" Padding="26,8"/>
@@ -1889,7 +2808,7 @@ $xaml = @'
            what pressing Block would create. -->
       <Border x:Name="FwDetailOverlay" Grid.Row="0" Grid.RowSpan="3" CornerRadius="16" Background="#DD0E0E12"
               Visibility="Collapsed">
-        <Border CornerRadius="14" Background="#FF2A2A31" BorderThickness="1" BorderBrush="#FF3C3C45"
+        <Border CornerRadius="14" Background="{StaticResource Raised}" BorderThickness="1" BorderBrush="{StaticResource Line}"
                 Width="660" MaxHeight="540" Padding="26,22" VerticalAlignment="Center" HorizontalAlignment="Center">
           <Grid>
             <Grid.RowDefinitions>
@@ -1899,16 +2818,16 @@ $xaml = @'
               <RowDefinition Height="Auto"/>
             </Grid.RowDefinitions>
             <TextBlock x:Name="TxtFwDetailTitle" Grid.Row="0" Text="" FontSize="16" FontWeight="SemiBold"/>
-            <TextBlock x:Name="TxtFwDetailSub" Grid.Row="1" Text="" Foreground="#FF8A8A94" FontSize="11.5"
+            <TextBlock x:Name="TxtFwDetailSub" Grid.Row="1" Text="" Foreground="{StaticResource Muted}" FontSize="11.5"
                        Margin="0,6,0,12" TextWrapping="Wrap"/>
-            <Border Grid.Row="2" CornerRadius="9" Background="#FF17171B" BorderThickness="1" BorderBrush="#FF33333B">
+            <Border Grid.Row="2" CornerRadius="9" Background="{StaticResource Panel}" BorderThickness="1" BorderBrush="{StaticResource Raised}">
               <TextBox x:Name="TxtFwDetail" IsReadOnly="True" BorderThickness="0" Background="Transparent"
-                       Foreground="#FFD6D6DE" FontFamily="Cascadia Mono, Consolas" FontSize="11.5"
+                       Foreground="{StaticResource Ink}" FontFamily="Cascadia Mono, Consolas" FontSize="11.5"
                        Padding="12,10" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto"
                        TextWrapping="NoWrap"/>
             </Border>
             <DockPanel Grid.Row="3" Margin="0,14,0,0">
-              <TextBlock Text="Select and copy any path you need." Foreground="#FF6E6E7A" FontSize="11"
+              <TextBlock Text="Select and copy any path you need." Foreground="{StaticResource Dim}" FontSize="11"
                          VerticalAlignment="Center"/>
               <Button x:Name="BtnFwDetailClose" Content="Close" Style="{StaticResource AccentBtn}"
                       HorizontalAlignment="Right" Padding="26,8"/>
@@ -1918,13 +2837,119 @@ $xaml = @'
       </Border>
 
       <!-- modal overlay -->
+      <!-- Pre-flight. Install Selected and Uninstall Selected used to start the moment they were
+           pressed: no list, no confirmation, and - the expensive one - no check that what you
+           picked would fit. A 13.5 GB selection on a laptop with 8 GB free downloaded for twenty
+           minutes and then failed inside an installer, which is the worst place to find out.
+
+           This is the one screen between picking and committing. It is deliberately NOT a
+           blocker: the button stays live even when the disk says no, because a catalogued size
+           can be stale and the technician standing at the machine knows things this does not. -->
+      <Border x:Name="PreflightOverlay" Grid.Row="0" Grid.RowSpan="3" CornerRadius="16" Background="#CC121216"
+              Visibility="Collapsed">
+        <Border CornerRadius="14" Background="{StaticResource Raised}" BorderThickness="1" BorderBrush="{StaticResource Line}"
+                Width="520" MaxHeight="560" VerticalAlignment="Center" HorizontalAlignment="Center">
+          <Grid>
+            <Grid.RowDefinitions>
+              <RowDefinition Height="Auto"/>
+              <RowDefinition Height="*"/>
+              <RowDefinition Height="Auto"/>
+              <RowDefinition Height="Auto"/>
+              <RowDefinition Height="Auto"/>
+            </Grid.RowDefinitions>
+
+            <StackPanel Grid.Row="0" Margin="24,20,24,12">
+              <TextBlock x:Name="TxtPfTitle" Text="" FontSize="16" FontWeight="SemiBold"/>
+              <TextBlock x:Name="TxtPfSub" Text="" Foreground="{StaticResource Dim}" FontSize="11.5"
+                         Margin="0,4,0,0" TextWrapping="Wrap"/>
+            </StackPanel>
+
+            <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto" Margin="12,0,12,0">
+              <ItemsControl x:Name="ListPf">
+                <ItemsControl.ItemTemplate>
+                  <DataTemplate>
+                    <Border CornerRadius="8" Padding="10,7" Margin="0,1">
+                      <DockPanel LastChildFill="True">
+                        <Border DockPanel.Dock="Left" Width="22" Height="22" CornerRadius="6"
+                                Background="{Binding IconBg}" VerticalAlignment="Center">
+                          <TextBlock Text="{Binding IconText}" FontSize="10" FontWeight="Bold" Foreground="White"
+                                     HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                        </Border>
+                        <Button DockPanel.Dock="Right" Tag="{Binding Item}" Style="{StaticResource IconBtn}"
+                                Width="26" Height="26" ToolTip="Take this one out">
+                          <Path Data="M 5,5 L 13,13 M 13,5 L 5,13" Stroke="{StaticResource Dim}" StrokeThickness="1.6"
+                                StrokeStartLineCap="Round" StrokeEndLineCap="Round"/>
+                        </Button>
+                        <TextBlock DockPanel.Dock="Right" Text="{Binding SizeText}" Foreground="{StaticResource Dim}"
+                                   FontSize="11" VerticalAlignment="Center" Margin="10,0,4,0"/>
+                        <TextBlock Text="{Binding Name}" Foreground="{StaticResource Ink}" FontSize="12.3"
+                                   VerticalAlignment="Center" Margin="10,0,8,0" TextTrimming="CharacterEllipsis"/>
+                      </DockPanel>
+                    </Border>
+                  </DataTemplate>
+                </ItemsControl.ItemTemplate>
+              </ItemsControl>
+            </ScrollViewer>
+
+            <!-- Dependencies: the refusal (add-on without its base) or the offer (remove the
+                 installed add-on first, put it back after). Collapsed on every ordinary sheet. -->
+            <Border x:Name="PfDep" Grid.Row="2" Background="{StaticResource Panel}" Padding="24,10"
+                    BorderThickness="0,1,0,0" BorderBrush="{StaticResource LineSoft}" Visibility="Collapsed">
+              <StackPanel>
+                <TextBlock x:Name="TxtPfDepNote" Text="" FontSize="11.5" TextWrapping="Wrap"/>
+                <Button x:Name="BtnPfAddDep" Content="" Style="{StaticResource GhostBtn}" Padding="14,6"
+                        Margin="0,8,0,0" HorizontalAlignment="Left" Visibility="Collapsed"/>
+                <CheckBox x:Name="ChkPfReinstall" Margin="0,8,0,0" Visibility="Collapsed">
+                  <TextBlock Text="Remove it first, then put it back once the install finishes"
+                             FontSize="11.5" Foreground="{StaticResource Ink}" TextWrapping="Wrap"/>
+                </CheckBox>
+              </StackPanel>
+            </Border>
+
+            <Border x:Name="PfDisk" Grid.Row="3" Background="{StaticResource Panel}" Padding="24,12"
+                    BorderThickness="0,1,0,0" BorderBrush="{StaticResource LineSoft}">
+              <StackPanel>
+                <DockPanel LastChildFill="False" Margin="0,0,0,7">
+                  <TextBlock x:Name="TxtPfDiskWhere" DockPanel.Dock="Left" Text="" FontSize="11.5"
+                             Foreground="{StaticResource Muted}"/>
+                  <TextBlock x:Name="TxtPfDiskFacts" DockPanel.Dock="Right" Text="" FontSize="11.5"
+                             FontWeight="SemiBold" Foreground="{StaticResource Muted}"/>
+                </DockPanel>
+                <!-- Widths are set in code, not bound: a bound width needs a converter and this
+                     is two numbers. Track underneath, what is already used, then what this run
+                     wants on top of it. -->
+                <Border Height="7" CornerRadius="4" Background="{StaticResource Panel}">
+                  <StackPanel Orientation="Horizontal">
+                    <Border x:Name="PfBarUsed" Height="7" Width="0" Background="{StaticResource Line}"/>
+                    <Border x:Name="PfBarNeed" Height="7" Width="0" Background="{StaticResource Warn}"/>
+                  </StackPanel>
+                </Border>
+                <TextBlock x:Name="TxtPfDiskNote" Text="" FontSize="11.5" Foreground="{StaticResource Muted}"
+                           Margin="0,9,0,0" TextWrapping="Wrap"/>
+              </StackPanel>
+            </Border>
+
+            <!-- Buttons docked FIRST so they get their width before the caption does. Declared
+                 the other way round, a long download path ate the row and left Cancel a sliver. -->
+            <DockPanel Grid.Row="4" Margin="24,14,24,18" LastChildFill="True">
+              <Button x:Name="BtnPfGo" DockPanel.Dock="Right" Content="Install" Style="{StaticResource AccentBtn}"
+                      Padding="24,8"/>
+              <Button x:Name="BtnPfCancel" DockPanel.Dock="Right" Content="Cancel" Style="{StaticResource GhostBtn}"
+                      Padding="20,8" Margin="0,0,8,0"/>
+              <TextBlock x:Name="TxtPfFoot" Text="" FontSize="11" Foreground="{StaticResource Dim}"
+                         VerticalAlignment="Center" Margin="0,0,12,0" TextTrimming="CharacterEllipsis"/>
+            </DockPanel>
+          </Grid>
+        </Border>
+      </Border>
+
       <Border x:Name="Overlay" Grid.Row="0" Grid.RowSpan="3" CornerRadius="16" Background="#CC121216"
               Visibility="Collapsed">
-        <Border CornerRadius="14" Background="#FF2A2A31" BorderThickness="1" BorderBrush="#FF3C3C45"
+        <Border CornerRadius="14" Background="{StaticResource Raised}" BorderThickness="1" BorderBrush="{StaticResource Line}"
                 Width="400" Padding="28,24" VerticalAlignment="Center" HorizontalAlignment="Center">
           <StackPanel>
             <TextBlock x:Name="TxtOverlayTitle" Text="" FontSize="16" FontWeight="SemiBold"/>
-            <TextBlock x:Name="TxtOverlayMsg" Text="" Foreground="#FFB6B6C0" TextWrapping="Wrap"
+            <TextBlock x:Name="TxtOverlayMsg" Text="" Foreground="{StaticResource Muted}" TextWrapping="Wrap"
                        Margin="0,10,0,0" FontSize="12.5" LineHeight="19"/>
             <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,20,0,0">
               <Button x:Name="BtnOverlayCancel" Content="Cancel" Style="{StaticResource GhostBtn}"
@@ -1939,32 +2964,51 @@ $xaml = @'
 </Window>
 '@
 
+# Everything above this point is Add-Type, two runtime C# compiles, and the layout here-strings.
+Add-Mark 'assemblies and types loaded'
 $window = [Windows.Markup.XamlReader]::Parse($xaml)
-$window.Title = "$AppTitle - $BuildTag"
+Add-Mark 'main window built'
+# The title is what the taskbar and Alt-Tab show. $BuildTag stays where it earns its place -
+# in the diagnostics block a technician pastes into a report - and off the parts people look at.
+$window.Title = $AppTitle
 $missing = @()
 foreach ($n in 'ListApps','BarOverall','TxtOverall','TxtLog','TxtStatus','TxtCatalogInfo','BtnRefresh','BtnInstall',
                'TitleBar','BtnMin','BtnWinClose','Overlay','TxtOverlayTitle','TxtOverlayMsg','BtnOverlayOk',
                'DotLive','TxtSearch','HintSearch','BtnTabInstall','BtnTabLog','PanelInstall','PanelLog',
                'BtnTabUn','PanelUn','ListUn','BtnPause','BtnCancel','BtnUninstall','TxtNow','DotNow','TxtInstallBtn',
-               'WipeOverlay','TxtWipeSub','ListWipe','BtnWipeSkip','BtnWipeGo',
+               'WipeOverlay','TxtWipeSub','ListWipe','BtnWipeSkip','BtnWipeGo','BtnWipeWeak','BtnWipeAll','BtnWipeNone',
+               'PreflightOverlay','TxtPfTitle','TxtPfSub','ListPf','PfDisk','TxtPfDiskWhere',
+               'TxtPfDiskFacts','PfBarUsed','PfBarNeed','TxtPfDiskNote','TxtPfFoot','BtnPfGo','BtnPfCancel',
+               'PfDep','TxtPfDepNote','BtnPfAddDep','ChkPfReinstall',
                'LoadUn','TxtLoadUn','TxtLoadUn2','BtnSubDesktop','BtnSubStore','BtnRescan',
+               'BtnColName','BtnColPub','BtnColDate','BtnColSize',
                'BtnSearchClear','EmptyInstall','EmptyUn','BtnForce','BtnOverlayCancel','RowNow','RowProgress',
+               'BatchStrip','ListBatch','TxtBatchHead','BtnBatchFold','BtnBatchClose','BatchScroll',
+               'BatchHead','BatchChevron',
                'BtnTabTweak','PanelTweak','ListTweak','BtnTweakApply','EmptyTweak','BtnTweakUndo',
-               'BtnPreStandard','BtnPreMinimal','BtnPreAdvanced','BtnPreClear','BtnDetect','TxtTweakHint','ListPref',
+               'BtnSubTweaks','BtnSubClean','BtnSubGame','BtnSubPrefs','ScrollTweaks','ScrollClean','ScrollGame','ScrollPrefs','ListGame',
+               'ListClean','BtnSelAll','BtnSelNone','BtnPreClear','BtnDetect','BtnMeasure','TxtTweakHint','TxtTweakApplyBtn','ListPref',
                'BtnTabUsers','TxtNewUser','HintNewUser','TxtNewFull','HintNewFull',
                'TxtUserHint','ListSrcUsers','ListDstUsers','ListMigrate',
                'BtnCopyLog','BtnSaveLog',
+               'ListRuns','RunReport','TxtRunTitle','TxtRunSub','ListRunCounts','ListRunItems',
+               'BtnRunCopy','BtnRunSave','BtnRunRetry','TxtRunFoot',
                'BtnTabFw','PanelFw','ListFw','EmptyFw','LoadFw','TxtLoadFw','TxtFwHint',
                'BtnFwRescan','BtnFwRemoveAll','BtnFwBlock','BtnFwUnblock','ListFwOpen','EmptyFwOpen','TxtFwBlockedHdr','TxtFwOpenHdr','FwSplit',
                'FwDetailOverlay','TxtFwDetailTitle','TxtFwDetailSub','TxtFwDetail','BtnFwDetailClose',
                'EmptySrc','EmptyDst','ListAccounts','EmptyAccounts','EmptyMigrate','TxtNewPw','HintNewPw',
                'PanelAccounts','PanelMigrate','BtnTabMigrate','BtnNewAccount','TxtAcctHint','BtnMigrate',
+               'BtnModeProfile','BtnModeFolder','BtnModeRestore','PanelFolderPick','TxtFolderWhat',
+               'TxtFromTitle','TxtFromWhat','TxtToTitle','TxtToWhat','SrcColumn','DstColumn',
+               'TxtFolderPath','BtnFolderPick','TxtFolderNote','BtnNetFind',
+               'NetOverlay','BtnNetScan','BtnNetStop','TxtNetStatus','ListNetHosts','TreeNetShares',
+               'TxtNetManual','HintNetManual',
+               'TxtNetNote','BtnNetCancel','BtnNetUse',
                'BtnTabTools','PanelTools','ListFix','PanelGrid','BtnRunFix',
                'AutoLogonOverlay','TxtAlUser','HintAlUser','TxtAlPw','HintAlPw','BtnAlCancel','BtnAlOk',
                'NewUserOverlay','ChkNewAdmin','BtnNewUserCancel','BtnNewUserOk',
                'AcctOverlay','TxtAcctInitial','TxtAcctName','TxtAcctMeta','BtnAcctClose',
-               'BtnActAdmin','BtnActStandard','BtnActPw','BtnActToggle','BtnActLocal','BtnActDelete',
-               'TxtBuild') {
+               'BtnActAdmin','BtnActStandard','BtnActPw','BtnActToggle','BtnActLocal','BtnActDelete') {
     $el = $window.FindName($n)
     if (-not $el) { $missing += $n }
     Set-Variable -Name $n -Value $el
@@ -1977,13 +3021,14 @@ if ($missing.Count) {
         $AppTitle)
 }
 
-$TxtBuild.Text = $BuildTag
 
 $script:Items = New-Object 'System.Collections.ObjectModel.ObservableCollection[object]'
 # two separate inventories, each scanned only when its sub-tab is first opened
 $script:UnItems = New-Object 'System.Collections.ObjectModel.ObservableCollection[object]'
 $script:UnStore = New-Object 'System.Collections.ObjectModel.ObservableCollection[object]'
 $script:TweakItems = New-Object 'System.Collections.ObjectModel.ObservableCollection[object]'
+$script:CleanItems = New-Object 'System.Collections.ObjectModel.ObservableCollection[object]'
+$script:GameItems = New-Object 'System.Collections.ObjectModel.ObservableCollection[object]'
 $script:PrefItems = New-Object 'System.Collections.ObjectModel.ObservableCollection[object]'
 $script:FixItems = New-Object 'System.Collections.ObjectModel.ObservableCollection[object]'
 $script:FwItems = New-Object 'System.Collections.ObjectModel.ObservableCollection[object]'
@@ -1993,7 +3038,31 @@ $script:DstUsers = New-Object 'System.Collections.ObjectModel.ObservableCollecti
 $script:MigrateItems = New-Object 'System.Collections.ObjectModel.ObservableCollection[object]'
 $script:WipeFindings = New-Object 'System.Collections.ObjectModel.ObservableCollection[object]'
 $script:ScanLabel = ''
+# The leftover scan runs in its OWN runspace, off the dispatcher thread - it used to block the
+# window for tens of seconds, narrated but unstoppable. $ScanJob holds the running job (null when
+# idle) and is what the timer tick polls; $ScanCtl is the synchronized hashtable the two sides
+# share - the runspace reports Label/Stage/Found/Done into it, and Cancel reaches the walk
+# through it (threaded into Scan-Leftovers, which only READS, so stopping part-way is safe).
+$script:ScanJob = $null
+$script:ScanCtl = $null
 $script:CancelPath = Join-Path $script:CacheDir 'cancel.flag'
+# One app id per line, appended and never rewritten. The GUI cannot take an entry back out
+# of queue.jsonl - that file is append-only and the worker is a separate elevated process -
+# but the worker already checks the cancel flag before each entry, and this is the same
+# check with a per-app answer rather than a second channel.
+$script:SkipPath   = Join-Path $script:CacheDir 'skip.txt'
+# The rows the batch strip shows. The SAME objects as $script:Pending, not copies: they
+# already raise PropertyChanged, so one status update lights up the catalog row and the
+# strip row together with no mirroring to keep in step.
+$script:BatchRows = New-Object 'System.Collections.ObjectModel.ObservableCollection[object]'
+# Whether a batch is running, as its own fact rather than something inferred from
+# $script:Phase. The starters open the strip and set Phase on the line after, so asking
+# Phase at that instant said 'no batch' and painted every row without its remove button
+# until the first tick, 400ms later.
+$script:BatchLive = $false
+# Folded away to just its header. Not the same as gone: the header stays, keeps the counts,
+# and is the same control that brings the rows back.
+$script:BatchFolded = $false
 $script:LastManifest = $null
 $script:UnDirty = $true
 $script:StoreDirty = $true
@@ -2011,6 +3080,11 @@ $script:View.Filter = [Predicate[object]]{
             (('' + $o.Category).IndexOf($q, $ci) -ge 0))
 }
 # the uninstall list can hold hundreds of programs, so it gets the same live search
+# How the uninstall table is sorted. The install date and the publisher are still read for every
+# row - they are two of its columns - they just no longer filter it.
+$script:UnSort = 'name'
+$script:UnSortDesc = $false
+
 $unFilter = [Predicate[object]]{
     param($o)
     if ([string]::IsNullOrWhiteSpace($script:SearchText)) { return $true }
@@ -2030,6 +3104,12 @@ $script:StoreView.Filter = $unFilter
 $script:TweakView = [Windows.Data.CollectionViewSource]::GetDefaultView($script:TweakItems)
 $script:TweakView.GroupDescriptions.Add((New-Object Windows.Data.PropertyGroupDescription 'Category'))
 $script:TweakView.Filter = $unFilter
+$script:CleanView = [Windows.Data.CollectionViewSource]::GetDefaultView($script:CleanItems)
+$script:CleanView.GroupDescriptions.Add((New-Object Windows.Data.PropertyGroupDescription 'Category'))
+$script:CleanView.Filter = $unFilter
+$script:GameView = [Windows.Data.CollectionViewSource]::GetDefaultView($script:GameItems)
+$script:GameView.GroupDescriptions.Add((New-Object Windows.Data.PropertyGroupDescription 'Category'))
+$script:GameView.Filter = $unFilter
 $script:PrefView = [Windows.Data.CollectionViewSource]::GetDefaultView($script:PrefItems)
 $script:PrefView.GroupDescriptions.Add((New-Object Windows.Data.PropertyGroupDescription 'Category'))
 $script:PrefView.Filter = $unFilter
@@ -2037,6 +3117,12 @@ $script:PrefView.Filter = $unFilter
 # leftovers group under the app that owns them, so attribution is obvious in the preview
 $script:WipeView = [Windows.Data.CollectionViewSource]::GetDefaultView($script:WipeFindings)
 $script:WipeView.GroupDescriptions.Add((New-Object Windows.Data.PropertyGroupDescription 'OwnerName'))
+# Within each app: what will be deleted first, then the name-only guesses last. Weak matches are
+# hidden until the technician asks for them - see Complete-LeftoverScan and BtnWipeWeak.
+$script:WipeShowWeak = $false
+$script:WipeView.SortDescriptions.Add((New-Object ComponentModel.SortDescription 'Del', 'Descending'))
+$script:WipeView.SortDescriptions.Add((New-Object ComponentModel.SortDescription 'Weak', 'Ascending'))
+$script:WipeView.Filter = [Predicate[object]]{ param($o) if ($script:WipeShowWeak) { return $true }; return -not $o.Weak }
 
 # Bind the controls to the VIEWS, not the raw collections. Handing an ItemsControl a
 # plain collection lets it build its own view, so the filter applied here would change
@@ -2044,7 +3130,10 @@ $script:WipeView.GroupDescriptions.Add((New-Object Windows.Data.PropertyGroupDes
 $ListApps.ItemsSource = $script:View
 $ListUn.ItemsSource = $script:UnView
 $ListWipe.ItemsSource = $script:WipeView
+$ListBatch.ItemsSource = $script:BatchRows
 $ListTweak.ItemsSource = $script:TweakView
+$ListClean.ItemsSource = $script:CleanView
+$ListGame.ItemsSource = $script:GameView
 $ListPref.ItemsSource = $script:PrefView
 $script:MigrateView = [Windows.Data.CollectionViewSource]::GetDefaultView($script:MigrateItems)
 $script:MigrateView.GroupDescriptions.Add((New-Object Windows.Data.PropertyGroupDescription 'Category'))
@@ -2066,7 +3155,17 @@ $script:DstView.Filter = [Predicate[object]]{
 }
 $ListSrcUsers.ItemsSource = $script:SrcView
 $ListDstUsers.ItemsSource = $script:DstView
-$ListAccounts.ItemsSource = $script:AccountItems
+# Two sections, because a technician scanning this list is looking for the accounts PEOPLE use
+# and everything else is noise they have to read past. The second section is what Windows owns
+# plus anything switched off - Administrator and Guest are both at once.
+#
+# The group names are chosen so a plain alphabetical sort puts them in the right order: 'A'
+# before 'B'. Cheaper and harder to break than carrying a separate sort key on the row.
+$script:AcctView = [Windows.Data.CollectionViewSource]::GetDefaultView($script:AccountItems)
+$script:AcctView.GroupDescriptions.Add((New-Object Windows.Data.PropertyGroupDescription 'Category'))
+$script:AcctView.SortDescriptions.Add((New-Object ComponentModel.SortDescription 'Category', 'Ascending'))
+$script:AcctView.SortDescriptions.Add((New-Object ComponentModel.SortDescription 'Name', 'Ascending'))
+$ListAccounts.ItemsSource = $script:AcctView
 # Two views over ONE collection: blocked on the left, everything else on the right. A single
 # item is only ever in one of them, so the two lists cannot disagree about an app's state.
 # $unFilter is a [Predicate[object]] DELEGATE - it must be .Invoke()d, never called with &.
@@ -2113,7 +3212,7 @@ $IconMap = @{
     photo   = @('M4,8 L8,8 L10,5 L14,5 L16,8 L20,8 L20,19 L4,19 Z M12,10.5 A3,3 0 1 1 11.99,10.5', '#FF31A8FF')
     design  = @('M12,3 L15,10 L12,21 L9,10 Z M9,10 L15,10', '#FFFF9A00')
     video   = @('M4,5 L20,5 L20,19 L4,19 Z M8,5 L8,19 M16,5 L16,19 M4,9.5 L8,9.5 M4,14.5 L8,14.5 M16,9.5 L20,9.5 M16,14.5 L20,14.5', '#FF9999FF')
-    tweak   = @('M4,7 L20,7 M4,12 L20,12 M4,17 L20,17 M9,7 A2,2 0 1 1 8.99,7 M15,12 A2,2 0 1 1 14.99,12 M8,17 A2,2 0 1 1 7.99,17', '#FF3D7EF0')
+    tweak   = @('M4,7 L20,7 M4,12 L20,12 M4,17 L20,17 M9,7 A2,2 0 1 1 8.99,7 M15,12 A2,2 0 1 1 14.99,12 M8,17 A2,2 0 1 1 7.99,17', '#FF2563EB')
     default = @('M4,4 L10,4 L10,10 L4,10 Z M14,4 L20,4 L20,10 L14,10 Z M4,14 L10,14 L10,20 L4,20 Z M14,14 L20,14 L20,20 L14,20 Z', '#FF64748B')
 }
 
@@ -2146,6 +3245,10 @@ $script:LogPalette = @{
 }
 
 function Add-Log([string]$Message) {
+    # the on-disk copy first - it must survive even if the UI half throws
+    if ($script:SessionLogPath) {
+        try { Add-Content -LiteralPath $script:SessionLogPath -Encoding UTF8 -Value ("[{0}] {1}" -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'), $Message) } catch {}
+    }
     if (-not $script:LogPara) {
         $script:LogPara = New-Object Windows.Documents.Paragraph
         $script:LogPara.Margin = New-Object Windows.Thickness 0
@@ -2194,14 +3297,41 @@ function Update-UI {
 }
 
 # status text palette (winutil-style flat colored text, no pills)
+#
+# Drawn from the shared brushes above rather than near-misses of them: neutral was #B8B8C2 where
+# the palette's Muted is #9A9AA6, and active was #8FB8FF against Lift's #4C8DFF. `ready` keeps its
+# teal on purpose - it is a state of its own, and collapsing it into `ok` would say two different
+# things in one colour.
 $StatusPalette = @{
-    neutral = '#FFB8B8C2'
-    active  = '#FF8FB8FF'
+    neutral = '#FF9A9AA6'   # Muted
+    active  = '#FF4C8DFF'   # Lift
     ready   = '#FF5EEAD4'
-    warn    = '#FFFBBF24'
-    ok      = '#FF6EE7A0'
-    fail    = '#FFF87171'
+    warn    = '#FFFBBF24'   # Warn
+    ok      = '#FF34D399'   # Good
+    fail    = '#FFF87171'   # Bad
 }
+<#
+    How much longer, as a countdown.
+
+    Elapsed time answers a question nobody asked. On a 14 GB package over a link to Kuwait the
+    only thing worth knowing is how much is LEFT, and every input for it is already measured -
+    bytes done, bytes total, and the rolling speed the status line already prints.
+
+    Returns empty rather than a guess when it cannot know: no speed yet, or a rate so low the
+    estimate would run past a day. A blank is honest; "14h left" that becomes "3m left" ten
+    seconds later is not.
+#>
+function Format-Eta([long]$Remaining, [double]$BytesPerSec) {
+    if ($BytesPerSec -le 0 -or $Remaining -le 0) { return '' }
+    $secs = [int][math]::Ceiling($Remaining / $BytesPerSec)
+    if ($secs -gt 86400) { return '' }
+    if ($secs -lt 60)    { return "$($secs)s left" }
+    $m = [int][math]::Floor($secs / 60)
+    if ($m -lt 60) { return "$($m)m $($secs % 60)s left" }
+    $h = [int][math]::Floor($m / 60)
+    return "$($h)h $($m % 60)m left"
+}
+
 function Set-Status([object]$Item, [string]$Text, [string]$Kind = 'neutral') {
     $Item.StatusFg = $StatusPalette[$Kind]
     $Item.Status = $Text
@@ -2221,6 +3351,159 @@ function Set-Ring([object]$Item, [string]$State) {
                      $Item.BadgeBg = '#FFF59E0B'; $Item.BadgeData = 'M 13,7.5 L 13,14 M 13,17 L 13,17.01'; $Item.BadgeVis = 'Visible' }
         default    { $Item.RingTrackVis = 'Collapsed'; $Item.SpinnerVis = 'Collapsed'; $Item.BadgeVis = 'Collapsed' }
     }
+}
+
+# ---------- the batch strip ----------
+# Two surfaces, not one: the catalog above never reorders, and the running batch gets its
+# own bounded list underneath. The rows in it ARE the catalog rows - the same objects - so
+# nothing has to be copied or kept in step.
+
+function Show-BatchStrip {
+    $script:BatchLive = $true
+    # a new batch always opens expanded - it is the thing being watched from here on
+    $script:BatchFolded = $false
+    $script:BatchRows.Clear()
+    foreach ($p in $script:Pending) { [void]$script:BatchRows.Add($p) }
+    Sync-BatchStrip
+    $BatchStrip.Visibility = 'Visible'
+}
+
+<#
+    Can this app still be pulled out of the batch?
+
+    The boundary is the moment the installer launches. Before it, anything can be taken back:
+    a queued row is dropped, a transfer in flight is cancelled, a downloaded file waiting for
+    the elevated worker gets its id written to the skip file. After it, no - stopping an
+    installer part-way leaves exactly the half-installed state the leftover sweep exists to
+    clear up, so the honest answer is "let it finish, then uninstall it".
+
+    This is a WHITELIST of states known to be before that line, not a blacklist of states
+    after it. The worker reports a good number of intermediate states and more can be added
+    later; an unrecognised one must hide the button rather than offer a removal that would
+    arrive too late.
+#>
+function Test-Removable([object]$Item) {
+    if (-not $script:BatchLive) { return $false }
+    $st = '' + $Item.Status
+    if ($st -eq '')                    { return $true }   # not started
+    if ($st -like 'Queued*')           { return $true }   # queued, or downloaded and waiting
+    if ($st -like 'Starting download') { return $true }
+    if ($st -like 'Downloading*')      { return $true }
+    if ($st -like 'Retrying*')         { return $true }   # BITS is backing off, nothing has run
+    if ($st -like 'Paused*')           { return $true }   # stopped by the technician, nothing has run
+    if ($st -like 'Link expired*')     { return $true }
+    return $false
+}
+
+function Remove-FromBatch([object]$Item) {
+    if (-not (Test-Removable $Item)) {
+        Show-Overlay 'Too late to remove' (
+            "$($Item.Name) is already being installed.`n`n" +
+            'Stopping an installer part-way through leaves a half-installed product behind, which is ' +
+            'the mess the leftover sweep exists to clear. Let it finish, then uninstall it.')
+        return
+    }
+    # Has this app already been handed to the elevated worker? 'Queued for install' is the
+    # status Enqueue-Install sets the moment the entry is appended to queue.jsonl, so it is
+    # exactly the line between 'this GUI can settle it' and 'the worker decides'.
+    $handedOver = ('' + $Item.Status) -like 'Queued for install*'
+
+    # Written FIRST, before anything else can change: the worker checks this file just before
+    # it acts on an entry, so the id has to be on disk by the time it gets there.
+    try { Add-Content -Path $script:SkipPath -Value ([string]$Item.Id) -Encoding UTF8 } catch {}
+    # A BITS transfer in flight is stopped here. A multi-connection download is not: it is
+    # running inside this very tick and notices the status change itself, at its next poll.
+    if ($script:CurJob -and $script:Phase -eq 'Download' -and
+        $script:DlIndex -lt $script:Pending.Count -and $script:Pending[$script:DlIndex] -eq $Item) {
+        Remove-BitsTransfer -BitsJob $script:CurJob -ErrorAction SilentlyContinue
+        $script:CurJob = $null
+        $script:Paused = $false
+        $BtnPause.Content = 'Pause'
+    }
+    $Item.ProgressVis = 'Collapsed'
+
+    if ($handedOver) {
+        # The press is acknowledged; the OUTCOME is not, because this GUI does not get to
+        # decide it. The worker reads skip.txt before each entry - but if it had already
+        # started this one, the file is never consulted for it again and the install runs to
+        # completion. Claiming 'Removed' here would be asserting something that may be false a
+        # few hundred milliseconds later, on the one screen a technician trusts.
+        #
+        # So the row says what is true right now - the request is in - and the worker's own
+        # report settles it: 'Removed' if it skipped, or Installing/Installed if it was already
+        # past the check. Either way the row ends up telling the truth without being corrected.
+        Set-Status $Item 'Removing - waiting for the installer to skip it' 'warn'
+        Set-Ring $Item 'busy'
+        Add-Log "$($Item.Name): removal requested - it is already queued for install, so it comes out only if the installer has not started it yet."
+    } else {
+        # Nothing has been handed over: it was still waiting to download, or its transfer was
+        # just stopped above. This GUI owns that entirely, so the outcome is known now.
+        Set-Status $Item 'Removed from batch' 'warn'
+        Set-Ring $Item 'warn'
+        Add-Log "$($Item.Name) removed from the batch."
+    }
+    Sync-BatchStrip
+}
+
+function Sync-BatchStrip {
+    # Done even while folded, or the rows come back missing whatever was added meanwhile.
+    foreach ($p in $script:Pending) {
+        if (-not $script:BatchRows.Contains($p)) { [void]$script:BatchRows.Add($p) }
+    }
+    if ($BatchStrip.Visibility -ne 'Visible') { return }
+
+    # Folded shows the header and nothing else. The counts below are computed either way - a
+    # collapsed strip that stopped saying where the batch had got to would be a worse trade
+    # than the space it gave back.
+    $BatchScroll.Visibility = $(if ($script:BatchFolded) { 'Collapsed' } else { 'Visible' })
+    $BatchChevron.Data = $(if ($script:BatchFolded) { 'M 4,7 L 9,12 L 14,7' } else { 'M 4,11 L 9,6 L 14,11' })
+    # Clearing the strip outright is only offered once nothing is running. Mid-batch there is
+    # live state to lose track of; afterwards there is not, and the next batch brings it back.
+    $BtnBatchClose.Visibility = $(if ($script:BatchLive) { 'Collapsed' } else { 'Visible' })
+    $done = 0; $fail = 0; $gone = 0; $left = 0
+    foreach ($p in $script:BatchRows) {
+        $st = '' + $p.Status
+        if     ($st -match '^(Installed|Uninstalled|Cleaned|Applied|Reverted)') { $done++ }
+        elseif ($st -like 'Failed*')                                            { $fail++ }
+        elseif ($st -match '^(Removed|Cancelled|Skipped)')                      { $gone++ }
+        else                                                                    { $left++ }
+        # only on a real change: this runs 2.5 times a second, and every assignment raises
+        # PropertyChanged whether or not the value moved
+        $want = $(if (Test-Removable $p) { 'Visible' } else { 'Collapsed' })
+        if ($p.RemoveVis -ne $want) { $p.RemoveVis = $want }
+    }
+    $n = $script:BatchRows.Count
+    $head = "BATCH   $done of $n done"
+    if ($fail) { $head += ", $fail failed" }
+    if ($gone) { $head += ", $gone removed" }
+    if ($left -and $script:BatchLive) { $head += ", $left to go" }
+    $TxtBatchHead.Text = $head
+}
+
+<#
+    Failures to the top, once the batch has ended.
+
+    Reordering is fine HERE and nowhere else. The strip is a status view - nobody navigates it
+    by position, and what went wrong is what wants reading first. The catalog above is the
+    surface people learn by position, and it never moves.
+
+    Sort-Object is not a stable sort, so the original position rides along as the second key.
+    Without it, rows that rank equally shuffle for no reason every time this runs.
+#>
+function Sort-BatchStrip {
+    $rank = {
+        param($p)
+        $st = '' + $p.Status
+        if ($st -like 'Failed*')                      { return 0 }
+        if ($st -match '^(Removed|Cancelled|Skipped)') { return 1 }
+        return 2
+    }
+    $i = 0
+    $keyed = @(@($script:BatchRows) | ForEach-Object {
+        [pscustomobject]@{ Row = $_; Rank = (& $rank $_); Ord = $i++ } })
+    $ordered = @($keyed | Sort-Object Rank, Ord | ForEach-Object { $_.Row })
+    $script:BatchRows.Clear()
+    foreach ($p in $ordered) { [void]$script:BatchRows.Add($p) }
 }
 
 # The search is sticky across every tab on purpose: type a name once, then flip between
@@ -2244,7 +3527,7 @@ function Update-SearchCount {
     $unTotal = $null
     if ($searching -and ($null -ne $nDesk -or $null -ne $nStore)) { $unTotal = [int]$nDesk + [int]$nStore }
     $BtnTabUn.Content = & $lbl 'Uninstall' $unTotal
-    $BtnTabTweak.Content = $(if ($searching) { & $lbl 'Tweaks' $nTweak } else { 'Tweaks' })
+    $BtnTabTweak.Content = $(if ($searching) { & $lbl 'Optimize' $nTweak } else { 'Optimize' })
     $BtnSubDesktop.Content = & $lbl 'Desktop programs' $nDesk
     $BtnSubStore.Content = & $lbl 'Microsoft Store apps' $nStore
 
@@ -2283,7 +3566,7 @@ function Update-SearchCount {
 # summary belongs to the Install tab - showing it over the Uninstall list is just wrong.
 function Update-Dash {
     # bulk selection changes (a preset, Clear, a sync) suppress this and refresh once at
-    # the end - otherwise 38 checkbox events each rebuild the whole dashboard
+    # the end - otherwise 49 checkbox events each rebuild the whole dashboard
     if ($script:SuspendDash) { return }
     $running = ($script:Phase -in 'Download', 'Install')
     # Progress belongs to the tab that started the work. A download bar sitting under the
@@ -2308,18 +3591,34 @@ function Update-Dash {
         $sum = 0; if ($sel.Count) { $sum = ($sel | Measure-Object -Property SizeBytes -Sum).Sum }
         $TxtStatus.Text = "$($script:Items.Count) apps available    |    $($sel.Count) selected  ($(Format-Size $sum))"
     } elseif ($PanelUn.Visibility -eq 'Visible') {
-        $n = @(@($script:UnItems) + @($script:UnStore) | Where-Object { $_.IsSelected }).Count
-        $TxtStatus.Text = $(if ($n) { "$n selected for removal" } else { '' })
+        # what is listed, what is ticked, and what removing it would give back - that last number
+        # is the whole reason anybody ticks anything on this tab
+        $store = ($BtnSubStore.Style -eq $window.FindResource('TabActive'))
+        $shown = @($(if ($store) { $script:StoreView } else { $script:UnView }))
+        $sel = @(@($script:UnItems) + @($script:UnStore) | Where-Object { $_.IsSelected })
+        $sum = 0; if ($sel.Count) { $sum = ($sel | Measure-Object -Property SizeBytes -Sum).Sum }
+        $word = $(if ($store) { 'apps' } else { 'programs' })
+        $TxtStatus.Text = "$($shown.Count) $word" + $(if ($sel.Count) {
+            "    |    $($sel.Count) selected" + $(if ($sum -gt 0) { "  ($(Format-Size $sum) reclaimed)" } else { '' })
+        } else { '' })
     } elseif ($PanelTweak.Visibility -eq 'Visible') {
+        # report the ACTIVE sub-tab's own numbers - the way the Uninstall branch reads
+        # BtnSubStore's style - so the status line always describes what is on screen
         $n = @($script:TweakItems | Where-Object { $_.IsSelected }).Count
+        $c = @($script:CleanItems | Where-Object { $_.IsSelected }).Count
         $p = 0
         # while a sync is running every toggle is being rewritten, so counting mid-flight
         # would report changes the technician never made
         if (-not $script:PrefSyncing) { $p = @(Get-PendingPrefs).Count }
-        $bits = @()
-        if ($n) { $bits += "$n tweak(s) selected" }
-        if ($p) { $bits += "$p preference change(s) pending" }
-        $TxtStatus.Text = $(if ($bits.Count) { $bits -join '    |    ' } else { "$($script:TweakItems.Count) tweaks, $($script:PrefItems.Count) preferences" })
+        $g = @($script:GameItems | Where-Object { $_.IsSelected }).Count
+        $TxtStatus.Text = switch ($script:OptSubTab) {
+            'Clean' { "$c of $($script:CleanItems.Count) cleanup task(s) selected" }
+            'Game'  { "$g of $($script:GameItems.Count) gaming tweak(s) selected" }
+            'Prefs' { $(if ($p) { "$p preference change(s) pending" } else { "$($script:PrefItems.Count) preferences - toggles mirror this machine" }) }
+            default { "$n of $($script:TweakItems.Count) tweak(s) selected" +
+                      $(if ($c -ne @($script:CleanItems | Where-Object { $_.IsSilent }).Count) { "    |    $c cleanup" } else { '' }) +
+                      $(if ($p) { "    |    $p preference change(s) pending" } else { '' }) }
+        }
     } elseif ($PanelTools.Visibility -eq 'Visible') {
         $n = @($script:FixItems | Where-Object { $_.IsSelected }).Count
         $TxtStatus.Text = $(if ($n) { "$n fix(es) selected" } else { "$($script:FixItems.Count) fixes, $($script:PanelDefs.Count) panels" })
@@ -2334,7 +3633,10 @@ function Update-Dash {
         $n = @($script:MigrateItems | Where-Object { $_.IsSelected }).Count
         if ($src -and $dst) { $TxtStatus.Text = "$($src.Name)  ->  $($dst.Name)    |    $n item(s) to copy" }
         elseif ($src) { $TxtStatus.Text = "From $($src.Name) - now pick a destination account" }
-        else { $TxtStatus.Text = 'Pick the profile to copy FROM' }
+        else { $TxtStatus.Text = $(switch ($script:BackupMode) {
+                                     'folder'  { 'Pick the account to back up, then the folder to back it up to' }
+                                     'restore' { 'Pick the backup folder, then the account to restore into' }
+                                     default   { 'Pick the profile to copy FROM' } }) }
     } else {
         $TxtStatus.Text = ''
     }
@@ -2567,14 +3869,21 @@ function ConvertTo-PSRegPath([string]$Path) {
                   -replace '^HKCR\\', 'HKCR:\')
 }
 
-function Get-FolderSize([string]$Path) {
+# $Tick is called every so often with the running total, so a caller on the UI thread can keep
+# the window alive. Optional and null by default - the leftover scan narrates per ITEM and
+# wants nothing here, while a profile measurement can spend minutes inside a single folder.
+function Get-FolderSize([string]$Path, [scriptblock]$Tick = $null) {
     # .NET enumeration, not a Get-ChildItem pipeline: an order of magnitude faster on
     # big trees, and reparse points are skipped so a junction can never loop the walk.
     $sum = [long]0
+    $seen = 0
     $stack = New-Object 'System.Collections.Generic.Stack[string]'
     $stack.Push($Path)
     while ($stack.Count -gt 0) {
         $dir = $stack.Pop()
+        # every 200 directories, not every file: the callback pumps the dispatcher and doing
+        # that per file would cost more than the walk itself
+        if ($Tick -and ((++$seen % 200) -eq 0)) { try { & $Tick $sum } catch { } }
         try {
             foreach ($f in [IO.Directory]::EnumerateFiles($dir)) {
                 try { $sum += (New-Object IO.FileInfo $f).Length } catch {}
@@ -2608,8 +3917,34 @@ $script:ProtectedPaths = @(
     (Join-Path $env:AppData 'Adobe'), (Join-Path $env:AppData 'Autodesk'),
     (Join-Path $env:LocalAppData 'Adobe'), (Join-Path $env:LocalAppData 'Autodesk'),
     (Join-Path $env:ProgramData 'Microsoft'), (Join-Path $env:AppData 'Microsoft'),
-    (Join-Path $env:LocalAppData 'Microsoft')
+    (Join-Path $env:LocalAppData 'Microsoft'),
+    # System32 and SysWOW64 in their own right. %SystemRoot% being on this list did NOT cover
+    # them: the test is an equality test, so protecting C:\Windows says nothing whatsoever
+    # about C:\Windows\System32, and a catalog cleanup path naming it would have been offered
+    # up pre-ticked.
+    (Join-Path $env:SystemRoot 'System32'), (Join-Path $env:SystemRoot 'SysWOW64'),
+    (Join-Path $env:SystemRoot 'assembly'), (Join-Path $env:SystemRoot 'WinSxS')
 ) | Where-Object { $_ } | ForEach-Object { $_.TrimEnd('\').ToLower() }
+
+# Is this path one of the protected roots - including when it is reached by a route that does
+# not look like one?
+#
+# The check used to be a plain -contains on the string exactly as written, and two ordinary
+# things walked straight past it. A relative segment: "%ProgramFiles%\Adobe\..\Adobe" IS
+# C:\Program Files\Adobe and matched nothing. And trailing dots or doubled separators, which
+# Windows resolves on the way to the disk and a string comparison does not. GetFullPath settles
+# all of them at once, because it is the same normalisation the filesystem is about to apply.
+#
+# Ancestors are deliberately NOT protected. %ProgramFiles%\Adobe\Acrobat is precisely the
+# curated per-app path the list's own comment calls the safe way to reach inside a shared
+# vendor root; blocking everything underneath would break the feature this guard exists to
+# make safe.
+function Test-ProtectedPath([string]$Path) {
+    if (-not $Path) { return $true }
+    $full = ''
+    try { $full = [IO.Path]::GetFullPath([Environment]::ExpandEnvironmentVariables($Path)) } catch { return $false }
+    return ($script:ProtectedPaths -contains $full.TrimEnd('\').ToLower())
+}
 
 # Components deliberately shared between products of the same suite. Autodesk leaves
 # these behind on purpose because Revit/Inventor need them; Adobe the same for CC.
@@ -2629,18 +3964,40 @@ $script:SharedComponentHints = @(
 # outright. After an uninstall they are certain rubbish and arrive ticked. After a failed
 # install they are not: if the app was already on the machine, the same folder holds the
 # working copy's data. Token matches are never pre-ticked either way.
-function Scan-Leftovers([object]$Item, [bool]$PreCheck = $true) {
+#
+# $Stage, when given, receives each stage's name instead of this function touching the window -
+# that is how it runs off the UI thread (see Start-LeftoverScan). $Ctl.Cancel, when given, ends
+# the walk early with whatever has been found so far: the scan only reads, so stopping it
+# part-way costs nothing but coverage, and the technician is told it was cut short.
+function Scan-Leftovers([object]$Item, [bool]$PreCheck = $true, [scriptblock]$Stage = $null, [hashtable]$Ctl = $null) {
     $found = @{}   # keyed by lowercased path to dedupe
     # this walk covers every user profile, the registry, services and tasks - easily
     # tens of seconds, so it narrates each stage instead of freezing silently
-    $stage = {
-        param($what)
-        $TxtNow.Text = "$script:ScanLabel  -  $what"
-        $DotNow.Fill = '#FF4C8DFF'
-        Update-UI
+    $stage = $(if ($Stage) { $Stage } else {
+        {
+            param($what)
+            $TxtNow.Text = "$script:ScanLabel  -  $what"
+            $DotNow.Fill = '#FF4C8DFF'
+            Update-UI
+        } })
+    $stopped = { return [bool]($Ctl -and $Ctl.Cancel) }
+    # How much a name-only match is worth. The full product name, or a token of eight characters
+    # or more, appearing in what was found is a real signal; a four-letter token on its own
+    # ("ADSK", "Acro") matches half a disk. Those are still LISTED - never pre-ticked, never
+    # deleted unasked - but they are graded weak, sorted last, and hidden behind a toggle, so the
+    # list a technician actually reads is the part worth reading.
+    $fullName = ('' + $Item.Name).Trim()
+    $isWeak = {
+        param([string[]]$texts)
+        foreach ($x in @($texts)) {
+            if (-not $x) { continue }
+            if ($fullName.Length -ge 4 -and $x -like "*$fullName*") { return $false }
+            foreach ($t in $tokens) { if ($t.Length -ge 8 -and $x -like "*$t*") { return $false } }
+        }
+        return $true
     }
     $add = {
-        param($kind, $type, $path, $preChecked, $name)
+        param($kind, $type, $path, $preChecked, $name, $weak)
         # dedupe key: registry paths are normalised first, so the same key found as
         # HKCU\... (curated) and HKEY_CURRENT_USER\... (token scan) is listed only once.
         # A regvalue is keyed on key AND value, or two autostart entries in one key would
@@ -2652,7 +4009,7 @@ function Scan-Leftovers([object]$Item, [bool]$PreCheck = $true) {
         $sz = 0
         if ($type -eq 'file') {
             $exp = [Environment]::ExpandEnvironmentVariables($path)
-            if ($script:ProtectedPaths -contains $exp.TrimEnd('\').ToLower()) { return }
+            if (Test-ProtectedPath $exp) { return }
             if (-not (Test-Path -LiteralPath $exp)) { return }
             if (Test-Path -LiteralPath $exp -PathType Container) {
                 $sz = Get-FolderSize $exp
@@ -2694,6 +4051,7 @@ function Scan-Leftovers([object]$Item, [bool]$PreCheck = $true) {
         # shares one key path, so without it two rows read identically
         $w.SizeText = switch ($type) { 'reg' { 'key' } 'regvalue' { ('' + $name) } 'service' { 'service' } 'task' { 'task' } 'hosts' { 'line' } default { Format-Size $sz } }
         $w.Del = [bool]$preChecked
+        $w.Weak = [bool]$weak
         # Suite-shared components stay behind on purpose - Revit and the rest of the CC
         # apps depend on them. Never pre-check, and say so loudly in the preview.
         foreach ($h in $script:SharedComponentHints) {
@@ -2712,6 +4070,35 @@ function Scan-Leftovers([object]$Item, [bool]$PreCheck = $true) {
     #    the product may have been on this machine before the batch touched it
     foreach ($p in @($Item.CleanPaths)) { if ($p) { & $add 'FOLDER' 'file' $p $PreCheck } }
     foreach ($r in @($Item.CleanReg))   { if ($r) { & $add 'REG' 'reg' $r $PreCheck } }
+
+    # 1b. vendor removal TOOLS. A remover is not a path to delete but a program to RUN - the
+    #     licensing manager's own uninstaller, an antivirus vendor's dedicated remover. Never
+    #     pre-ticked: ticking one executes it. A path-form remover is offered only when its exe
+    #     is actually on the machine; a url-form one is fetched at wipe time and hash-checked by
+    #     the elevated worker before a byte of it runs (see BtnWipeGo and the worker's 'run').
+    foreach ($rm in @($Item.Removers)) {
+        if (-not $rm -or -not $rm.name) { continue }
+        $w = $null
+        if ($rm.path) {
+            $rp = [Environment]::ExpandEnvironmentVariables([string]$rm.path)
+            if (-not (Test-Path -LiteralPath $rp)) { continue }
+            $w = New-Object WipeItem
+            $w.Path = $rp
+        } elseif ($rm.url) {
+            $w = New-Object WipeItem
+            $w.Path = [string]$rm.url
+            $w.Sha256 = ('' + $rm.sha256).ToUpper()
+        } else { continue }
+        $k = 'run::' + $w.Path.ToLower()
+        if ($found.ContainsKey($k)) { continue }
+        $w.OwnerId = $Item.Id; $w.OwnerName = $Item.Name
+        $w.Kind = 'REMOVER'; $w.Type = 'run'
+        $w.Name = [string]$rm.name; $w.Args = ('' + $rm.args)
+        $w.SizeBytes = 0; $w.SizeText = 'runs tool'
+        $w.Del = $false
+        if ($rm.shared) { $w.Shared = $true }
+        $found[$k] = $w
+    }
 
     $tokens = @($Item.CleanTokens) | Where-Object { $_ -and $_.Length -ge 4 }
     if (-not $tokens.Count) { return @($found.Values) }
@@ -2740,29 +4127,32 @@ function Scan-Leftovers([object]$Item, [bool]$PreCheck = $true) {
              Where-Object { $_ -and (Test-Path -LiteralPath $_) } | Select-Object -Unique
 
     foreach ($root in $roots) {
+        if (& $stopped) { return @($found.Values) }
         foreach ($d in @(Get-ChildItem -LiteralPath $root -Force -ErrorAction SilentlyContinue)) {
             foreach ($t in $tokens) {
                 if ($d.Name -notlike "*$t*") { continue }
                 $kind = 'FOUND'
                 if ($d.Extension -eq '.lnk') { $kind = 'SHORTCUT' }
-                & $add $kind 'file' $d.FullName $false
+                & $add $kind 'file' $d.FullName $false $null (& $isWeak @($d.Name))
                 break
             }
         }
     }
 
     # 3. deep temp sweep: loose files an installer scattered into the temp dirs
+    if (& $stopped) { return @($found.Values) }
     & $stage 'temp files'
     foreach ($tmp in @($env:TEMP, (Join-Path $env:SystemRoot 'Temp')) | Select-Object -Unique) {
         if (-not (Test-Path -LiteralPath $tmp)) { continue }
         foreach ($f in @(Get-ChildItem -LiteralPath $tmp -File -Force -ErrorAction SilentlyContinue)) {
             foreach ($t in $tokens) {
-                if ($f.Name -like "*$t*") { & $add 'TEMP' 'file' $f.FullName $false; break }
+                if ($f.Name -like "*$t*") { & $add 'TEMP' 'file' $f.FullName $false $null (& $isWeak @($f.Name)); break }
             }
         }
     }
 
     # 4. registry traces beyond the app's own key
+    if (& $stopped) { return @($found.Values) }
     & $stage 'registry'
     $regRoots = @(
         'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths',
@@ -2772,11 +4162,12 @@ function Scan-Leftovers([object]$Item, [bool]$PreCheck = $true) {
         'HKLM:\SOFTWARE', 'HKLM:\SOFTWARE\WOW6432Node', 'HKCU:\SOFTWARE'
     )
     foreach ($rr in $regRoots) {
+        if (& $stopped) { return @($found.Values) }
         if (-not (Test-Path -LiteralPath $rr)) { continue }
         foreach ($k in @(Get-ChildItem -LiteralPath $rr -ErrorAction SilentlyContinue)) {
             foreach ($t in $tokens) {
                 if ($k.PSChildName -like "*$t*") {
-                    & $add 'REG' 'reg' (($k.PSPath) -replace '^Microsoft\.PowerShell\.Core\\Registry::', '') $false
+                    & $add 'REG' 'reg' (($k.PSPath) -replace '^Microsoft\.PowerShell\.Core\\Registry::', '') $false $null (& $isWeak @($k.PSChildName))
                     break
                 }
             }
@@ -2788,6 +4179,7 @@ function Scan-Leftovers([object]$Item, [bool]$PreCheck = $true) {
     #     pointing at an executable that is no longer there. Matched on the value's NAME or on
     #     its command line, because a Run entry is as often called "Updater" as it is called
     #     after the product it starts.
+    if (& $stopped) { return @($found.Values) }
     & $stage 'autostart entries'
     $runRoots = @(
         'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run',
@@ -2808,7 +4200,7 @@ function Scan-Leftovers([object]$Item, [bool]$PreCheck = $true) {
             $data = '' + $pv.Value
             foreach ($t in $tokens) {
                 if ($pv.Name -like "*$t*" -or $data -like "*$t*") {
-                    & $add 'AUTORUN' 'regvalue' $rr $false $pv.Name
+                    & $add 'AUTORUN' 'regvalue' $rr $false $pv.Name (& $isWeak @($pv.Name, $data))
                     break
                 }
             }
@@ -2816,20 +4208,22 @@ function Scan-Leftovers([object]$Item, [bool]$PreCheck = $true) {
     }
 
     # 5. services and scheduled tasks the app registered
+    if (& $stopped) { return @($found.Values) }
     & $stage 'services and scheduled tasks'
     foreach ($svc in @(Get-Service -ErrorAction SilentlyContinue)) {
         foreach ($t in $tokens) {
             if ($svc.Name -like "*$t*" -or $svc.DisplayName -like "*$t*") {
-                & $add 'SERVICE' 'service' $svc.Name $false
+                & $add 'SERVICE' 'service' $svc.Name $false $null (& $isWeak @($svc.Name, $svc.DisplayName))
                 break
             }
         }
     }
+    if (& $stopped) { return @($found.Values) }
     try {
         foreach ($task in @(Get-ScheduledTask -ErrorAction SilentlyContinue)) {
             foreach ($t in $tokens) {
                 if ($task.TaskName -like "*$t*" -or $task.TaskPath -like "*$t*") {
-                    & $add 'TASK' 'task' ($task.TaskPath + $task.TaskName) $false
+                    & $add 'TASK' 'task' ($task.TaskPath + $task.TaskName) $false $null (& $isWeak @($task.TaskName, $task.TaskPath))
                     break
                 }
             }
@@ -2838,6 +4232,7 @@ function Scan-Leftovers([object]$Item, [bool]$PreCheck = $true) {
 
     # 6. hosts file lines - activation blocks left behind here break a later clean
     #    reinstall, and they are invisible in every normal uninstaller
+    if (& $stopped) { return @($found.Values) }
     & $stage 'hosts file'
     $hostsFile = Join-Path $env:SystemRoot 'System32\drivers\etc\hosts'
     $domains = @($Item.CleanHosts) | Where-Object { $_ }
@@ -2960,7 +4355,8 @@ function Select-Tab([string]$Which) {
             $PanelTweak.Visibility = 'Visible'
             $BtnTabTweak.Style = $window.FindResource('TabActive')
             $BtnTweakApply.Visibility = 'Visible'
-            $BtnTweakUndo.Visibility = 'Visible'
+            # Select-OptTab decides Undo visibility (tweaks sub-tab only) and the hint line
+            Select-OptTab $script:OptSubTab
         }
         'Users' {
             $PanelAccounts.Visibility = 'Visible'
@@ -2995,6 +4391,10 @@ function Select-Tab([string]$Which) {
             $BtnTabLog.Style = $window.FindResource('TabActive')
             $BtnCopyLog.Visibility = 'Visible'
             $BtnSaveLog.Visibility = 'Visible'
+            # Rebuilt on the way in rather than kept live: a run written while you were on
+            # another tab has to be here when you arrive, and this is the only moment that
+            # matters. It also costs nothing on the tabs you are actually working in.
+            Sync-RunList
         }
     }
     # explicit: during a running batch Update-SearchCount returns before reaching this,
@@ -3025,6 +4425,45 @@ function Parse-UninstallString([string]$Raw) {
     return @{ exe = $Raw; args = ''; silent = $false }
 }
 
+# A stable, collision-resistant row id from any string.
+#
+# This was "reg-$([Math]::Abs($key.GetHashCode()))", which has two faults and both of them
+# end badly. Math::Abs THROWS on int.MinValue - "negating the minimum value of a twos
+# complement number is invalid" - and GetHashCode can return exactly that, so one unlucky
+# registry key took the whole tool down during a routine scan, from inside a click handler,
+# with nothing on screen. And Abs folds 2^32 hashes onto 2^31 values, which is a collision
+# risk that matters here: the id is what Read-WorkerStatus matches a worker report against,
+# so two rows sharing one would show the wrong program's outcome.
+#
+# SHA-1 over the bytes instead: no exceptional input, deterministic across runs, and 12 hex
+# characters is 48 bits - a birthday collision across a few hundred rows is nowhere.
+function Get-RowId([string]$Prefix, [string]$Key) {
+    try {
+        $sha = [Security.Cryptography.SHA1]::Create()
+        try { $h = $sha.ComputeHash([Text.Encoding]::UTF8.GetBytes([string]$Key)) } finally { $sha.Dispose() }
+        return $Prefix + '-' + (( -join ($h | ForEach-Object { $_.ToString('x2') })).Substring(0, 12))
+    } catch {
+        # an id is needed no matter what; uniqueness within the scan is what actually matters
+        return $Prefix + '-' + [Guid]::NewGuid().ToString('N').Substring(0, 12)
+    }
+}
+
+# A registry value that should be a number, read defensively.
+#
+# The idiom here was [int]('0' + $value), which reads as a safe default and is not one: it
+# is STRING concatenation, so a DWORD that comes back negative gives "0-1" and anything
+# non-numeric gives "0abc", and both throw on the cast. That happens mid-scan, inside a
+# click handler, and takes the window with it - for a value that is only ever used to hide
+# a row or print a size.
+function ConvertTo-Int($Value, [int]$Default = 0) {
+    if ($null -eq $Value) { return $Default }
+    $t = (AsText $Value).Trim()
+    if (-not $t) { return $Default }
+    $n = 0
+    if ([int]::TryParse($t, [ref]$n)) { return $n }
+    return $Default
+}
+
 # Wise-style discovery: read the same registry uninstall keys Control Panel uses,
 # across 64-bit, 32-bit (WOW6432Node) and per-user hives.
 function Get-InstalledPrograms {
@@ -3045,18 +4484,33 @@ function Get-InstalledPrograms {
             try { $p = Get-ItemProperty -Path $k.PSPath -ErrorAction Stop } catch { continue }
             $name = Clean-DisplayName $p.DisplayName
             if (-not $name) { continue }
-            if ([int]('0' + $p.SystemComponent) -eq 1) { continue }       # hidden system entries
+            if ((ConvertTo-Int $p.SystemComponent) -eq 1) { continue }    # hidden system entries
             if ($p.ParentKeyName -or $p.ParentDisplayName) { continue }   # patches/child entries
             if ($p.ReleaseType -match '(?i)update|hotfix|security') { continue }
             $icon = ('' + $p.DisplayIcon).Trim()
             $raw = $p.QuietUninstallString; $quiet = $true
             if (-not $raw) { $raw = $p.UninstallString; $quiet = $false }
             if (-not $raw) { continue }                                    # nothing to run
-            $key = ($name + '|' + $p.DisplayVersion).ToLower()
-            if ($seen.ContainsKey($key)) { continue }
-            $seen[$key] = $true
             $parsed = Parse-UninstallString $raw
             if (-not $parsed) { continue }
+            # Deduplicate on the COMMAND, not on name + version.
+            #
+            # The point of this is that one product registered in both HKLM and HKCU, or under
+            # both the 64-bit and the WOW6432Node view, should appear once. Keying on the name
+            # did that - and also merged two genuinely different products that happen to share a
+            # name and version, which is exactly what a 32-bit and a 64-bit install of the same
+            # application are. One of the pair was then silently absent from the list, and this
+            # tool offers no other way to reach it: the row simply was not there to tick.
+            #
+            # Two registrations of ONE product share an uninstall command; a 32-bit and a 64-bit
+            # install never do - different product codes, different paths. So the command is the
+            # thing that actually answers "is this the same program twice?".
+            $key = (('' + $parsed.exe) + '|' + ('' + $parsed.args)).ToLower().Trim()
+            # an entry with no usable command falls back to the old key rather than colliding
+            # with every other entry that also has none
+            if (-not $key -or $key -eq '|') { $key = ($name + '|' + $p.DisplayVersion).ToLower() }
+            if ($seen.ContainsKey($key)) { continue }
+            $seen[$key] = $true
             [void]$out.Add([pscustomobject]@{
                 Name        = $name
                 Version     = ('' + $p.DisplayVersion).Trim()
@@ -3065,7 +4519,14 @@ function Get-InstalledPrograms {
                 Exe         = $parsed.exe
                 Args        = $parsed.args
                 Silent      = ($quiet -or $parsed.silent)
-                SizeKB      = [int]('0' + $p.EstimatedSize)
+                SizeKB      = [Math]::Max(0, (ConvertTo-Int $p.EstimatedSize))
+                # InstallDate is yyyyMMdd when it is there at all, and plenty of installers
+                # never write it. $null means unknown, and unknown is never claimed as recent.
+                Installed   = $(
+                    $d = ('' + $p.InstallDate).Trim()
+                    if ($d -match '^\d{8}$') {
+                        try { [datetime]::ParseExact($d, 'yyyyMMdd', $null) } catch { $null }
+                    } else { $null })
                 Icon        = $icon
                 RegKey      = (('' + $k.PSPath) -replace '^Microsoft\.PowerShell\.Core\\Registry::', '')
             })
@@ -3221,12 +4682,18 @@ function Get-StoreApps {
 # Each scan is several seconds (icon extraction dominates), so they stay independent:
 # opening the desktop list never waits on Store enumeration.
 function Select-UnTab([string]$Which) {
+    # scanning is read-only and safe while apps download/install; refuse only during a
+    # removal batch, whose rows live in this very collection (see BtnRescan). Refused BEFORE
+    # the pills are restyled: doing it after lit the Store pill over a Desktop list still on
+    # screen, and Update-Dash then counted the list that was not showing.
+    if ($script:Phase -in 'Download', 'Install' -and $script:BatchTab -ne 'Install' -and
+        $Which -ne $script:UnSubTab) { return }
     $script:UnSubTab = $Which
     $store = ($Which -eq 'Store')
+    # Pills now, not tabs - and Update-Dash reads BtnSubStore's style to know which list is on
+    # screen, so these two are what tell it.
     $BtnSubDesktop.Style = $window.FindResource($(if ($store) { 'TabIdle' } else { 'TabActive' }))
     $BtnSubStore.Style   = $window.FindResource($(if ($store) { 'TabActive' } else { 'TabIdle' }))
-    # scanning is read-only and safe while apps download/install; refuse only during a
-    # removal batch, whose rows live in this very collection (see BtnRescan)
     if ($script:Phase -in 'Download', 'Install' -and $script:BatchTab -ne 'Install') { return }
 
     $dirty = $(if ($store) { $script:StoreDirty } else { $script:UnDirty })
@@ -3260,6 +4727,27 @@ function Select-UnTab([string]$Which) {
     }
 }
 
+# Autodesk ODIS names each product's uninstall manifest at INSTALL time, under a per-product
+# folder in ProgramData - a path no catalog written in advance can carry. The catalog writes
+# __ODIS_MANIFEST__ where that path belongs, and this resolves it on the machine: the manifest
+# whose XML names the product. Empty when nothing matches - the caller then keeps the registry
+# uninstall string, because a vendor tool run with a hole in its arguments is worse than the
+# fallback that always works. $Root is a parameter so a harness can point it at a fixture.
+function Resolve-OdisManifest([string]$ProductName, [string]$Root = '') {
+    if (-not $Root) { $Root = Join-Path $env:ProgramData 'Autodesk\ODIS\metadata' }
+    if (-not $ProductName -or -not (Test-Path -LiteralPath $Root)) { return '' }
+    foreach ($dir in @(Get-ChildItem -LiteralPath $Root -Directory -ErrorAction SilentlyContinue)) {
+        foreach ($mf in @(Get-ChildItem -LiteralPath $dir.FullName -Filter '*setup.xml' -ErrorAction SilentlyContinue)) {
+            try {
+                if ((Get-Content -LiteralPath $mf.FullName -Raw -ErrorAction Stop) -match [regex]::Escape($ProductName)) {
+                    return $mf.FullName
+                }
+            } catch { }
+        }
+    }
+    return ''
+}
+
 function Refresh-UnList([object]$Manifest) {
     # ONE list: exactly what is registered on this machine, discovered from the registry
     # like Wise does. There is no separate "our catalog apps" section - a technician wants
@@ -3289,11 +4777,16 @@ function Refresh-UnList([object]$Manifest) {
     Update-UI
     foreach ($r in @(Get-InstalledPrograms | Where-Object { $_ -and $_.Name })) {
         $u = New-Object AppItem
-        $u.Id = "reg-$([Math]::Abs($r.RegKey.GetHashCode()))"
+        $u.Id = Get-RowId 'reg' $r.RegKey
         $u.Name = Clean-DisplayName $r.Name
         $u.Version = Clean-DisplayName $r.Version
         $u.Publisher = Clean-DisplayName $r.Publisher
+        # Both the words and the number. Size was formatted straight to text and SizeBytes left
+        # at zero, so the list had nothing sortable on it - the size was on screen and out of
+        # reach at the same time.
         $u.Size = $(if ($r.SizeKB -gt 0) { Format-Size ([long]$r.SizeKB * 1KB) } else { '' })
+        $u.SizeBytes = [long]$r.SizeKB * 1KB
+        $u.Installed = $r.Installed
         $u.UnCommand = $r.Exe
         $u.UnArgs = $r.Args
         $u.DetectPath = $r.RegKey     # key vanishing = uninstalled; folder may linger as leftovers
@@ -3320,11 +4813,22 @@ function Refresh-UnList([object]$Manifest) {
             $detect = [string]$(if ($cat.uninstall.detect) { $cat.uninstall.detect }
                                 elseif (@($cat.verifyPaths).Count) { @($cat.verifyPaths)[0] } else { '' })
             if ($detect -and (Test-Path -LiteralPath ([Environment]::ExpandEnvironmentVariables($detect)))) {
-                $u.UnCommand = [string]$cat.uninstall.command
-                $u.UnArgs = [string]$cat.uninstall.args
-                $u.DetectPath = $detect
-                $u.IsSilent = $true
-                $u.Source = 'Vendor uninstaller'
+                # __ODIS_MANIFEST__ in the catalog's args is resolved against this machine; if
+                # no manifest names this product, the command upgrade is declined and the
+                # registry uninstall string stays - the cleanup targets below still apply.
+                $vArgs = [string]$cat.uninstall.args
+                $upgrade = $true
+                if ($vArgs -match '__ODIS_MANIFEST__') {
+                    $man = Resolve-OdisManifest ([string]$u.Name)
+                    if ($man) { $vArgs = $vArgs.Replace('__ODIS_MANIFEST__', $man) } else { $upgrade = $false }
+                }
+                if ($upgrade) {
+                    $u.UnCommand = [string]$cat.uninstall.command
+                    $u.UnArgs = $vArgs
+                    $u.DetectPath = $detect
+                    $u.IsSilent = $true
+                    $u.Source = 'Vendor uninstaller'
+                }
                 if ($cat.cleanup) {
                     # union with what the registry already gave us, never a replacement:
                     # the registry InstallLocation and uninstall key are still real targets
@@ -3332,12 +4836,16 @@ function Refresh-UnList([object]$Manifest) {
                     $u.CleanReg    = @(@($u.CleanReg) + @($cat.cleanup.registry) | Where-Object { $_ } | Select-Object -Unique)
                     $u.CleanTokens = @(@($u.CleanTokens) + @($cat.cleanup.tokens) | Where-Object { $_ } | Select-Object -Unique)
                     $u.CleanHosts  = @(@($cat.cleanup.hosts) | Where-Object { $_ })
+                    $u.Removers    = @(@($cat.cleanup.removers) | Where-Object { $_ })
                 }
             }
         }
         $script:UnItems.Add($u)
     }
     $ListUn.ItemsSource = $script:UnView    # reattach the filtered view, never the raw collection
+    # the table's own cells - sizes, bars, dates, and the counts on the pills
+    Sync-UnCells
+    Sync-UnChrome
 }
 
 function Refresh-UnStore {
@@ -3371,6 +4879,8 @@ function Refresh-UnStore {
         $script:UnStore.Add($u)
     }
     $ListUn.ItemsSource = $script:StoreView
+    Sync-UnCells
+    Sync-UnChrome
 }
 
 # Turns a failed catalog fetch into something a technician can act on. Three genuinely
@@ -3401,6 +4911,18 @@ function Get-CatalogFailure([string]$Err) {
                       "apps.json is in that folder."
         }
     }
+    # A 403 here is the access gate, not a network problem - and the tool has no console to
+    # prompt on, so the honest answer is to go back through the go line, which does.
+    if ($Err -match '403|Forbidden') {
+        return @{
+            Badge = 'Access code required'
+            Log   = "The catalog refused this session's access code ($Err)."
+            Message = "The server refused the access code (or none was given).`n`n" +
+                      "Close this window and start again from the usual line:`n" +
+                      "  irm $BaseUrl/go | iex`n`n" +
+                      'It will ask for the code. If the code was changed recently, get the current one.'
+        }
+    }
     return @{
         Badge = 'No connection'
         Log   = "Cannot reach $url - $Err"
@@ -3424,10 +4946,10 @@ function Load-Catalog {
         # does Notepad. The catalog is still perfectly good JSON underneath, so fetch the bytes
         # and parse them rather than making a technician hunt for an invisible character.
         try {
-            $manifest = Invoke-RestMethod -Uri "$BaseUrl/apps.json" -UseBasicParsing -TimeoutSec 30
+            $manifest = Invoke-RestMethod -Uri "$BaseUrl/apps.json" -UseBasicParsing -TimeoutSec 30 -Headers $script:AccessHeader
             if ($manifest -is [string]) { $manifest = $manifest.TrimStart([char]0xFEFF) | ConvertFrom-Json }
         } catch {
-            $raw = (Invoke-WebRequest -Uri "$BaseUrl/apps.json" -UseBasicParsing -TimeoutSec 30).Content
+            $raw = (Invoke-WebRequest -Uri "$BaseUrl/apps.json" -UseBasicParsing -TimeoutSec 30 -Headers $script:AccessHeader).Content
             if ($raw -is [byte[]]) { $raw = [Text.Encoding]::UTF8.GetString($raw) }
             $manifest = ('' + $raw).TrimStart([char]0xFEFF) | ConvertFrom-Json
         }
@@ -3436,6 +4958,9 @@ function Load-Catalog {
         ($manifest | ConvertTo-Json -Depth 6) | Set-Content -Path $script:ManifestCache -Encoding UTF8
         $TxtCatalogInfo.Text = 'Live catalog'
         $DotLive.Fill = '#FF34D399'
+        # The code has done its job and is in memory for the rest of the session. It has no
+        # business outliving that on a client's disk.
+        Clear-AccessFile
     } catch {
         if (Test-Path $script:ManifestCache) {
             $manifest = Get-Content $script:ManifestCache -Raw | ConvertFrom-Json
@@ -3458,6 +4983,11 @@ function Load-Catalog {
     # Where-Object, because @() around a $null property yields a one-element array of nothing,
     # and that one element becomes a row with no name, no size and no way to explain itself
     foreach ($a in @(@($manifest.apps) | Where-Object { $_ })) {
+        # An uninstall-only entry carries a vendor's removal knowledge (uninstall block,
+        # cleanup, removers) for a product WE never install - Avast is the model. It feeds
+        # Refresh-UnList's row upgrade from the raw manifest and must never become an
+        # installable row: it has no url, no hash, nothing to download.
+        if ($a.uninstallOnly) { continue }
         $item = New-Object AppItem
         $item.Id = $a.id; $item.Name = $a.name; $item.Version = $a.version
         $item.Url = $a.url; $item.Sha256 = ('' + $a.sha256).ToUpper()
@@ -3469,6 +4999,10 @@ function Load-Catalog {
         $item.Size = Format-Size $item.SizeBytes
         $item.FileName = [IO.Path]::GetFileName(([Uri]$a.url).LocalPath)
         $item.PostInstall = $a.postInstall
+        # who must already be on the machine, and the cheapest probe for "is it": the
+        # uninstall block's detect path, read beside verifyPaths by Test-CatalogInstalled
+        $item.Requires = @(@($a.requires) | Where-Object { $_ } | ForEach-Object { [string]$_ })
+        if ($a.uninstall -and $a.uninstall.detect) { $item.DetectPath = [string]$a.uninstall.detect }
         # The catalog's cleanup block is read on the INSTALL side too, not just when the
         # app is being removed: an install that dies half-way leaves the same debris an
         # uninstaller would, and this is the only description of it we have. The app's own
@@ -3477,6 +5011,7 @@ function Load-Catalog {
             $item.CleanPaths = @(@($a.cleanup.paths)    | Where-Object { $_ } | Select-Object -Unique)
             $item.CleanReg   = @(@($a.cleanup.registry) | Where-Object { $_ } | Select-Object -Unique)
             $item.CleanHosts = @(@($a.cleanup.hosts)    | Where-Object { $_ })
+            $item.Removers   = @(@($a.cleanup.removers) | Where-Object { $_ })
         }
         $item.CleanTokens = @(@(@($a.cleanup.tokens) + $a.name) | Where-Object { $_ } | Select-Object -Unique)
         $item.Publisher = [string]$a.publisher
@@ -3520,7 +5055,7 @@ function Load-Catalog {
 # file - so the refresh is refused and the download fails honestly instead.
 function Get-FreshCatalogUrl([object]$Item) {
     try {
-        $m = Invoke-RestMethod -Uri "$BaseUrl/apps.json" -UseBasicParsing -TimeoutSec 30
+        $m = Invoke-RestMethod -Uri "$BaseUrl/apps.json" -UseBasicParsing -TimeoutSec 30 -Headers $script:AccessHeader
         $entry = @($m.apps) | Where-Object { $_.id -eq $Item.Id } | Select-Object -First 1
         if (-not $entry -or -not $entry.url) {
             Add-Log "Catalog refresh: $($Item.Name) is no longer in the catalog."
@@ -3549,70 +5084,121 @@ $script:UrlRefreshed = @{}
 # 'caution' entries remove software or change network/OS behaviour: they are grouped
 # separately, never pre-selected, and the tech confirms an extra dialog before they run.
 $script:TweakDefs = @(
-    # --- Essential ---
+    # --- Tweaks sub-tab: config only, pre-ticked (38) ---
     @{ id = 'activityhistory'; name = 'Activity History - Disable';        hint = 'policy' }
-    @{ id = 'bitlocker';       name = 'BitLocker - Disable';               hint = 'policy' }
+    @{ id = 'backgroundapps';  name = 'Background Apps - Disable';         hint = 'policy' }
+    @{ id = 'debloatweb';      name = 'Bing and Web Services - Remove';    hint = 'removes' }
     @{ id = 'consumerfeatures';name = 'ConsumerFeatures - Disable';        hint = 'policy' }
     @{ id = 'deliveryopt';     name = 'Delivery Optimization - Disable';   hint = 'policy' }
-    @{ id = 'diskcleanup';     name = 'Disk Cleanup - Run';                hint = 'runs' }
+    @{ id = 'desktopicons';    name = 'Desktop Icons - Show This PC and User Files'; hint = 'registry' }
+    @{ id = 'debloatdev';      name = 'Developer Tools - Remove';          hint = 'removes' }
+    @{ id = 'reservedstorage'; name = 'Disable Reserved Storage';          hint = 'dism' }
     @{ id = 'endtask';         name = 'End Task With Right Click - Enable';hint = 'registry' }
-    @{ id = 'folderdiscovery'; name = 'File Explorer Automatic Folder Discovery - Disable'; hint = 'registry' }
+    @{ id = 'faststartup';     name = 'Fast Startup - Disable';            hint = 'power' }
+    @{ id = 'explorerhome';    name = 'File Explorer Home and Gallery - Disable'; hint = 'registry' }
+    @{ id = 'explorerprivacy'; name = 'File Explorer Privacy - Clear and Disable'; hint = 'registry' }
+    @{ id = 'gamedvr';         name = 'Game DVR Background Recording - Disable'; hint = 'registry' }
     @{ id = 'hibernation';     name = 'Hibernation - Disable';             hint = 'power' }
     @{ id = 'location';        name = 'Location Tracking - Disable';       hint = 'policy' }
+    @{ id = 'debloatmsapps';   name = 'Microsoft Apps - Remove';           hint = 'removes' }
+    @{ id = 'edgedebloat';     name = 'Microsoft Edge - Debloat';          hint = 'policy' }
     @{ id = 'storesearch';     name = 'Microsoft Store Recommended Search Results - Disable'; hint = 'policy' }
+    @{ id = 'debloatmobile';   name = 'Mobile and Phone Link - Remove';    hint = 'removes' }
+    @{ id = 'nicpower';        name = 'Network Adapter Power Saving - Disable'; hint = 'network' }
+    @{ id = 'nettuning';       name = 'Network Throttling - Disable';      hint = 'registry' }
+    @{ id = 'oembloat';        name = 'OEM Updater Software - Disable';    hint = 'services' }
+    @{ id = 'powerplan';       name = 'Power Plan - High Performance';     hint = 'power' }
     @{ id = 'devicecompanion'; name = 'Prevent Device Companion Apps';     hint = 'policy' }
     @{ id = 'restorepoint';    name = 'Restore Point - Create';            hint = 'runs first' }
+    @{ id = 'rightclickmenu';  name = 'Right-Click Menu Previous Layout - Enable'; hint = 'registry' }
     @{ id = 'servicesmanual';  name = 'Services - Set to Manual';          hint = 'services' }
-    @{ id = 'startlayout';     name = 'Start Menu Previous Layout - Enable'; hint = 'registry' }
+    @{ id = 'startclean';      name = 'Start Menu - Clean Up';             hint = 'registry' }
+    @{ id = 'sysdefaults';     name = 'System Defaults - Optimize';        hint = 'registry' }
+    @{ id = 'taskbarclean';    name = 'Taskbar - Clean Up';                hint = 'registry' }
     @{ id = 'telemetry';       name = 'Telemetry - Disable';               hint = 'policy' }
-    @{ id = 'tempfiles';       name = 'Temporary Files - Remove';          hint = 'deletes' }
+    @{ id = 'uisnappy';        name = 'UI Response - Remove Menu Delays';  hint = 'registry' }
+    @{ id = 'debloatutil';     name = 'Utilities and Productivity - Remove'; hint = 'removes' }
+    @{ id = 'visualeffects';   name = 'Visual Effects - Set to Best Performance'; hint = 'registry' }
     @{ id = 'widgets';         name = 'Widgets - Remove';                  hint = 'removes' }
-    @{ id = 'wpbt';            name = 'Windows Platform Binary Table (WPBT) - Disable'; hint = 'registry' }
-    # --- Advanced (CAUTION) ---
+    @{ id = 'nagsoff';         name = 'Windows Suggestions and Ads - Disable'; hint = 'registry' }
+    @{ id = 'updatecontrol';   name = 'Windows Update - No Surprise Reboots or Driver Overwrites'; hint = 'policy' }
+    @{ id = 'debloatxbox';     name = 'Xbox and Gaming - Remove';          hint = 'removes' }
+    # --- Tweaks sub-tab: CAUTION, unticked - security/network posture, hardware-specific,
+    #     or removes something not trivially restorable (6) ---
     @{ id = 'adobeblock';      name = 'Adobe URL Block List - Enable';     hint = 'hosts';    caution = $true }
-    @{ id = 'backgroundapps';  name = 'Background Apps - Disable';         hint = 'policy';   caution = $true }
-    @{ id = 'bravedebloat';    name = 'Brave Browser - Debloat';           hint = 'policy';   caution = $true }
-    @{ id = 'utctime';         name = 'Date & Time - Set Time to UTC';     hint = 'registry'; caution = $true }
-    @{ id = 'reservedstorage'; name = 'Disable Reserved Storage';          hint = 'dism';     caution = $true }
-    @{ id = 'explorerhome';    name = 'File Explorer Home and Gallery - Disable'; hint = 'registry'; caution = $true }
-    @{ id = 'fullscreenopt';   name = 'Fullscreen Optimizations - Disable';hint = 'registry'; caution = $true }
-    @{ id = 'ipv6disable';     name = 'IPv6 - Disable';                    hint = 'network';  caution = $true }
-    @{ id = 'ipv4prefer';      name = 'IPv6 Set IPv4 as Preferred';        hint = 'network';  caution = $true }
-    @{ id = 'edgedebloat';     name = 'Microsoft Edge - Debloat';          hint = 'policy';   caution = $true }
-    @{ id = 'edgeremove';      name = 'Microsoft Edge - Remove';           hint = 'removes';  caution = $true }
+    @{ id = 'bitlocker';       name = 'BitLocker - Disable';               hint = 'policy';   caution = $true }
+    @{ id = 'dnsresolver';     name = 'DNS - Fast Public Resolvers';       hint = 'network';  caution = $true }
     @{ id = 'onedriveremove';  name = 'Microsoft OneDrive - Remove';       hint = 'removes';  caution = $true }
     @{ id = 'razerdisable';    name = 'Razer Software Auto-Install - Disable'; hint = 'policy'; caution = $true }
-    @{ id = 'rdpwarnings';     name = 'RDP Unsigned File Warnings - Disable'; hint = 'registry'; caution = $true }
-    @{ id = 'rightclickmenu';  name = 'Right-Click Menu Previous Layout - Enable'; hint = 'registry'; caution = $true }
-    @{ id = 'storagesense';    name = 'Storage Sense - Disable';           hint = 'registry'; caution = $true }
-    @{ id = 'traynotify';      name = 'System Tray Notifications & Calendar - Disable'; hint = 'registry'; caution = $true }
-    @{ id = 'teredo';          name = 'Teredo - Disable';                  hint = 'network';  caution = $true }
-    @{ id = 'visualeffects';   name = 'Visual Effects - Set to Best Performance'; hint = 'registry'; caution = $true }
     @{ id = 'windowsai';       name = 'Windows AI - Disable And Remove';   hint = 'removes';  caution = $true }
+    # --- Cleanup sub-tab: one-time disk actions, each reports reclaimed space (5).
+    #     componentstore is the DISM half SPLIT OUT of the old diskcleanup row - never
+    #     re-add it there, or one batch cleans the component store twice. ---
+    @{ id = 'diskcleanup';     name = 'Disk Cleanup - Run';                hint = 'runs';    tab = 'cleanup' }
+    @{ id = 'componentstore';  name = 'Component Store Cleanup';           hint = 'dism';    tab = 'cleanup' }
+    @{ id = 'tempfiles';       name = 'Temporary Files - Remove';          hint = 'deletes'; tab = 'cleanup' }
+    @{ id = 'recyclebin';      name = 'Recycle Bin - Empty (all drives)';  hint = 'deletes'; tab = 'cleanup' }
+    @{ id = 'windowsold';      name = 'Windows.old and Update Cache - Remove'; hint = 'deletes'; tab = 'cleanup'; caution = $true }
+    # --- Gaming sub-tab: the gaming-customer persona (14). Evidence-curated from the
+    #     GameOpt project (C:\Users\Legion-T7\Projects\Game-Optimization) - every row is a
+    #     real, mechanism-backed tweak, never a copy-pasted placebo. Undo is honest without
+    #     a journal: documented default, delete-to-inherit (power), driver-default reset
+    #     (NIC), or NVAPI delete-setting (NVIDIA). Runs only from this sub-tab's Apply,
+    #     which also un-ticks the two business defaults wrong on a gaming machine. ---
+    @{ id = 'gamingmode';      name = 'Game Mode - Enable';                hint = 'registry'; tab = 'gaming' }
+    @{ id = 'gpupriority';     name = 'Games Scheduling Priority - Raise'; hint = 'registry'; tab = 'gaming' }
+    @{ id = 'gamescheduler';   name = 'CPU Scheduling - Favor the Game';   hint = 'registry'; tab = 'gaming' }
+    @{ id = 'gamepower';       name = 'Power - Maximum Response (plugged in)'; hint = 'power'; tab = 'gaming' }
+    @{ id = 'coreparking';     name = 'CPU Core Parking - Disable (plugged in)'; hint = 'power'; tab = 'gaming' }
+    @{ id = 'fullscreenopt';   name = 'Fullscreen Optimizations - Disable';hint = 'registry'; tab = 'gaming' }
+    @{ id = 'gamebaroff';      name = 'Game Bar Overlay - Disable';        hint = 'registry'; tab = 'gaming' }
+    @{ id = 'inputqueue';      name = 'Input - Raw Response Queues';       hint = 'registry'; tab = 'gaming' }
+    @{ id = 'gamenet';         name = 'Network Stack - Low Latency';       hint = 'network';  tab = 'gaming' }
+    @{ id = 'nvidia';          name = 'NVIDIA - Low Latency Profile';      hint = 'nvapi';    tab = 'gaming' }
+    # CAUTION: hardware-specific, needs a reboot, drops the link, or changes security posture
+    @{ id = 'hags';            name = 'Hardware-Accelerated GPU Scheduling - Enable'; hint = 'registry'; tab = 'gaming'; caution = $true }
+    @{ id = 'gamenic';         name = 'Network Adapter - Gaming Profile';  hint = 'network';  tab = 'gaming'; caution = $true }
+    @{ id = 'interrupts';      name = 'GPU and NIC Interrupts - MSI + High Priority'; hint = 'registry'; tab = 'gaming'; caution = $true }
+    @{ id = 'memintegrity';    name = 'Memory Integrity (VBS) - Disable';  hint = 'registry'; tab = 'gaming'; caution = $true }
 )
 
 function Load-Tweaks {
     $script:TweakItems.Clear()
-    foreach ($t in $script:TweakDefs) {
-        $item = New-Object AppItem
-        $item.Id = "tweak-$($t.id)"
-        $item.Name = $t.name
-        $item.Size = ''
-        $item.Publisher = 'System tweak'
-        $item.UnArgs = $t.id          # the worker switches on this
-        $item.IsSilent = -not $t.caution
-        # IconBg is the 3px accent bar on the row - the only visual the tweak list keeps
-        if ($t.caution) {
-            $item.Category = 'Advanced Tweaks   CAUTION'
-            $item.IconBg = '#FFF59E0B'
-        } else {
-            $item.Category = 'Essential Tweaks'
-            $item.IconBg = '#FF3D7EF0'
+    $script:CleanItems.Clear()
+    $script:GameItems.Clear()
+    # One dashboard refresh for the whole load: without the guard, 54 PropertyChanged
+    # events would each rebuild the dashboard during startup.
+    $script:SuspendDash = $true
+    try {
+        foreach ($t in $script:TweakDefs) {
+            $item = New-Object AppItem
+            $item.Id = "tweak-$($t.id)"
+            $item.Name = $t.name
+            $item.Size = ''
+            $item.UnArgs = $t.id          # the worker switches on this
+            $item.IsSilent = -not $t.caution
+            $tab = "$($t.tab)"
+            $item.Publisher = switch ($tab) { 'cleanup' { 'Cleanup action' } 'gaming' { 'Gaming tweak' } default { 'System tweak' } }
+            # IconBg is the 3px accent bar on the row - the only visual the list keeps
+            if ($t.caution) {
+                $item.Category = 'CAUTION - tick deliberately'
+                $item.IconBg = '#FFF59E0B'
+            } else {
+                $item.Category = switch ($tab) { 'cleanup' { 'Cleanup' } 'gaming' { 'Gaming' } default { 'Tweaks' } }
+                $item.IconBg = '#FF2563EB'
+            }
+            # each list arrives pre-configured: everything ticked except CAUTION, so the
+            # everyday flow is open the sub-tab and press Apply
+            $item.IsSelected = -not $t.caution
+            $item.add_PropertyChanged({ param($s, $e) if ($e.PropertyName -eq 'IsSelected') { Update-Dash } })
+            switch ($tab) {
+                'cleanup' { $script:CleanItems.Add($item) }
+                'gaming'  { $script:GameItems.Add($item) }
+                default   { $script:TweakItems.Add($item) }
+            }
         }
-        $item.add_PropertyChanged({ param($s, $e) if ($e.PropertyName -eq 'IsSelected') { Update-Dash } })
-        $script:TweakItems.Add($item)
-    }
-    Add-Log "Tweaks available: $($script:TweakItems.Count) ($(@($script:TweakDefs | Where-Object { -not $_.caution }).Count) essential, $(@($script:TweakDefs | Where-Object { $_.caution }).Count) advanced)."
+    } finally { $script:SuspendDash = $false }
+    Add-Log "Optimize loaded: $($script:TweakItems.Count) tweaks ($(@($script:TweakItems | Where-Object { $_.IsSelected }).Count) pre-ticked), $($script:CleanItems.Count) cleanup actions ($(@($script:CleanItems | Where-Object { $_.IsSelected }).Count) pre-ticked), $($script:GameItems.Count) gaming tweaks ($(@($script:GameItems | Where-Object { $_.IsSelected }).Count) pre-ticked)."
 }
 
 # ---------- toolbox: repair actions and legacy panels ----------
@@ -3622,8 +5208,12 @@ function Load-Tweaks {
 $script:FixDefs = @(
     @{ id = 'autologon';  name = 'AutoLogon - Run';                group = 'Fixes'
        hint = 'sign in automatically at boot - asks for the account' }
+    @{ id = 'mpo';        name = 'Multiplane Overlay - Disable';   group = 'Fixes'
+       hint = 'fixes GPU flicker/stutter on some panels - costs performance on healthy machines, run only on a symptom' }
     @{ id = 'netreset';   name = 'Network - Reset';                group = 'Fixes'
        hint = 'winsock + TCP/IP stack, DNS cache, DHCP lease. Needs a reboot' }
+    @{ id = 's3sleep';    name = 'S3 Sleep - Force';               group = 'Fixes'
+       hint = 'fixes Modern Standby laptops that drain or overheat asleep - hardware-dependent, can break wake' }
     @{ id = 'ntp';        name = 'NTP Server - Enable';            group = 'Fixes'
        hint = 'point the clock at time.windows.com and resync now' }
     @{ id = 'sfc';        name = 'System Corruption Scan - Run';   group = 'Fixes'
@@ -3668,7 +5258,7 @@ function Load-Toolbox {
         $item.Publisher = [string]$d.hint
         $item.Category = [string]$d.group
         $item.IsSilent = $true
-        $item.IconBg = $(if ($d.group -eq 'Remote Access') { '#FFF59E0B' } else { '#FF3D7EF0' })
+        $item.IconBg = $(if ($d.group -eq 'Remote Access') { '#FFF59E0B' } else { '#FF2563EB' })
         $item.add_PropertyChanged({ param($s, $e) if ($e.PropertyName -eq 'IsSelected') { Update-Dash } })
         $script:FixItems.Add($item)
     }
@@ -3724,12 +5314,15 @@ function Start-FixBatch([object[]]$Sel, [hashtable]$Extra) {
     $script:EndQueued = $false
     $script:Paused = $false
     $script:AwaitingScan = $false
-    Remove-Item -LiteralPath $script:QueuePath, $script:StatusPath, $script:CancelPath -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $script:QueuePath, $script:StatusPath, $script:CancelPath, $script:SkipPath -ErrorAction SilentlyContinue
+    Show-BatchStrip
     if (-not (Start-Worker)) { Abort-Batch 'elevation declined'; return }
     foreach ($s in $Sel) {
         $e = @{ id = $s.Id; action = 'fix'; fix = [string]$s.UnArgs }
         if ($Extra) { foreach ($k in $Extra.Keys) { $e[$k] = $Extra[$k] } }
-        Add-Content -Path $script:QueuePath -Value ($e | ConvertTo-Json -Compress) -Encoding UTF8
+        # AutoLogon carries alPassword, so this goes through the same gate the account
+        # actions do - see Protect-QueueEntry
+        Add-Content -Path $script:QueuePath -Value ((Protect-QueueEntry $e) | ConvertTo-Json -Compress) -Encoding UTF8
     }
     Add-Content -Path $script:QueuePath -Value '{"end":true}' -Encoding UTF8
     $script:EndQueued = $true
@@ -3914,7 +5507,7 @@ function Load-Firewall {
             if ($n) { $matchedRoots += ($key + '\') }
 
             $u = New-Object AppItem
-            $u.Id = "fw-$([Math]::Abs($key.GetHashCode()))"
+            $u.Id = Get-RowId 'fw' $key
             $u.Name = Clean-DisplayName $r.Name
             $u.Publisher = $root
             $u.Version = Clean-DisplayName $r.Publisher
@@ -3954,7 +5547,7 @@ function Load-Firewall {
             $grp = $unmatched[$vk]
             $rules = @($grp.Rules)
             $u = New-Object AppItem
-            $u.Id = "fwx-$([Math]::Abs($vk.GetHashCode()))"
+            $u.Id = Get-RowId 'fwx' $vk
             $u.Name = Split-Path $grp.Path -Leaf
             $u.Publisher = $grp.Path
             $u.Version = 'no installed program claims this folder'
@@ -4148,6 +5741,28 @@ function Get-AdminMembers {
     return @{ Sids = $sids; Names = $names }
 }
 
+# What a well-known account is FOR.
+#
+# Windows ships four accounts nobody created, and two of them - DefaultAccount and
+# WDAGUtilityAccount - are indistinguishable from an ordinary standard user in a list. A
+# technician looking at seven rows on a machine with one real user has no way to tell which
+# are the machine's own, and the reasonable reaction to an account you do not recognise is to
+# try to remove it. The tool knows exactly what these are - it already refuses to delete them -
+# so it should say so on the row instead of leaving it to be worked out.
+#
+# Keyed on the RID, the last chunk of the SID, because every one of these names is localised:
+# 'Administrator' and 'Guest' are translated on a non-English Windows, the SID never is.
+function Get-AccountPurpose([string]$Sid) {
+    $rid = ('' + $Sid) -replace '^.*-', ''
+    switch ($rid) {
+        '500' { return 'built-in Windows account' }
+        '501' { return 'built-in Windows account' }
+        '503' { return 'Windows system account - runs Store app updates, never signs in' }
+        '504' { return 'Windows system account - Defender Application Guard' }
+    }
+    return ''
+}
+
 # Local accounts, including ones created moments ago that have no profile folder yet.
 # PrincipalSource is what separates a Microsoft-account sign-in from a real local account;
 # it is the thing the technician actually needs to see before deciding to migrate.
@@ -4162,7 +5777,13 @@ function Get-LocalAccounts {
             $srcKind = ('' + $u.PrincipalSource)
             $out += [pscustomobject]@{
                 Sid = $sid; Name = $u.Name; FullName = ('' + $u.FullName); Enabled = [bool]$u.Enabled
-                IsAdmin = ($admins.Sids.ContainsKey($sid) -or $admins.Names.ContainsKey($u.Name.ToLower()))
+                # SIDs when we have them, names ONLY as the net.exe fallback's last resort.
+                # Matching on name as well meant a domain member of the local Administrators
+                # group - DOMAINob - marked a local account also called bob as an
+                # Administrator. "Is this admin or standard?" is the whole question this tab
+                # exists to answer, so it must not be answered by a coincidence of names.
+                IsAdmin = $(if ($admins.Sids.Count) { $admins.Sids.ContainsKey($sid) }
+                            else { $admins.Names.ContainsKey($u.Name.ToLower()) })
                 # a SID ending -500 is the built-in Administrator, -501 Guest: never removable
                 IsBuiltin = ($sid -match '-(500|501|503|504)$')
                 Kind = $(if ($srcKind -eq 'MicrosoftAccount') { 'Microsoft account' }
@@ -4278,6 +5899,9 @@ function Load-Users {
     }
     # Accounts sub-tab: every local account including disabled ones, because enabling a
     # disabled account is one of the actions offered here.
+    # detach first: this is a grouped, sorted view now, and rebuilding the collection
+    # underneath a live one is what makes a CollectionView throw
+    $ListAccounts.ItemsSource = $null
     $script:AccountItems.Clear()
     foreach ($a in $allAccounts) {
         $prof = @($profiles | Where-Object { $_.Sid -eq $a.Sid -or $_.Name -eq $a.Name })[0]
@@ -4286,9 +5910,18 @@ function Load-Users {
         $u.Name = $a.Name
         # description line, the way the Windows account page reads: what it is, then where
         $bits = @($(if ($a.IsAdmin) { 'Administrator' } else { 'Standard user' }))
-        if ($a.Kind) { $bits += $a.Kind }
+        # What Windows ships, said plainly, in place of the account 'kind' - which for these
+        # only ever reads 'local account' and tells a technician nothing they did not know.
+        $purpose = Get-AccountPurpose $a.Sid
+        if ($purpose) { $bits += $purpose }
+        elseif ($a.Kind) { $bits += $a.Kind }
         if ($a.FullName -and $a.FullName -ne $a.Name) { $bits += "shown as `"$($a.FullName)`"" }
-        if ($prof) { $bits += $prof.Path } else { $bits += 'no profile folder yet' }
+        # 'yet' is a promise, and for a system account it is a false one: DefaultAccount and
+        # WDAGUtilityAccount never sign in, so they never get a profile folder. Saying one is
+        # coming reads as an account midway through being set up.
+        if ($prof) { $bits += $prof.Path }
+        elseif ($purpose) { $bits += 'no profile folder' }
+        else { $bits += 'no profile folder yet' }
         $u.Publisher = ($bits -join '   -   ')
         $u.Version = ''
         # the badge on the right
@@ -4299,8 +5932,13 @@ function Load-Users {
         $u.DetectPath = $a.Sid
         $u.IsSilent = [bool]$a.Enabled
         $u.RegKey = $(if ($a.IsAdmin) { 'admin' } else { 'standard' })
-        $u.IconBg = $(if (-not $a.Enabled) { '#FF4A4A52' } elseif ($a.IsAdmin) { '#FF3D7EF0' } else { '#FF64748B' })
+        $u.IconBg = $(if (-not $a.Enabled) { '#FF4A4A52' } elseif ($a.IsAdmin) { '#FF2563EB' } else { '#FF64748B' })
         $u.IconData = $IconMap['default'][0]
+        # Which section. 'Windows owns it' and 'it is switched off' are one group on purpose:
+        # both mean "not an account anybody is signing in with", which is the only distinction
+        # that matters when you are scanning the list. Administrator and Guest are both.
+        $u.Category = $(if ($purpose -or -not $a.Enabled) { 'Built into Windows, or switched off' }
+                        else { 'Accounts in use' })
         # clicking a row IS the action - open that account's dialog
         $u.add_PropertyChanged({
             param($s, $e)
@@ -4311,26 +5949,53 @@ function Load-Users {
         $script:AccountItems.Add($u)
     }
 
+    $ListAccounts.ItemsSource = $script:AcctView
     $ListSrcUsers.ItemsSource = $script:SrcView
     $ListDstUsers.ItemsSource = $script:DstView
     Add-Log "Users: $($script:SrcUsers.Count) profile(s) on disk, $($script:AccountItems.Count) local account(s), $(@($allAccounts | Where-Object { $_.IsAdmin }).Count) Administrator(s)."
 
-    $TxtAcctHint.Text = "$($script:AccountItems.Count) account(s), $(@($allAccounts | Where-Object { $_.IsAdmin }).Count) administrator(s). Click one to manage it."
+    # "2 administrator(s)" counted the built-in Administrator, which ships DISABLED and cannot
+    # sign in - so a machine with exactly one usable admin reported two. That is the single
+    # question this tab exists to answer, and the count has to answer it the way a technician
+    # means it: how many accounts can actually elevate right now.
+    $adminAll = @($allAccounts | Where-Object { $_.IsAdmin })
+    $adminOn  = @($adminAll | Where-Object { $_.Enabled })
+    $adminTxt = $(if ($adminAll.Count -ne $adminOn.Count) {
+                      "$($adminOn.Count) usable administrator(s) ($($adminAll.Count - $adminOn.Count) disabled)"
+                  } else { "$($adminOn.Count) administrator(s)" })
+    $TxtAcctHint.Text = "$($script:AccountItems.Count) account(s), $adminTxt"
 
-    $msa = @($accounts | Where-Object { $_.Kind -eq 'Microsoft account' })
-    if ($script:DstUsers.Count -le 1) {
-        $TxtUserHint.Text = 'This machine has one account, so there is nowhere to copy to yet. ' +
-                            'Step 1: create the new admin here. It appears under Copy TO as soon as it exists.'
-    } elseif ($msa.Count) {
-        $TxtUserHint.Text = "$(($msa | ForEach-Object { $_.Name }) -join ', ') " +
-                            $(if ($msa.Count -eq 1) { 'signs in with a Microsoft account.' } else { 'sign in with Microsoft accounts.' }) +
-                            ' Use MS Account -> Local below to convert one, or copy its data into a new local admin.'
-    } else {
-        $TxtUserHint.Text = 'Step 1: create the account (Administrator, no password, profile folder built immediately). ' +
-                            'Then pick a source on the left, a destination in the middle, and what to copy on the right.'
-    }
+    # Which accounts sign in with Microsoft, remembered rather than recomputed: Load-Users is the
+    # only place that knows, and the hint below is now rewritten on every mode change, long after
+    # this has finished running.
+    $script:MsaNames = @($accounts | Where-Object { $_.Kind -eq 'Microsoft account' } | ForEach-Object { [string]$_.Name })
+    Sync-UserHint
     Update-UserEmptyStates
     Build-MigrateList
+}
+
+# The instruction line follows the MODE, and it has to be rewritten WHEN the mode changes.
+#
+# It used to be set only inside Load-Users, which runs when the tab is first opened and never
+# again. Switching to "Restore a backup" therefore left a line on screen telling the technician to
+# create an account first and then pick a destination "in the middle" - neither the job in front
+# of them nor the layout they were looking at. Caught by rendering the tab in all three modes.
+function Sync-UserHint {
+    # Instructional placeholder lines removed by request - only lines that carry DATA
+    # about this machine survive here.
+    switch ($script:BackupMode) {
+        'folder'  { $TxtUserHint.Text = ''; return }
+        'restore' { $TxtUserHint.Text = ''; return }
+    }
+    $msa = @($script:MsaNames)
+    if ($script:DstUsers.Count -le 1) {
+        $TxtUserHint.Text = 'This machine has one account.'
+    } elseif ($msa.Count) {
+        $TxtUserHint.Text = "$($msa -join ', ') " +
+                            $(if ($msa.Count -eq 1) { 'signs in with a Microsoft account.' } else { 'sign in with Microsoft accounts.' })
+    } else {
+        $TxtUserHint.Text = ''
+    }
 }
 
 # Accounts and Migration are separate top-level tabs now, so the old sub-tab switcher is gone.
@@ -4426,7 +6091,9 @@ function Update-UserEmptyStates {
     if ($script:MigrateItems.Count -eq 0) {
         $EmptyMigrate.Text = $(if ($script:SrcPick) {
                 "Nothing to copy from `"$($script:SrcPick)`" - none of the usual data folders exist in that profile."
-            } else { "Pick a profile under Copy FROM.`n`nIts folders appear here once selected." })
+            } else { $(switch ($script:BackupMode) {
+                          'restore' { "Choose the backup folder on the left.`n`nWhat it contains appears here." }
+                          default   { "Pick a profile on the left.`n`nIts folders appear here once selected." } }) })
         $EmptyMigrate.Visibility = 'Visible'
     }
 
@@ -4454,13 +6121,19 @@ function Get-SelectedUser([object]$Collection) {
 # Rebuild the "what to copy" list for whichever source is selected: only folders that
 # actually exist are shown, so the tech is never offered something that is not there.
 function Build-MigrateList {
-    $src = Get-SelectedUser $script:SrcUsers
     $script:MigrateItems.Clear()
-    if (-not $src) {
-        Update-Dash
-        return
+    # A RESTORE lists what is in the backup, not what is on a profile. Reading the source
+    # profile here would offer folders the backup does not contain and hide ones it does.
+    $root = ''
+    if ($script:BackupMode -eq 'restore') {
+        $root = $script:FolderPath
+        if (-not $root -or -not (Test-Path -LiteralPath $root)) { Update-Dash; return }
+    } else {
+        $src = Get-SelectedUser $script:SrcUsers
+        if (-not $src) { Update-Dash; return }
+        $root = [string]$src.UnArgs
     }
-    $root = [string]$src.UnArgs
+    if (-not $root) { Update-Dash; return }
     foreach ($d in $script:MigrateDefs) {
         $full = Join-Path $root $d.id
         if (-not (Test-Path -LiteralPath $full)) { continue }
@@ -4471,7 +6144,7 @@ function Build-MigrateList {
         $item.Size = ''
         $item.IsSilent = [bool]$d.safe
         $item.Category = $(if ($d.safe) { 'What to copy   -   user data' } else { 'From AppData   -   pick deliberately' })
-        $item.IconBg = $(if ($d.safe) { '#FF3D7EF0' } else { '#FFF59E0B' })
+        $item.IconBg = $(if ($d.safe) { '#FF2563EB' } else { '#FFF59E0B' })
         $item.IsSelected = [bool]$d.safe
         $item.add_PropertyChanged({ param($s, $e) if ($e.PropertyName -eq 'IsSelected') { Update-Dash } })
         $script:MigrateItems.Add($item)
@@ -4495,11 +6168,10 @@ function Build-MigrateList {
 #              which is what makes "default is on" settings report correctly on a fresh PC.
 $script:PrefTableSource = @'
 $script:PrefDefs = @(
-    @{ id='bsodverbose'; name='BSOD Verbose Mode'
-       on =@(@{p='HKLM\SYSTEM\CurrentControlSet\Control\CrashControl'; n='DisplayParameters'; v=1})
-       off=@(@{p='HKLM\SYSTEM\CurrentControlSet\Control\CrashControl'; n='DisplayParameters'; v=0})
-       test=@{p='HKLM\SYSTEM\CurrentControlSet\Control\CrashControl'; n='DisplayParameters'; v=1} }
-
+    # 11 former toggles were removed because a tweak row now owns the same registry value
+    # (sysdefaults, storesearch, startclean, taskbarclean) - two controls driving one value
+    # makes detection unreliable. 2 more (mpo, s3sleep) moved to Tools > Fixes: they are
+    # repairs, not preferences. What survives is genuinely per-client.
     @{ id='darktheme'; name='Dark Theme for Windows'
        on =@(@{p='HKCU\SOFTWARE\Microsoft\Windows\CurrentVersion\Themes\Personalize'; n='AppsUseLightTheme'; v=0},
              @{p='HKCU\SOFTWARE\Microsoft\Windows\CurrentVersion\Themes\Personalize'; n='SystemUsesLightTheme'; v=0})
@@ -4507,37 +6179,17 @@ $script:PrefDefs = @(
              @{p='HKCU\SOFTWARE\Microsoft\Windows\CurrentVersion\Themes\Personalize'; n='SystemUsesLightTheme'; v=1})
        test=@{p='HKCU\SOFTWARE\Microsoft\Windows\CurrentVersion\Themes\Personalize'; n='AppsUseLightTheme'; v=0} }
 
-    @{ id='longpaths'; name='Enable Long Paths'
-       on =@(@{p='HKLM\SYSTEM\CurrentControlSet\Control\FileSystem'; n='LongPathsEnabled'; v=1})
-       off=@(@{p='HKLM\SYSTEM\CurrentControlSet\Control\FileSystem'; n='LongPathsEnabled'; v=0})
-       test=@{p='HKLM\SYSTEM\CurrentControlSet\Control\FileSystem'; n='LongPathsEnabled'; v=1} }
-
-    @{ id='fileext'; name='File Explorer File Extensions'
-       on =@(@{p='HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced'; n='HideFileExt'; v=0})
-       off=@(@{p='HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced'; n='HideFileExt'; v=1})
-       test=@{p='HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced'; n='HideFileExt'; v=0} }
-
     @{ id='hiddenfiles'; name='File Explorer Hidden Files'
        on =@(@{p='HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced'; n='Hidden'; v=1})
        off=@(@{p='HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced'; n='Hidden'; v=2})
        test=@{p='HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced'; n='Hidden'; v=1} }
 
-    @{ id='gamemode'; name='Game Mode'
-       on =@(@{p='HKCU\Software\Microsoft\GameBar'; n='AutoGameModeEnabled'; v=1},
-             @{p='HKCU\Software\Microsoft\GameBar'; n='AllowAutoGameMode'; v=1})
-       off=@(@{p='HKCU\Software\Microsoft\GameBar'; n='AutoGameModeEnabled'; v=0},
-             @{p='HKCU\Software\Microsoft\GameBar'; n='AllowAutoGameMode'; v=0})
-       test=@{p='HKCU\Software\Microsoft\GameBar'; n='AutoGameModeEnabled'; v=1; abs=$true} }
-
+    # Game Mode moved to the Gaming sub-tab (gamingmode row) - same absorption rule as
+    # sysdefaults: a tweak row now owns AutoGameModeEnabled, so the toggle is gone.
     @{ id='lockscreen'; name='Lock Screen - Disable'
        on =@(@{p='HKLM\SOFTWARE\Policies\Microsoft\Windows\Personalization'; n='NoLockScreen'; v=1})
        off=@(@{p='HKLM\SOFTWARE\Policies\Microsoft\Windows\Personalization'; n='NoLockScreen'; v=$null})
        test=@{p='HKLM\SOFTWARE\Policies\Microsoft\Windows\Personalization'; n='NoLockScreen'; v=1} }
-
-    @{ id='logonblur'; name='Logon Screen Acrylic Blur'
-       on =@(@{p='HKLM\SOFTWARE\Policies\Microsoft\Windows\System'; n='DisableAcrylicBackgroundOnLogon'; v=0})
-       off=@(@{p='HKLM\SOFTWARE\Policies\Microsoft\Windows\System'; n='DisableAcrylicBackgroundOnLogon'; v=1})
-       test=@{p='HKLM\SOFTWARE\Policies\Microsoft\Windows\System'; n='DisableAcrylicBackgroundOnLogon'; v=0; abs=$true} }
 
     @{ id='logonverbose'; name='Logon Verbose Mode'
        on =@(@{p='HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System'; n='VerboseStatus'; v=1})
@@ -4558,29 +6210,12 @@ $script:PrefDefs = @(
              @{p='HKCU\Control Panel\Mouse'; n='MouseThreshold2'; v='0'; t='String'})
        test=@{p='HKCU\Control Panel\Mouse'; n='MouseSpeed'; v='1'; abs=$true} }
 
-    @{ id='mpo'; name='Multiplane Overlay'
-       on =@(@{p='HKLM\SOFTWARE\Microsoft\Windows\Dwm'; n='OverlayTestMode'; v=$null})
-       off=@(@{p='HKLM\SOFTWARE\Microsoft\Windows\Dwm'; n='OverlayTestMode'; v=5})
-       test=@{p='HKLM\SOFTWARE\Microsoft\Windows\Dwm'; n='OverlayTestMode'; v=$null; abs=$true} }
-
-    @{ id='numlock'; name='Num Lock on Startup'
-       on =@(@{p='Registry::HKEY_USERS\.DEFAULT\Control Panel\Keyboard'; n='InitialKeyboardIndicators'; v='2'; t='String'},
-             @{p='HKCU\Control Panel\Keyboard'; n='InitialKeyboardIndicators'; v='2'; t='String'})
-       off=@(@{p='Registry::HKEY_USERS\.DEFAULT\Control Panel\Keyboard'; n='InitialKeyboardIndicators'; v='0'; t='String'},
-             @{p='HKCU\Control Panel\Keyboard'; n='InitialKeyboardIndicators'; v='0'; t='String'})
-       test=@{p='Registry::HKEY_USERS\.DEFAULT\Control Panel\Keyboard'; n='InitialKeyboardIndicators'; v='2'} }
-
     @{ id='s0network'; name='S0 Sleep Network Connectivity'
        on =@(@{p='HKLM\SYSTEM\CurrentControlSet\Control\Power\PowerSettings\F15576E8-98B7-4186-B944-EAFA664402D9'; n='ACSettingIndex'; v=1},
              @{p='HKLM\SYSTEM\CurrentControlSet\Control\Power\PowerSettings\F15576E8-98B7-4186-B944-EAFA664402D9'; n='DCSettingIndex'; v=1})
        off=@(@{p='HKLM\SYSTEM\CurrentControlSet\Control\Power\PowerSettings\F15576E8-98B7-4186-B944-EAFA664402D9'; n='ACSettingIndex'; v=0},
              @{p='HKLM\SYSTEM\CurrentControlSet\Control\Power\PowerSettings\F15576E8-98B7-4186-B944-EAFA664402D9'; n='DCSettingIndex'; v=0})
        test=@{p='HKLM\SYSTEM\CurrentControlSet\Control\Power\PowerSettings\F15576E8-98B7-4186-B944-EAFA664402D9'; n='ACSettingIndex'; v=1; abs=$true} }
-
-    @{ id='s3sleep'; name='S3 Sleep'
-       on =@(@{p='HKLM\SYSTEM\CurrentControlSet\Control\Power'; n='PlatformAoAcOverride'; v=0})
-       off=@(@{p='HKLM\SYSTEM\CurrentControlSet\Control\Power'; n='PlatformAoAcOverride'; v=$null})
-       test=@{p='HKLM\SYSTEM\CurrentControlSet\Control\Power'; n='PlatformAoAcOverride'; v=0} }
 
     @{ id='scrollbars'; name='Scrollbars Always Visible'
        on =@(@{p='HKCU\Control Panel\Accessibility'; n='DynamicScrollbars'; v=0})
@@ -4592,46 +6227,39 @@ $script:PrefDefs = @(
        off=@(@{p='HKCU\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer'; n='SettingsPageVisibility'; v='hide:home'; t='String'})
        test=@{p='HKCU\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer'; n='SettingsPageVisibility'; v=$null; abs=$true} }
 
-    @{ id='bingsearch'; name='Start Menu Bing Search'
-       on =@(@{p='HKCU\Software\Microsoft\Windows\CurrentVersion\Search'; n='BingSearchEnabled'; v=1})
-       off=@(@{p='HKCU\Software\Microsoft\Windows\CurrentVersion\Search'; n='BingSearchEnabled'; v=0})
-       test=@{p='HKCU\Software\Microsoft\Windows\CurrentVersion\Search'; n='BingSearchEnabled'; v=1; abs=$true} }
-
-    @{ id='startrecommend'; name='Start Menu Recommendations'
-       on =@(@{p='HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced'; n='Start_IrisRecommendations'; v=1})
-       off=@(@{p='HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced'; n='Start_IrisRecommendations'; v=0})
-       test=@{p='HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced'; n='Start_IrisRecommendations'; v=1; abs=$true} }
-
-    @{ id='stickykeys'; name='Sticky Keys'
-       on =@(@{p='HKCU\Control Panel\Accessibility\StickyKeys'; n='Flags'; v='510'; t='String'})
-       off=@(@{p='HKCU\Control Panel\Accessibility\StickyKeys'; n='Flags'; v='506'; t='String'})
-       test=@{p='HKCU\Control Panel\Accessibility\StickyKeys'; n='Flags'; v='510'; abs=$true} }
-
-    @{ id='batterypct'; name='System Tray Battery Percentage'
-       on =@(@{p='HKCU\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\Advanced'; n='ShowBatteryPercentage'; v=1})
-       off=@(@{p='HKCU\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\Advanced'; n='ShowBatteryPercentage'; v=0})
-       test=@{p='HKCU\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\Advanced'; n='ShowBatteryPercentage'; v=1} }
-
     @{ id='taskbarcenter'; name='Taskbar Centered Icons'
        on =@(@{p='HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced'; n='TaskbarAl'; v=1})
        off=@(@{p='HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced'; n='TaskbarAl'; v=0})
        test=@{p='HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced'; n='TaskbarAl'; v=1; abs=$true} }
-
-    @{ id='taskbarsearch'; name='Taskbar Search Icon'
-       on =@(@{p='HKCU\Software\Microsoft\Windows\CurrentVersion\Search'; n='SearchboxTaskbarMode'; v=1})
-       off=@(@{p='HKCU\Software\Microsoft\Windows\CurrentVersion\Search'; n='SearchboxTaskbarMode'; v=0})
-       test=@{p='HKCU\Software\Microsoft\Windows\CurrentVersion\Search'; n='SearchboxTaskbarMode'; v=@(1,2,3); abs=$true} }
-
-    @{ id='taskview'; name='Taskbar Task View Icon'
-       on =@(@{p='HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced'; n='ShowTaskViewButton'; v=1})
-       off=@(@{p='HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced'; n='ShowTaskViewButton'; v=0})
-       test=@{p='HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced'; n='ShowTaskViewButton'; v=1; abs=$true} }
 
     @{ id='windowsnap'; name='Window Snapping'
        on =@(@{p='HKCU\Control Panel\Desktop'; n='WindowArrangementActive'; v='1'; t='String'})
        off=@(@{p='HKCU\Control Panel\Desktop'; n='WindowArrangementActive'; v='0'; t='String'})
        test=@{p='HKCU\Control Panel\Desktop'; n='WindowArrangementActive'; v='1'; abs=$true} }
 )
+
+# ---------- store debloat groups ----------
+# One source of truth for the six grouped Store-debloat rows: the GUI's detection probes
+# and the worker's apply branches must agree on the SAME patterns, or "Detect Applied"
+# lies about what a batch actually removed. Matched with a trailing * because package
+# identities carry publisher suffixes and vary by build.
+# Count for reporting: 22 apps, not 24 - XboxApp/GamingApp and MSTeams/MicrosoftTeams are
+# old and new generations of the same two apps.
+$script:DebloatPacks = @{
+    debloatweb    = @('Microsoft.BingSearch', 'Microsoft.BingNews', 'Microsoft.BingWeather', 'Microsoft.StartExperiencesApp')
+    debloatdev    = @('Microsoft.Windows.DevHome', 'Microsoft.PowerAutomateDesktop')
+    debloatxbox   = @('Microsoft.MicrosoftSolitaireCollection', 'Microsoft.GamingApp', 'Microsoft.XboxApp',
+                      'Microsoft.XboxGamingOverlay', 'Microsoft.XboxIdentityProvider',
+                      'Microsoft.XboxSpeechToTextOverlay', 'Microsoft.Xbox.TCUI')
+    debloatmsapps = @('Microsoft.WindowsFeedbackHub', 'Microsoft.GetHelp', 'MSTeams', 'MicrosoftTeams', 'Microsoft.OutlookForWindows')
+    debloatmobile = @('MicrosoftWindows.CrossDevice', 'Microsoft.YourPhone')
+    debloatutil   = @('Microsoft.WindowsAlarms', 'Clipchamp.Clipchamp', 'MicrosoftCorporationII.QuickAssist', 'Microsoft.Todos')
+}
+
+# OEM updater services and logon tasks are matched by pattern because the names vary by
+# vendor. Shared for the same reason as the debloat packs: probe and apply must agree.
+$script:OemBloatPatterns = @('HP*', 'Dell*', 'SupportAssist*', 'Lenovo*', 'Acer*', 'ASUS*',
+                             'Nahimic*', 'Killer*', 'AdobeUpdate*', 'GoogleUpdate*', 'jusched*')
 '@
 Invoke-Expression $script:PrefTableSource
 
@@ -4690,8 +6318,8 @@ function Sync-Prefs {
 
 # A preference is only work if its tick no longer matches what the machine said.
 # This is compared against the CACHED reading, never the live registry: it runs from
-# Update-Dash, which fires on every checkbox change, and re-reading 25 values per tick
-# made a preset click (38 changes) do nearly a thousand registry reads and freeze the tab.
+# Update-Dash, which fires on every checkbox change, and re-reading every toggle per tick
+# once made a bulk selection change do nearly a thousand registry reads and freeze the tab.
 function Get-PendingPrefs {
     $out = @()
     foreach ($item in $script:PrefItems) {
@@ -4701,36 +6329,52 @@ function Get-PendingPrefs {
     return @($out)
 }
 
-# ---------- presets ----------
-# Hand-ticking 38 rows on every client is how a technician ends up applying the wrong set.
-# IPv6 - Disable and IPv6 Set IPv4 as Preferred write the SAME registry value to different
-# numbers, so no preset may ever contain both.
-$script:TweakPresets = @{
-    # safe on any machine: privacy and disk, nothing that changes how Windows behaves
-    Minimal  = @('restorepoint', 'telemetry', 'activityhistory', 'consumerfeatures',
-                 'deliveryopt', 'location', 'wpbt', 'tempfiles')
-    # the recommended build: every Essential plus the advanced items that are reversible
-    # and well understood
-    Standard = @('restorepoint', 'activityhistory', 'bitlocker', 'consumerfeatures', 'deliveryopt',
-                 'diskcleanup', 'endtask', 'folderdiscovery', 'hibernation', 'location',
-                 'storesearch', 'devicecompanion', 'servicesmanual', 'startlayout', 'telemetry',
-                 'tempfiles', 'widgets', 'wpbt',
-                 'backgroundapps', 'storagesense', 'explorerhome', 'rightclickmenu', 'visualeffects')
-    # everything, minus ipv4prefer because ipv6disable is the stronger form of the same setting
-    Advanced = @($script:TweakDefs | ForEach-Object { $_.id } | Where-Object { $_ -ne 'ipv4prefer' })
-}
+# ---------- sub-tabs ----------
+# Optimize is three sub-tabs - Tweaks, Cleanup, Preferences - each full width, each with
+# its own Apply. Buttons act on the sub-tab on screen only: nothing you cannot see runs.
+# The presets are gone: each list arrives pre-configured (ticked except CAUTION), so
+# adding a tweak later is "add a row", not "edit three preset arrays".
+$script:OptSubTab = 'Tweaks'
 
-function Select-TweakPreset([string]$Name) {
-    $ids = @($script:TweakPresets[$Name])
-    # one dashboard refresh for the whole preset, not one per row
-    $script:SuspendDash = $true
-    try {
-        foreach ($t in $script:TweakItems) { $t.IsSelected = ($ids -contains $t.UnArgs) }
-    } finally { $script:SuspendDash = $false }
-    $n = @($script:TweakItems | Where-Object { $_.IsSelected }).Count
-    $risky = @($script:TweakItems | Where-Object { $_.IsSelected -and -not $_.IsSilent }).Count
-    $TxtTweakHint.Text = "$Name preset: $n selected ($risky in CAUTION)"
-    Add-Log "$Name preset selected: $n tweak(s), $risky from the CAUTION group."
+function Select-OptTab([string]$Which) {
+    $script:OptSubTab = $Which
+    $BtnSubTweaks.Style = $window.FindResource($(if ($Which -eq 'Tweaks') { 'TabActive' } else { 'TabIdle' }))
+    $BtnSubClean.Style  = $window.FindResource($(if ($Which -eq 'Clean')  { 'TabActive' } else { 'TabIdle' }))
+    $BtnSubGame.Style   = $window.FindResource($(if ($Which -eq 'Game')   { 'TabActive' } else { 'TabIdle' }))
+    $BtnSubPrefs.Style  = $window.FindResource($(if ($Which -eq 'Prefs')  { 'TabActive' } else { 'TabIdle' }))
+    $ScrollTweaks.Visibility = $(if ($Which -eq 'Tweaks') { 'Visible' } else { 'Collapsed' })
+    $ScrollClean.Visibility  = $(if ($Which -eq 'Clean')  { 'Visible' } else { 'Collapsed' })
+    $ScrollGame.Visibility   = $(if ($Which -eq 'Game')   { 'Visible' } else { 'Collapsed' })
+    $ScrollPrefs.Visibility  = $(if ($Which -eq 'Prefs')  { 'Visible' } else { 'Collapsed' })
+    # Undo exists for config tweaks (Tweaks, Gaming): cleanup rows are one-time actions,
+    # and a preference has no undo - you flip the toggle and Apply.
+    $BtnTweakUndo.Visibility = $(if ($Which -in 'Tweaks', 'Game' -and $PanelTweak.Visibility -eq 'Visible') { 'Visible' } else { 'Collapsed' })
+    $TxtTweakApplyBtn.Text = switch ($Which) {
+        'Clean' { 'Run Cleanup' }
+        'Game'  { 'Apply Gaming' }
+        'Prefs' { 'Apply Preferences' }
+        default { 'Apply Tweaks' }
+    }
+    # Select All / Clear All act on a ticked list - meaningless for preference toggles,
+    # which mirror the machine (Select All there would mean "turn everything on")
+    $BtnSelAll.Visibility  = $(if ($Which -eq 'Prefs') { 'Collapsed' } else { 'Visible' })
+    $BtnSelNone.Visibility = $(if ($Which -eq 'Prefs') { 'Collapsed' } else { 'Visible' })
+    # the latency probe is the Gaming sub-tab's evidence tool - meaningless elsewhere
+    $BtnMeasure.Visibility = $(if ($Which -eq 'Game') { 'Visible' } else { 'Collapsed' })
+    switch ($Which) {
+        'Clean' {
+            # a nearly-full disk is the reason to run these - show it before the decision
+            $free = ''
+            try {
+                $d = Get-PSDrive -Name ($env:SystemDrive.TrimEnd(':')) -ErrorAction Stop
+                $tot = $d.Used + $d.Free
+                if ($tot -gt 0) { $free = "$($env:SystemDrive) free: $(Format-Size $d.Free) of $(Format-Size $tot) ($([math]::Round($d.Free * 100.0 / $tot))%)" }
+            } catch {}
+            $TxtTweakHint.Text = $free
+        }
+        'Prefs'  { $TxtTweakHint.Text = '' }
+        default  { $TxtTweakHint.Text = '' }
+    }
     Update-Dash
 }
 
@@ -4753,14 +6397,158 @@ function Test-RegVal([string]$Path, [string]$Name, $Expected) {
     return ("$v" -eq "$Expected")
 }
 
+# NVAPI class source, shared by the GUI probe (Test-NvSetting) and the elevated worker.
+# NVIDIA Control Panel 3D settings (Low Latency Mode, Max Prerendered Frames) are NOT
+# registry values - they live in a binary profile DB (nvdrsdb0.bin) only NVAPI can write,
+# reached through nvapi_QueryInterface + numeric function ids. Ported from GameOpt's
+# Core\NvApi.ps1. DeleteSetting (0xE4A26362) is ADDED here (GameOpt omitted it), so undo
+# genuinely removes a setting instead of leaving it and telling the user to use the
+# Control Panel. The worker inlines an identical copy - keep the two in sync.
+$script:NvApiSource = @'
+using System;
+using System.Runtime.InteropServices;
+public static class GoNvApi
+{
+    [DllImport("nvapi64.dll", EntryPoint = "nvapi_QueryInterface", CallingConvention = CallingConvention.Cdecl)]
+    private static extern IntPtr QueryInterface(uint id);
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)] private delegate int D_Init();
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)] private delegate int D_CreateSession(out IntPtr h);
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)] private delegate int D_DestroySession(IntPtr h);
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)] private delegate int D_LoadSettings(IntPtr h);
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)] private delegate int D_SaveSettings(IntPtr h);
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)] private delegate int D_GetBaseProfile(IntPtr h, out IntPtr p);
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)] private delegate int D_GetSetting(IntPtr h, IntPtr p, uint id, IntPtr setting);
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)] private delegate int D_SetSetting(IntPtr h, IntPtr p, IntPtr setting);
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)] private delegate int D_DelSetting(IntPtr h, IntPtr p, uint id);
+    private static D_Init _init; private static D_CreateSession _createSession; private static D_DestroySession _destroySession;
+    private static D_LoadSettings _loadSettings; private static D_SaveSettings _saveSettings; private static D_GetBaseProfile _getBaseProfile;
+    private static D_GetSetting _getSetting; private static D_SetSetting _setSetting; private static D_DelSetting _delSetting;
+    private static bool _ready;
+    private static T Bind<T>(uint id) where T : class {
+        IntPtr p = QueryInterface(id); if (p == IntPtr.Zero) return null;
+        return Marshal.GetDelegateForFunctionPointer(p, typeof(T)) as T;
+    }
+    public static bool Ready { get { return _ready; } }
+    public static int Initialize() {
+        if (_ready) return 0;
+        _init = Bind<D_Init>(0x0150E828); _createSession = Bind<D_CreateSession>(0x0694D52E); _destroySession = Bind<D_DestroySession>(0xDAD9CFF8);
+        _loadSettings = Bind<D_LoadSettings>(0x375DBD6B); _saveSettings = Bind<D_SaveSettings>(0xFCBC7E14); _getBaseProfile = Bind<D_GetBaseProfile>(0xDA8466A0);
+        _getSetting = Bind<D_GetSetting>(0x73BF8338); _setSetting = Bind<D_SetSetting>(0x577DD202); _delSetting = Bind<D_DelSetting>(0xE4A26362);
+        if (_init == null || _createSession == null || _loadSettings == null || _getBaseProfile == null ||
+            _getSetting == null || _setSetting == null || _saveSettings == null || _destroySession == null) return -1000;
+        int r = _init(); if (r != 0) return r; _ready = true; return 0;
+    }
+    private const int UNICODE_CHARS = 2048; private const int BINARY_MAX = 4096;
+    private static int SettingStructSize() { return 4 + (UNICODE_CHARS * 2) + 4 + 4 + 4 + 4 + 4 + (4 + BINARY_MAX) + (4 + BINARY_MAX); }
+    private static uint SettingVersion() { return (uint)(SettingStructSize() | (1 << 16)); }
+    private const int OFF_VERSION = 0; private const int OFF_NAME = 4;
+    private static int OFF_ID { get { return OFF_NAME + UNICODE_CHARS * 2; } }
+    private static int OFF_TYPE { get { return OFF_ID + 4; } }
+    private static int OFF_LOCATION { get { return OFF_TYPE + 4; } }
+    private static int OFF_ISPRED { get { return OFF_LOCATION + 4; } }
+    private static int OFF_PREDVALID { get { return OFF_ISPRED + 4; } }
+    private static int OFF_PREDVAL { get { return OFF_PREDVALID + 4; } }
+    private static int OFF_CURVAL { get { return OFF_PREDVAL + 4 + BINARY_MAX; } }
+    public static long GetDword(uint settingId, out int status) {
+        status = 0; if (!_ready) { status = -1001; return -1; }
+        IntPtr session = IntPtr.Zero; IntPtr buf = IntPtr.Zero;
+        try {
+            status = _createSession(out session); if (status != 0) return -1;
+            status = _loadSettings(session); if (status != 0) return -1;
+            IntPtr profile; status = _getBaseProfile(session, out profile); if (status != 0) return -1;
+            int size = SettingStructSize(); buf = Marshal.AllocHGlobal(size);
+            for (int i = 0; i < size; i++) Marshal.WriteByte(buf, i, 0);
+            Marshal.WriteInt32(buf, OFF_VERSION, unchecked((int)SettingVersion()));
+            status = _getSetting(session, profile, settingId, buf); if (status != 0) return -1;
+            return (uint)Marshal.ReadInt32(buf, OFF_CURVAL);
+        } finally { if (buf != IntPtr.Zero) Marshal.FreeHGlobal(buf); if (session != IntPtr.Zero) _destroySession(session); }
+    }
+    public static int SetDword(uint settingId, uint value) {
+        if (!_ready) return -1001;
+        IntPtr session = IntPtr.Zero; IntPtr buf = IntPtr.Zero;
+        try {
+            int r = _createSession(out session); if (r != 0) return r;
+            r = _loadSettings(session); if (r != 0) return r;
+            IntPtr profile; r = _getBaseProfile(session, out profile); if (r != 0) return r;
+            int size = SettingStructSize(); buf = Marshal.AllocHGlobal(size);
+            for (int i = 0; i < size; i++) Marshal.WriteByte(buf, i, 0);
+            Marshal.WriteInt32(buf, OFF_VERSION, unchecked((int)SettingVersion()));
+            Marshal.WriteInt32(buf, OFF_ID, unchecked((int)settingId));
+            Marshal.WriteInt32(buf, OFF_TYPE, 0); Marshal.WriteInt32(buf, OFF_LOCATION, 0);
+            Marshal.WriteInt32(buf, OFF_CURVAL, unchecked((int)value));
+            r = _setSetting(session, profile, buf); if (r != 0) return r;
+            return _saveSettings(session);
+        } finally { if (buf != IntPtr.Zero) Marshal.FreeHGlobal(buf); if (session != IntPtr.Zero) _destroySession(session); }
+    }
+    public static int DeleteSetting(uint settingId) {
+        if (!_ready) return -1001;
+        if (_delSetting == null) return -1002;
+        IntPtr session = IntPtr.Zero;
+        try {
+            int r = _createSession(out session); if (r != 0) return r;
+            r = _loadSettings(session); if (r != 0) return r;
+            IntPtr profile; r = _getBaseProfile(session, out profile); if (r != 0) return r;
+            r = _delSetting(session, profile, settingId);
+            if (r != 0) return r;
+            return _saveSettings(session);
+        } finally { if (session != IntPtr.Zero) _destroySession(session); }
+    }
+}
+'@
+
+# A processor/power setting's EXPLICIT AC index on the active scheme. Read from the
+# registry, never powercfg /query: settings worth tuning carry Attributes=1, which makes
+# powercfg print only a scheme header and no value. Absent = inherited = not applied.
+function Test-GameAcIndex([string]$Sub, [string]$Setting, $Expected) {
+    try {
+        $out = "$(& "$env:SystemRoot\System32\powercfg.exe" /getactivescheme 2>&1)"
+        if ($out -notmatch '([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})') { return $false }
+        return (Test-RegVal "HKLM\SYSTEM\CurrentControlSet\Control\Power\User\PowerSchemes\$($Matches[1])\$Sub\$Setting" 'ACSettingIndex' $Expected)
+    } catch { return $false }
+}
+
+# Read one NVIDIA DRS setting from the base profile, unelevated (reads do not need admin).
+# Returns $true only when the profile has an EXPLICIT value matching $Expected. Any of:
+# no NVIDIA driver, NVAPI unavailable, or setting-not-found -> $false (not applied).
+$script:NvGuiReady = $null
+function Test-NvSetting([uint32]$SettingId, [int]$Expected) {
+    if ($null -eq $script:NvGuiReady) {
+        $script:NvGuiReady = $false
+        if (Test-Path -LiteralPath "$env:SystemRoot\System32\nvapi64.dll") {
+            try {
+                if (-not ('GoNvApi' -as [type])) { Add-Type -ErrorAction Stop -TypeDefinition $script:NvApiSource }
+                $script:NvGuiReady = ([GoNvApi]::Initialize() -eq 0)
+            } catch { $script:NvGuiReady = $false }
+        }
+    }
+    if (-not $script:NvGuiReady) { return $false }
+    $status = 0
+    $v = [GoNvApi]::GetDword($SettingId, [ref]$status)
+    if ($status -ne 0) { return $false }   # NVAPI_SETTING_NOT_FOUND = driver default
+    return ([int64]$v -eq [int64]$Expected)
+}
+
+# Every package pattern absent for the current user = the row is applied. Runs unelevated
+# in the GUI, so it reads the technician's own package list - the same one the worker's
+# -AllUsers removal covers.
+function Test-AppxAbsent([string[]]$Patterns) {
+    foreach ($p in $Patterns) {
+        if (@(Get-AppxPackage -Name "$p*" -ErrorAction SilentlyContinue).Count) { return $false }
+    }
+    return $true
+}
+
+# PROBE FRESHNESS RULE: a row's probe tests the NEWEST value that row writes. Otherwise a
+# definition that gains values later reads "already applied" on machines that got the old
+# version, and the pre-apply skip strands the new values forever. Re-applying is
+# idempotent, so a false "not applied" costs seconds; a false "applied" is permanent.
 $script:TweakTests = @{
     activityhistory = { Test-RegVal 'HKLM\SOFTWARE\Policies\Microsoft\Windows\System' 'EnableActivityFeed' 0 }
+    backgroundapps  = { Test-RegVal 'HKCU\Software\Microsoft\Windows\CurrentVersion\BackgroundAccessApplications' 'GlobalUserDisabled' 1 }
     bitlocker       = { Test-RegVal 'HKLM\SYSTEM\CurrentControlSet\Control\BitLocker' 'PreventDeviceEncryption' 1 }
     consumerfeatures= { Test-RegVal 'HKLM\SOFTWARE\Policies\Microsoft\Windows\CloudContent' 'DisableWindowsConsumerFeatures' 1 }
     deliveryopt     = { Test-RegVal 'HKLM\SOFTWARE\Policies\Microsoft\Windows\DeliveryOptimization' 'DODownloadMode' 0 }
-    diskcleanup     = { $null }
     endtask         = { Test-RegVal 'HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced\TaskbarDeveloperSettings' 'TaskbarEndTask' 1 }
-    folderdiscovery = { Test-RegVal 'HKCU\Software\Classes\Local Settings\Software\Microsoft\Windows\Shell\Bags\AllFolders\Shell' 'FolderType' 'NotSpecified' }
     hibernation     = { Test-RegVal 'HKLM\SYSTEM\CurrentControlSet\Control\Power' 'HibernateEnabled' 0 }
     location        = { Test-RegVal 'HKLM\SYSTEM\CurrentControlSet\Services\lfsvc\Service\Configuration' 'Status' 0 }
     storesearch     = { Test-RegVal 'HKLM\SOFTWARE\Policies\Microsoft\Windows\Explorer' 'DisableSearchBoxSuggestions' 1 }
@@ -4778,17 +6566,18 @@ $script:TweakTests = @{
                         }
                         if ($present -eq 0) { return $false }
                         return ($moved * 2 -ge $present) }
-    startlayout     = { Test-RegVal 'HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced' 'Start_ShowClassicMode' 1 }
-    telemetry       = { Test-RegVal 'HKLM\SOFTWARE\Policies\Microsoft\Windows\DataCollection' 'AllowTelemetry' 0 }
-    tempfiles       = { $null }
+    # newest value: the Family Safety tasks added after the first release of this row.
+    # Absent-task is ignored - not every build ships it, and requiring it would make the
+    # row undetectable there.
+    telemetry       = { if (-not (Test-RegVal 'HKLM\SOFTWARE\Policies\Microsoft\Windows\DataCollection' 'AllowTelemetry' 0)) { return $false }
+                        try {
+                            $t = Get-ScheduledTask -TaskPath '\Microsoft\Windows\Shell\' -TaskName 'FamilySafetyRefreshTask' -ErrorAction Stop
+                            return ("$($t.State)" -eq 'Disabled')
+                        } catch { return $true } }
     widgets         = { Test-RegVal 'HKLM\SOFTWARE\Policies\Microsoft\Dsh' 'AllowNewsAndInterests' 0 }
-    wpbt            = { Test-RegVal 'HKLM\SYSTEM\CurrentControlSet\Control\Session Manager' 'DisableWpbtExecution' 1 }
     adobeblock      = { $h = Join-Path $env:SystemRoot 'System32\drivers\etc\hosts'
                         if (-not (Test-Path -LiteralPath $h)) { return $false }
                         return [bool](@(Get-Content -LiteralPath $h -ErrorAction SilentlyContinue) -match 'PC2Go Adobe block list') }
-    backgroundapps  = { Test-RegVal 'HKCU\Software\Microsoft\Windows\CurrentVersion\BackgroundAccessApplications' 'GlobalUserDisabled' 1 }
-    bravedebloat    = { Test-RegVal 'HKLM\SOFTWARE\Policies\BraveSoftware\Brave' 'BraveRewardsDisabled' 1 }
-    utctime         = { Test-RegVal 'HKLM\SYSTEM\CurrentControlSet\Control\TimeZoneInformation' 'RealTimeIsUniversal' 1 }
     reservedstorage = { $v = Get-RegVal 'HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\ReserveManager' 'ShippedWithReserves'
                         if ($null -eq $v) { return $false }
                         return ("$v" -eq '0') }
@@ -4798,11 +6587,9 @@ $script:TweakTests = @{
     explorerhome    = { $parent = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\Desktop\NameSpace_36354489'
                         if (-not (Test-Path -LiteralPath $parent)) { return $false }
                         return (-not (Test-Path -LiteralPath (Join-Path $parent '{f874310e-b6b7-47dc-bc84-b9e6b38f5903}'))) }
-    fullscreenopt   = { Test-RegVal 'HKCU\System\GameConfigStore' 'GameDVR_FSEBehavior' 2 }
-    ipv6disable     = { Test-RegVal 'HKLM\SYSTEM\CurrentControlSet\Services\Tcpip6\Parameters' 'DisabledComponents' 255 }
-    ipv4prefer      = { Test-RegVal 'HKLM\SYSTEM\CurrentControlSet\Services\Tcpip6\Parameters' 'DisabledComponents' 32 }
-    edgedebloat     = { Test-RegVal 'HKLM\SOFTWARE\Policies\Microsoft\Edge' 'PersonalizationReportingEnabled' 0 }
-    edgeremove      = { -not (Test-Path -LiteralPath (Join-Path ${env:ProgramFiles(x86)} 'Microsoft\Edge\Application\msedge.exe')) }
+    # newest value: the Chrome background-mode policy added alongside the Edge RAM values
+    edgedebloat     = { (Test-RegVal 'HKLM\SOFTWARE\Policies\Microsoft\Edge' 'BackgroundModeEnabled' 0) -and
+                        (Test-RegVal 'HKLM\SOFTWARE\Policies\Google\Chrome' 'BackgroundModeEnabled' 0) }
     # OneDrive installs per-user OR per-machine depending on the build, so both have to be
     # absent before calling it removed - one missing path alone proves nothing.
     onedriveremove  = { if (Test-RegVal 'HKLM\SOFTWARE\Policies\Microsoft\Windows\OneDrive' 'DisableFileSyncNGSC' 1) { return $true }
@@ -4811,50 +6598,378 @@ $script:TweakTests = @{
                                    (Join-Path ${env:ProgramFiles(x86)} 'Microsoft OneDrive\OneDrive.exe'))
                         return -not (@($paths | Where-Object { $_ -and (Test-Path -LiteralPath $_) }).Count) }
     razerdisable    = { Test-RegVal 'HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\DriverSearching' 'SearchOrderConfig' 0 }
-    rdpwarnings     = { Test-RegVal 'HKCU\Software\Microsoft\Terminal Server Client' 'AuthenticationLevelOverride' 0 }
     rightclickmenu  = { Test-Path -LiteralPath 'HKCU:\Software\Classes\CLSID\{86ca1aa0-34aa-4e8b-a509-50c905bae2a2}\InprocServer32' }
-    storagesense    = { Test-RegVal 'HKCU\Software\Microsoft\Windows\CurrentVersion\StorageSense\Parameters\StoragePolicy' '01' 0 }
-    traynotify      = { Test-RegVal 'HKCU\Software\Policies\Microsoft\Windows\Explorer' 'DisableNotificationCenter' 1 }
-    teredo          = { Test-RegVal 'HKLM\SOFTWARE\Policies\Microsoft\Windows\TCPIP\v6Transition' 'Teredo_State' 'Disabled' }
-    visualeffects   = { Test-RegVal 'HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\VisualEffects' 'VisualFXSetting' 2 }
+    # newest value: transparency, added after the original row
+    visualeffects   = { (Test-RegVal 'HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\VisualEffects' 'VisualFXSetting' 2) -and
+                        (Test-RegVal 'HKCU\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize' 'EnableTransparency' 0) }
     windowsai       = { Test-RegVal 'HKLM\SOFTWARE\Policies\Microsoft\Windows\WindowsAI' 'DisableAIDataAnalysis' 1 }
+
+    # --- new rows ---
+    # Desktops switch the active scheme, so they detect. Laptops deliberately change only
+    # the AC profile and leave the active scheme alone, so they read "not applied" and
+    # re-apply - idempotent and seconds, accepted rather than a deep powercfg query here.
+    powerplan       = { try { $out = & "$env:SystemRoot\System32\powercfg.exe" /getactivescheme 2>&1
+                              return ([bool]("$out" -match '8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c')) } catch { return $false } }
+    gamedvr         = { Test-RegVal 'HKLM\SOFTWARE\Policies\Microsoft\Windows\GameDVR' 'AllowGameDVR' 0 }
+    # applied = at least one OEM service matched and none of the matches still start
+    # Automatic. No matches at all = nothing to prove, so not-applied (the apply branch
+    # then reports "0 matched" honestly).
+    oembloat        = { $matched = @(); foreach ($p in $script:OemBloatPatterns) {
+                            $matched += @(Get-Service -Name $p -ErrorAction SilentlyContinue) }
+                        if (-not $matched.Count) { return $false }
+                        return (-not @($matched | Where-Object { $_.StartType -eq 'Automatic' }).Count) }
+    nettuning       = { Test-RegVal 'HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia\SystemProfile' 'SystemResponsiveness' 10 }
+    # every physical adapter's class entry must carry PnPCapabilities 24
+    nicpower        = { try {
+                            $class = 'HKLM:\SYSTEM\CurrentControlSet\Control\Class\{4d36e972-e325-11ce-bfc1-08002be10318}'
+                            $phys = @(Get-NetAdapter -Physical -ErrorAction Stop)
+                            if (-not $phys.Count) { return $false }
+                            $cfgs = @(Get-ChildItem -LiteralPath $class -ErrorAction SilentlyContinue |
+                                      Where-Object { $_.PSChildName -match '^\d{4}$' } |
+                                      ForEach-Object { Get-ItemProperty -LiteralPath $_.PSPath -ErrorAction SilentlyContinue })
+                            foreach ($a in $phys) {
+                                $cfg = @($cfgs | Where-Object { "$($_.NetCfgInstanceId)" -eq "$($a.InterfaceGuid)" }) | Select-Object -First 1
+                                if (-not $cfg -or "$($cfg.PnPCapabilities)" -ne '24') { return $false }
+                            }
+                            return $true
+                        } catch { return $false } }
+    dnsresolver     = { try { return [bool]@(Get-DnsClientServerAddress -AddressFamily IPv4 -ErrorAction Stop |
+                                             Where-Object { $_.ServerAddresses -contains '1.1.1.1' }).Count } catch { return $false } }
+    debloatweb      = { Test-AppxAbsent $script:DebloatPacks['debloatweb'] }
+    debloatdev      = { Test-AppxAbsent $script:DebloatPacks['debloatdev'] }
+    debloatxbox     = { Test-AppxAbsent $script:DebloatPacks['debloatxbox'] }
+    debloatmsapps   = { Test-AppxAbsent $script:DebloatPacks['debloatmsapps'] }
+    debloatmobile   = { Test-AppxAbsent $script:DebloatPacks['debloatmobile'] }
+    debloatutil     = { Test-AppxAbsent $script:DebloatPacks['debloatutil'] }
+    taskbarclean    = { Test-RegVal 'HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced' 'TaskbarMn' 0 }
+    startclean      = { Test-RegVal 'HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced' 'Start_AccountNotifications' 0 }
+    explorerprivacy = { Test-RegVal 'HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced' 'ShowCloudFilesInQuickAccess' 0 }
+    # value present AND 0 - on a fresh install neither value exists and both icons are
+    # hidden, so absent is NOT the same as shown (Test-RegVal returns $false on missing)
+    desktopicons    = { (Test-RegVal 'HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\HideDesktopIcons\NewStartPanel' '{20D04FE0-3AEA-1069-A2D8-08002B30309D}' 0) -and
+                        (Test-RegVal 'HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\HideDesktopIcons\NewStartPanel' '{59031a47-3f72-44a7-89c5-5595fe6b30ee}' 0) }
+    sysdefaults     = { (Test-RegVal 'HKLM\SYSTEM\CurrentControlSet\Control\FileSystem' 'LongPathsEnabled' 1) -and
+                        (Test-RegVal 'HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced' 'HideFileExt' 0) }
+    # SilentInstalledAppsEnabled is the load-bearing value (it stops Windows re-installing
+    # what the debloat rows removed); RotatingLockScreenEnabled is the newest addition
+    nagsoff         = { (Test-RegVal 'HKCU\Software\Microsoft\Windows\CurrentVersion\ContentDeliveryManager' 'SilentInstalledAppsEnabled' 0) -and
+                        (Test-RegVal 'HKCU\Software\Microsoft\Windows\CurrentVersion\ContentDeliveryManager' 'RotatingLockScreenEnabled' 0) }
+    updatecontrol   = { Test-RegVal 'HKLM\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate' 'ExcludeWUDriversInQualityUpdate' 1 }
+    faststartup     = { Test-RegVal 'HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Power' 'HiberbootEnabled' 0 }
+    uisnappy        = { Test-RegVal 'HKCU\Control Panel\Desktop' 'MenuShowDelay' '0' }
+
+    # --- gaming rows ---
+    # A processor-power setting reads the ACTIVE scheme's explicit AC value from the
+    # registry - powercfg /query hides Attributes=1 settings (core parking, EPP, hybrid).
+    # Absent = inherited = not applied. This helper is the freshness-correct read.
+    gamingmode      = { Test-RegVal 'HKCU\Software\Microsoft\GameBar' 'AutoGameModeEnabled' 1 }
+    gpupriority     = { (Test-RegVal 'HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia\SystemProfile\Tasks\Games' 'Scheduling Category' 'High') -and
+                        (Test-RegVal 'HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia\SystemProfile\Tasks\Games' 'SFIO Priority' 'High') }
+    gamescheduler   = { (Test-RegVal 'HKLM\SYSTEM\CurrentControlSet\Control\PriorityControl' 'Win32PrioritySeparation' 38) -and
+                        (Test-RegVal 'HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Memory Management' 'DisablePagingExecutive' 1) }
+    # newest value in gamepower's set is the EPP index; if that reads applied the row did
+    gamepower       = { Test-GameAcIndex '54533251-82be-4824-96c1-47b60b740d00' '36687f9e-e3a5-4dbf-b1dc-15eb381c6863' 0 }
+    # coreparking now writes BOTH min- and max-unparked - freshness requires both
+    coreparking     = { (Test-GameAcIndex '54533251-82be-4824-96c1-47b60b740d00' '0cc5b647-c1df-4637-891a-dec35c318583' 100) -and
+                        (Test-GameAcIndex '54533251-82be-4824-96c1-47b60b740d00' 'ea062031-0e34-4ff1-9b6d-eb1059334028' 100) }
+    fullscreenopt   = { Test-RegVal 'HKCU\System\GameConfigStore' 'GameDVR_FSEBehavior' 2 }
+    gamebaroff      = { Test-RegVal 'HKCU\Software\Microsoft\GameBar' 'UseNexusForGameBarEnabled' 0 }
+    inputqueue      = { (Test-RegVal 'HKLM\SYSTEM\CurrentControlSet\Services\mouclass\Parameters' 'MouseDataQueueSize' 150) -and
+                        (Test-RegVal 'HKLM\SYSTEM\CurrentControlSet\Services\kbdclass\Parameters' 'KeyboardDataQueueSize' 150) }
+    gamenet         = { $rsc = $true
+                        try { $rsc = ((Get-NetOffloadGlobalSetting -ErrorAction Stop).ReceiveSegmentCoalescing -eq 'Disabled') } catch { $rsc = $false }
+                        $rsc -and (Test-RegVal 'HKLM\SOFTWARE\Policies\Microsoft\Windows NT\DNSClient' 'EnableMulticast' 0) }
+    nvidia          = { try { return (Test-NvSetting 0x0005F543 2) } catch { return $false } }
+    hags            = { Test-RegVal 'HKLM\SYSTEM\CurrentControlSet\Control\GraphicsDrivers' 'HwSchMode' 2 }
+    # applied = every Up physical adapter that EXPOSES interrupt moderation has it off.
+    # No physical adapter, or none exposes it, reads not-applied (nothing was done).
+    gamenic         = { try {
+                            $ups = @(Get-NetAdapter -Physical -ErrorAction Stop | Where-Object { $_.Status -eq 'Up' })
+                            if (-not $ups.Count) { return $false }
+                            $sawOne = $false
+                            foreach ($a in $ups) {
+                                $p = @(Get-NetAdapterAdvancedProperty -Name $a.Name -ErrorAction SilentlyContinue | Where-Object { [string]$_.RegistryKeyword -ceq '*InterruptModeration' })
+                                if ($p.Count -eq 1) { $sawOne = $true; if ("$($p[0].RegistryValue)" -ne '0') { return $false } }
+                            }
+                            return $sawOne
+                        } catch { return $false } }
+    # the GPU's interrupt config stands in for the row (NICs get the same treatment)
+    interrupts      = { try {
+                            $gpu = @(Get-CimInstance Win32_VideoController -ErrorAction Stop | Where-Object { $_.PNPDeviceID -like 'PCI\*' })[0]
+                            if (-not $gpu) { return $false }
+                            $k = "HKLM\SYSTEM\CurrentControlSet\Enum\$($gpu.PNPDeviceID)\Device Parameters\Interrupt Management"
+                            (Test-RegVal "$k\MessageSignaledInterruptProperties" 'MSISupported' 1) -and
+                            (Test-RegVal "$k\Affinity Policy" 'DevicePriority' 3)
+                        } catch { return $false } }
+    memintegrity    = { (Test-RegVal 'HKLM\SYSTEM\CurrentControlSet\Control\DeviceGuard\Scenarios\HypervisorEnforcedCodeIntegrity' 'Enabled' 0) -and
+                        (Test-RegVal 'HKLM\SYSTEM\CurrentControlSet\Control\DeviceGuard' 'EnableVirtualizationBasedSecurity' 0) }
+
+    # --- cleanup rows: one-time actions, not states ---
+    diskcleanup     = { $null }
+    componentstore  = { $null }
+    tempfiles       = { $null }
+    recyclebin      = { $null }
+    windowsold      = { $null }
+}
+
+# ---------- gaming latency probe ----------
+# The Gaming sub-tab's evidence: measured BEFORE Apply Gaming and again AFTER, so the
+# delta on the invoice is a number, not a claim. Ported from the GameOpt harness. Runs
+# unelevated in the GUI, needs no target address, changes nothing. ~4 seconds.
+#
+# Honest limits, stated where the numbers appear: the preemption probe's floor is
+# PowerShell interpreter overhead (tens of microseconds), so p50 is noise - read p99 and
+# max, which is where micro-stutter lives. Timer granularity is a diagnostic, not latency.
+function Get-Percentile([double[]]$Data, [double]$P) {
+    $s = @($Data | Sort-Object)
+    $n = $s.Count
+    if ($n -eq 0) { return 0.0 }
+    if ($n -eq 1 -or $P -le 0) { return [double]$s[0] }
+    if ($P -ge 100) { return [double]$s[$n - 1] }
+    # R-7 / Excel PERCENTILE.INC: linear interpolation between closest ranks
+    $h = ($n - 1) * ($P / 100.0)
+    $lo = [int][Math]::Floor($h)
+    if ($lo -ge $n - 1) { return [double]$s[$n - 1] }
+    return [double]($s[$lo] + ($h - $lo) * ($s[$lo + 1] - $s[$lo]))
+}
+
+function Measure-GamingLatency {
+    $report = { param($t) $TxtTweakHint.Text = $t; Update-UI }
+    # 1. timer granularity - what a 1 ms sleep really costs
+    & $report 'measuring... timer granularity'
+    $timer = @()
+    for ($i = 0; $i -lt 10; $i++) { Start-Sleep -Milliseconds 1 }
+    for ($i = 0; $i -lt 40; $i++) {
+        $sw = [Diagnostics.Stopwatch]::StartNew(); Start-Sleep -Milliseconds 1; $sw.Stop()
+        $timer += [double]$sw.Elapsed.TotalMilliseconds
+    }
+    # 2. preemption overshoot - a spin loop is never descheduled voluntarily, so any
+    #    overshoot past the 2 ms target means a DPC, ISR or other thread interrupted it.
+    #    High, not Realtime: Realtime would starve the very DPC activity being observed.
+    #    The dispatcher is pumped BETWEEN chunks only - inside a chunk it would be the
+    #    interruption being measured.
+    #    Two rounds, best-of for p99: a single round's p99 is hostage to one transient
+    #    (first-run JIT, a background scan) - measured 0.8 ms apart on an idle machine.
+    #    The lower round is the machine's real floor; max is kept from both.
+    $roundP99 = @(); $allSpins = @()
+    $proc = [Diagnostics.Process]::GetCurrentProcess()
+    $prev = $null
+    try { $prev = $proc.PriorityClass; $proc.PriorityClass = [Diagnostics.ProcessPriorityClass]::High } catch { $prev = $null }
+    try {
+        $ticksPerMs = [double][Diagnostics.Stopwatch]::Frequency / 1000.0
+        $target = [long](2.0 * $ticksPerMs)
+        # Round -1 is a full throwaway pass through the IDENTICAL loop below and is never
+        # recorded. PowerShell JIT-compiles a loop body after ~16 iterations, so on a cold
+        # call the first measured round is half interpreted, half compiled - it read 0.37 ms
+        # against 0.00 warm. A separate warmup loop does not help: it warms a different
+        # code path. This probe is a measuring instrument; it must read the same cold as
+        # warm, or every first baseline over-reports and every after looks improved.
+        for ($round = -1; $round -lt 3; $round++) {
+            $spins = @()
+            for ($chunk = 0; $chunk -lt 2; $chunk++) {
+                & $report $(if ($round -lt 0) { 'measuring... warming up' } else { "measuring... preemption jitter round $($round + 1)/3" })
+                for ($i = 0; $i -lt 50; $i++) {
+                    $sw = [Diagnostics.Stopwatch]::StartNew()
+                    while ($sw.ElapsedTicks -lt $target) { }
+                    $sw.Stop()
+                    $o = ($sw.ElapsedTicks - $target) / $ticksPerMs
+                    if ($o -lt 0) { $o = 0 }
+                    $spins += [double]$o
+                }
+            }
+            if ($round -ge 0) {
+                $roundP99 += Get-Percentile $spins 99
+                $allSpins += $spins
+            }
+        }
+    } finally { if ($null -ne $prev) { try { $proc.PriorityClass = $prev } catch {} } }
+    # 3. DPC / interrupt load - CIM, never Get-Counter (its counter paths are localised)
+    $dpc = @(); $isr = @()
+    for ($i = 0; $i -lt 3; $i++) {
+        & $report "measuring... DPC load $($i + 1)/3"
+        try {
+            $c = Get-CimInstance -ClassName Win32_PerfFormattedData_PerfOS_Processor -Filter "Name='_Total'" -ErrorAction Stop
+            if ($c) { $dpc += [double]$c.PercentDPCTime; $isr += [double]$c.PercentInterruptTime }
+        } catch {}
+        Start-Sleep -Milliseconds 1000
+    }
+    return @{
+        TimerP50 = Get-Percentile $timer 50
+        PreP50   = Get-Percentile $allSpins 50
+        PreP99   = ($roundP99 | Measure-Object -Minimum).Minimum
+        PreMax   = Get-Percentile $allSpins 100
+        Dpc      = $(if ($dpc.Count) { Get-Percentile $dpc 50 } else { -1 })
+        Isr      = $(if ($isr.Count) { Get-Percentile $isr 50 } else { -1 })
+        When     = Get-Date
+    }
+}
+
+function Format-GamingProbe($p) {
+    $s = ('jitter p99 {0:N3} ms (max {1:N3})  |  timer {2:N1} ms' -f $p.PreP99, $p.PreMax, $p.TimerP50)
+    if ($p.Dpc -ge 0) { $s += ('  |  DPC {0:N1}%  ISR {1:N1}%' -f $p.Dpc, $p.Isr) }
+    return $s
+}
+
+# GameOpt's "would a human notice" gate, simplified for a single run: the preemption p99
+# has to move by more than 0.2 ms AND by more than 30% to be called a change at all -
+# the relative gate stops a 0.02 -> 0.25 ms wobble on a quiet machine reading as a
+# verdict. Never claim a win the numbers do not show.
+function Compare-GamingProbe($before, $after) {
+    $d = $after.PreP99 - $before.PreP99
+    $rel = [Math]::Abs($d) / [Math]::Max(0.001, [Math]::Max($before.PreP99, $after.PreP99))
+    if ($rel -lt 0.30) { $d = 0.0 }
+    $line = ('BEFORE  jitter p99 {0:N3} ms, max {1:N3}, timer {2:N1} ms' -f $before.PreP99, $before.PreMax, $before.TimerP50) +
+            ('   ->   AFTER  jitter p99 {0:N3} ms, max {1:N3}, timer {2:N1} ms' -f $after.PreP99, $after.PreMax, $after.TimerP50)
+    if ($before.Dpc -ge 0 -and $after.Dpc -ge 0) { $line += ('   |   DPC {0:N1}% -> {1:N1}%' -f $before.Dpc, $after.Dpc) }
+    $verdict = if ($d -le -0.2)    { ('IMPROVED: preemption jitter p99 down {0:N3} ms' -f (-$d)) }
+               elseif ($d -ge 0.2) { ('WORSE: preemption jitter p99 up {0:N3} ms - check the CAUTION rows' -f $d) }
+               else                { 'no measurable change in this window (within the 0.2 ms noise band)' }
+    return @{ Line = $line; Verdict = $verdict }
 }
 
 function Invoke-TweakDetect {
     $applied = 0; $notDetectable = 0
-    foreach ($t in $script:TweakItems) {
-        $test = $script:TweakTests[$t.UnArgs]
-        $res = $null
-        if ($test) { try { $res = & $test } catch { $res = $null } }
-        if ($null -eq $res) {
-            # one-shot action, not a state - never claim it is applied
-            $t.IsSelected = $false
-            Set-Status $t 'one-time action - cannot be detected' 'neutral'
-            $notDetectable++
-        } elseif ($res) {
-            $t.IsSelected = $true
-            Set-Status $t 'already applied' 'ok'
-            $applied++
-        } else {
-            $t.IsSelected = $false
-            Set-Status $t '' 'neutral'
-        }
+    # The ACTIVE sub-tab only - the rule for this whole toolbar: nothing global. Probing all
+    # three lists to answer a question about the one on screen paid seconds of appx probes
+    # for verdicts that landed on lists nobody was looking at.
+    if ($script:OptSubTab -eq 'Prefs') {
+        # the toggles ARE a live read of the machine - re-reading them is what Detect means
+        # here, and it is also what the global version quietly did for them at its end
+        Sync-Prefs
+        $TxtTweakHint.Text = 'preferences re-read from this machine'
+        Update-Dash
+        return
     }
-    # the toggles are a live read of the machine too, so refresh them in the same pass
-    Sync-Prefs
+    # Visible progress from the first click: the appx probes take seconds, and a frozen
+    # tab with no feedback reads as a broken button. The hint counts rows as they probe
+    # and the dispatcher is pumped so each row's verdict paints as it lands.
+    $all = @(Get-OptItems)
+    $BtnDetect.IsEnabled = $false
+    $window.Cursor = [Windows.Input.Cursors]::Wait
+    $TxtTweakHint.Text = "detecting... 0 of $($all.Count)"
+    Update-UI
+    $script:SuspendDash = $true
+    try {
+        $i = 0
+        foreach ($t in $all) {
+            $i++
+            $TxtTweakHint.Text = "detecting... $i of $($all.Count)"
+            Set-Ring $t 'busy'
+            Update-UI
+            $test = $script:TweakTests[$t.UnArgs]
+            $res = $null
+            if ($test) { try { $res = & $test } catch { $res = $null } }
+            Set-Ring $t 'none'
+            if ($null -eq $res) {
+                # one-shot action, not a state - never claim it is applied, and leave the
+                # tick alone: with the pre-configured model the tick means "run this",
+                # not "this is the machine's state"
+                Set-Status $t 'one-time action - cannot be detected' 'neutral'
+                $notDetectable++
+            } elseif ($res) {
+                $t.IsSelected = $true
+                Set-Status $t 'already applied' 'ok'
+                $applied++
+            } else {
+                $t.IsSelected = $false
+                Set-Status $t '' 'neutral'
+            }
+        }
+    } finally {
+        $script:SuspendDash = $false
+        $window.Cursor = $null
+        $BtnDetect.IsEnabled = $true
+    }
+    # no Sync-Prefs here any more: the toggles get their re-read when Detect is pressed ON
+    # the Preferences sub-tab, per the nothing-global rule
     $TxtTweakHint.Text = "$applied already applied, $notDetectable not detectable"
-    Add-Log "Detect: $applied tweak(s) already applied on this machine, $notDetectable are one-time actions that cannot be detected. Preferences re-read."
+    Add-Log "Detect ($($script:OptSubTab)): $applied row(s) already applied on this machine, $notDetectable are one-time actions that cannot be detected."
     Update-Dash
 }
 
 # Account creation and profile copying both need admin, so they ride the same single-UAC
 # worker queue as everything else. One row stands in for the whole operation.
+# ---------- secrets crossing into the elevated worker ----------
+#
+# A local account password has to reach the worker somehow, and the ONLY channel between the
+# two processes is a file in LOCALAPPDATA. Written plainly it stayed there, and stayed there
+# for exactly the wrong runs: the cache is deliberately KEPT after a failure so a batch can be
+# retried, so a failed "set password" is precisely the case that left the password on disk -
+# readable by anything running as this user, by any administrator, and by anyone who later
+# images or backs up the machine.
+#
+# DPAPI at LocalMachine scope, not CurrentUser, because the worker may be a DIFFERENT account:
+# a standard technician can have an administrator colleague type the credentials, and a
+# CurrentUser blob would then be undecryptable by the very process that needs it.
+#
+# No extra entropy file, deliberately. Secondary entropy stored in the same folder as the blob
+# is worth nothing against anyone who can read that folder - which is the whole threat here -
+# and it would be a second secret to create, ACL and destroy for no gain. What LocalMachine
+# DPAPI does buy is the part that matters: the blob is inert on any other machine, so a stolen
+# disk image or a backup yields nothing.
+#
+# The prefix is a marker, not a cipher name for its own sake: it lets Unprotect-Secret tell a
+# protected value from a plain one, so the test harnesses can still hand-write a queue line.
+$script:SecretPrefix = 'DPAPI:'
+# Every queue field that carries a secret. Named in ONE place because the queue builders are
+# spread across five functions - the same reason Enqueue-Install lists its post-install fields
+# in one hashtable - and a password field added to a sixth must not quietly ship in clear.
+$script:SecretFields = @('password', 'alPassword', 'netPassword')
+
+function Protect-Secret([string]$Plain) {
+    if ([string]::IsNullOrEmpty($Plain)) { return '' }
+    Add-Type -AssemblyName System.Security -ErrorAction Stop
+    $bytes = [Text.Encoding]::UTF8.GetBytes($Plain)
+    try {
+        $blob = [Security.Cryptography.ProtectedData]::Protect($bytes, $null, 'LocalMachine')
+        return $script:SecretPrefix + [Convert]::ToBase64String($blob)
+    } finally {
+        # the managed copy at least; the original string is immutable and cannot be wiped
+        [Array]::Clear($bytes, 0, $bytes.Length)
+    }
+}
+
+# Returns a COPY with every secret field protected. Throws rather than degrading: falling back
+# to plaintext on error would reintroduce the exact problem this exists to remove, and do it
+# silently, which is worse than the batch refusing to start.
+function Protect-QueueEntry([hashtable]$Entry) {
+    $out = @{}
+    foreach ($k in $Entry.Keys) { $out[$k] = $Entry[$k] }
+    foreach ($f in $script:SecretFields) {
+        if ($out.ContainsKey($f) -and -not [string]::IsNullOrEmpty([string]$out[$f])) {
+            $out[$f] = Protect-Secret ([string]$out[$f])
+        }
+    }
+    return $out
+}
+
+# Overwrite-then-delete the queue, because it is the file that carried the secret. On NTFS
+# over an SSD an in-place overwrite is NOT a guaranteed erase - wear levelling, the journal
+# and copy-on-write can all keep the old block - so this is not called shredding and must not
+# be relied on as such. What it does do is remove the plainly readable copy immediately
+# instead of leaving it for the next person to find, which is the actual complaint.
+function Clear-QueueFile {
+    $p = $script:QueuePath
+    if (-not $p -or -not (Test-Path -LiteralPath $p)) { return }
+    try {
+        $len = (Get-Item -LiteralPath $p -Force).Length
+        if ($len -gt 0 -and $len -lt 8MB) {
+            $rnd = New-Object byte[] ([int]$len)
+            $rng = New-Object Security.Cryptography.RNGCryptoServiceProvider
+            try { $rng.GetBytes($rnd) } finally { $rng.Dispose() }
+            $fs = [IO.File]::Open($p, 'Open', 'Write', 'None')
+            try { $fs.Write($rnd, 0, $rnd.Length); $fs.Flush($true) } finally { $fs.Close() }
+        }
+    } catch { }
+    try { Remove-Item -LiteralPath $p -Force -ErrorAction SilentlyContinue } catch { }
+}
+
 function Start-UserBatch([string]$Action, [hashtable]$Data) {
     $row = New-Object AppItem
     $row.Id = "user-$Action"
     $row.Name = switch ($Action) {
         'newuser'       { "Create account `"$($Data.username)`"" }
-        'migrate'       { "Copy profile data to `"$($Data.dstUser)`"" }
+        'migrate'       { "Back up data to `"$($Data.dstUser)`"" }
         'setadmin'      { $(if ($Data.admin) { "Promote `"$($Data.username)`" to Administrator" } else { "Demote `"$($Data.username)`" to Standard" }) }
         'setpassword'   { "Set password for `"$($Data.username)`"" }
         'toggleacct'    { $(if ($Data.enable) { "Enable `"$($Data.username)`"" } else { "Disable `"$($Data.username)`"" }) }
@@ -4862,23 +6977,30 @@ function Start-UserBatch([string]$Action, [hashtable]$Data) {
         default         { $Action }
     }
     $row.Category = 'Users'
-    $row.IconBg = '#FF3D7EF0'
+    $row.IconBg = '#FF2563EB'
     Set-Status $row 'Queued' 'neutral'
     Set-Ring $row 'busy'
     $script:UserRow = $row
+    # Set here as well as in Start-Batch. Write-RunRecord falls back to 'now' when this is
+    # null, so every migration ever run was recorded as having taken 0 seconds.
+    $script:RunStarted = Get-Date
     $script:Pending = @($row)
-    $script:BatchTab = 'Users'
+    # 'Migrate' when the job IS a migration, or Update-Dash decides this batch belongs to the
+    # Users panel, sees the Migrate panel on screen instead, and hides RowProgress - the
+    # progress row was hidden on the one tab that most needed it.
+    $script:BatchTab = $(if ($Action -eq 'migrate') { 'Migrate' } else { 'Users' })
     $script:HadFailures = $false
     $script:WorkerStarted = $false
     $script:EndQueued = $false
     $script:Paused = $false
     $script:AwaitingScan = $false
-    Remove-Item -LiteralPath $script:QueuePath, $script:StatusPath, $script:CancelPath -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $script:QueuePath, $script:StatusPath, $script:CancelPath, $script:SkipPath -ErrorAction SilentlyContinue
+    Show-BatchStrip
     if (-not (Start-Worker)) {
         Abort-Batch 'elevation declined'
         return
     }
-    $entry = @{ id = $row.Id; action = $Action } + $Data | ConvertTo-Json -Compress -Depth 4
+    $entry = (Protect-QueueEntry (@{ id = $row.Id; action = $Action } + $Data)) | ConvertTo-Json -Compress -Depth 4
     Add-Content -Path $script:QueuePath -Value $entry -Encoding UTF8
     Add-Content -Path $script:QueuePath -Value '{"end":true}' -Encoding UTF8
     $script:EndQueued = $true
@@ -4909,7 +7031,8 @@ function Start-FwBatch([string]$Action, [object[]]$Sel) {
     $script:EndQueued = $false
     $script:Paused = $false
     $script:AwaitingScan = $false
-    Remove-Item -LiteralPath $script:QueuePath, $script:StatusPath, $script:CancelPath -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $script:QueuePath, $script:StatusPath, $script:CancelPath, $script:SkipPath -ErrorAction SilentlyContinue
+    Show-BatchStrip
     if (-not (Start-Worker)) {
         Abort-Batch 'elevation declined'
         return
@@ -4950,7 +7073,7 @@ function Start-UserChain([object[]]$Steps) {
         $row.Id = "chain$($i + 1)"
         $row.Name = [string]$Steps[$i].label
         $row.Category = 'Users'
-        $row.IconBg = '#FF3D7EF0'
+        $row.IconBg = '#FF2563EB'
         Set-Status $row 'Queued' 'neutral'
         Set-Ring $row 'queued'
         $rows += $row
@@ -4962,13 +7085,19 @@ function Start-UserChain([object[]]$Steps) {
     $script:EndQueued = $false
     $script:Paused = $false
     $script:AwaitingScan = $false
-    Remove-Item -LiteralPath $script:QueuePath, $script:StatusPath, $script:CancelPath -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $script:QueuePath, $script:StatusPath, $script:CancelPath, $script:SkipPath -ErrorAction SilentlyContinue
+    Show-BatchStrip
     if (-not (Start-Worker)) {
         Abort-Batch 'elevation declined'
         return
     }
     for ($i = 0; $i -lt $Steps.Count; $i++) {
-        $entry = (@{ id = "chain$($i + 1)"; action = [string]$Steps[$i].action } + $Steps[$i].data) | ConvertTo-Json -Compress -Depth 4
+        # `chain` tells the worker these are ORDERED and dependent: if one fails, the steps
+        # after it must not run. Without it a failed "create the account" was followed by
+        # "disable the old account" anyway.
+        $entry = (Protect-QueueEntry (@{ id = "chain$($i + 1)"; action = [string]$Steps[$i].action
+                                         chain = $true } + $Steps[$i].data)) |
+                 ConvertTo-Json -Compress -Depth 4
         Add-Content -Path $script:QueuePath -Value $entry -Encoding UTF8
     }
     Add-Content -Path $script:QueuePath -Value '{"end":true}' -Encoding UTF8
@@ -4986,6 +7115,10 @@ function Start-UserChain([object[]]$Steps) {
 }
 
 function Start-TweakUndo([object[]]$Sel) {
+    # undoing the visual rows needs the same single Explorer restart as applying them
+    $explorerIds = @('taskbarclean', 'startclean', 'rightclickmenu', 'visualeffects', 'widgets',
+                     'endtask', 'uisnappy', 'explorerhome', 'explorerprivacy', 'desktopicons', 'windowsai')
+    $script:NeedExplorerRestart = [bool]@($Sel | Where-Object { $_.UnArgs -in $explorerIds }).Count
     foreach ($s in $Sel) { Set-Status $s 'Queued' 'neutral'; Set-Ring $s 'queued' }
     $script:Pending = @($Sel)
     $script:BatchTab = 'Tweak'
@@ -4994,7 +7127,8 @@ function Start-TweakUndo([object[]]$Sel) {
     $script:EndQueued = $false
     $script:Paused = $false
     $script:AwaitingScan = $false
-    Remove-Item -LiteralPath $script:QueuePath, $script:StatusPath, $script:CancelPath -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $script:QueuePath, $script:StatusPath, $script:CancelPath, $script:SkipPath -ErrorAction SilentlyContinue
+    Show-BatchStrip
     if (-not (Start-Worker)) {
         Abort-Batch 'elevation declined'
         return
@@ -5021,10 +7155,65 @@ function Start-TweakUndo([object[]]$Sel) {
 }
 
 function Start-Tweaks([object[]]$Sel) {
+    # CHECK BEFORE APPLY: running the batch twice must not redo work. Every row with a
+    # real probe is tested now; already-applied rows are reported and never queued.
+    # A $null probe (restore point, every cleanup row) always runs - a second temp-files
+    # pass is wanted, not an error - and preferences are already filtered to pending.
+    #
+    # The click answers IMMEDIATELY: every row flips to Checking with a spinner before the
+    # first probe runs, because a few silent seconds after pressing Apply reads as a
+    # broken button.
+    $TxtStatus.Text = 'Checking what is already applied...'
+    $TxtNow.Text = 'Checking what is already applied...'
+    $DotNow.Fill = '#FF4C8DFF'
+    foreach ($s in $Sel) { Set-Status $s 'Checking...' 'neutral'; Set-Ring $s 'busy' }
+    Update-UI
+    $run = @(); $skipped = 0
+    foreach ($s in $Sel) {
+        if ($s.Publisher -eq 'Preference') { Set-Ring $s 'none'; $run += $s; continue }
+        $test = $script:TweakTests[$s.UnArgs]
+        $res = $null
+        if ($test) { try { $res = & $test } catch { $res = $null } }
+        if ($res -eq $true) {
+            Set-Status $s 'Already applied - skipped' 'warn'
+            Set-Ring $s 'warn'
+            Add-Log "$($s.Name) -> already applied on this machine, skipped."
+            $skipped++
+        } else {
+            Set-Status $s 'Queued' 'neutral'
+            Set-Ring $s 'queued'
+            $run += $s
+        }
+        Update-UI
+    }
+    # If the survivors are nothing but the restore point, there is nothing left to
+    # protect - do not snapshot a machine that will not be changed.
+    $real = @($run | Where-Object { $_.UnArgs -ne 'restorepoint' })
+    if (-not $real.Count) {
+        foreach ($s in @($run | Where-Object { $_.UnArgs -eq 'restorepoint' })) {
+            Set-Status $s 'Skipped - nothing else will run' 'warn'; Set-Ring $s 'warn'
+        }
+        Add-Log "Nothing to do: $skipped row(s) already applied on this machine."
+        $TxtTweakHint.Text = 'nothing to do - everything selected is already applied'
+        $TxtStatus.Text = 'Nothing to do - everything selected is already applied'
+        $TxtNow.Text = 'Nothing to do - already applied'
+        $DotNow.Fill = '#FF34D399'
+        Update-Dash
+        return
+    }
+    if ($skipped) { Add-Log "Pre-apply check: $skipped row(s) already applied, $($real.Count) will run." }
+
+    # Some rows change what Explorer draws (taskbar, Start, desktop icons, context menu);
+    # the GUI restarts Explorer ONCE when the batch finishes - it runs as the signed-in
+    # user, so the desktop comes back owned by the right profile.
+    $explorerIds = @('taskbarclean', 'startclean', 'rightclickmenu', 'visualeffects', 'widgets',
+                     'endtask', 'uisnappy', 'explorerhome', 'explorerprivacy', 'desktopicons', 'windowsai')
+    $script:NeedExplorerRestart = [bool]@($run | Where-Object { $_.UnArgs -in $explorerIds }).Count
+
     # A restore point is the undo button for everything else here, so if it was selected
     # it is queued FIRST - after the other tweaks have run it would be worthless.
-    $ordered = @($Sel | Where-Object { $_.UnArgs -eq 'restorepoint' }) +
-               @($Sel | Where-Object { $_.UnArgs -ne 'restorepoint' })
+    $ordered = @($run | Where-Object { $_.UnArgs -eq 'restorepoint' }) +
+               @($run | Where-Object { $_.UnArgs -ne 'restorepoint' })
     foreach ($s in $ordered) { Set-Status $s 'Queued' 'neutral'; Set-Ring $s 'queued' }
     $script:Pending = $ordered
     $script:BatchTab = 'Tweak'
@@ -5033,7 +7222,8 @@ function Start-Tweaks([object[]]$Sel) {
     $script:EndQueued = $false
     $script:Paused = $false
     $script:AwaitingScan = $false
-    Remove-Item -LiteralPath $script:QueuePath, $script:StatusPath, $script:CancelPath -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $script:QueuePath, $script:StatusPath, $script:CancelPath, $script:SkipPath -ErrorAction SilentlyContinue
+    Show-BatchStrip
     if (-not (Start-Worker)) {
         Abort-Batch 'elevation declined'
         return
@@ -5081,6 +7271,238 @@ function Start-Tweaks([object[]]$Sel) {
 #
 #   Retry belongs here, not in the caller. The .part file survives between attempts, so
 #   each retry resumes instead of restarting.
+# How many connections one large file is fetched over, and the size at which that starts.
+#
+# MEASURED against the live edge, 192 MB fetched repeatedly, median of three runs each:
+#   1 stream 48 MB/s .. 2 streams 64 .. 4 streams 78 .. 8 streams 92 .. 16 streams 97
+# One connection left half the link unused. A single TCP stream is limited to roughly
+# (window size / round-trip time), so the further away the client is the worse it gets - and
+# these clients are a long way away. Eight is where the curve flattens: 16 bought another 4%
+# for twice the sockets and twice the retry surface.
+#
+# Small files stay on BITS. Below the threshold the setup cost outweighs the gain, and BITS
+# survives a reboot, which this does not.
+$script:SegmentStreams  = 8
+$script:SegmentMinBytes = [long]100MB
+
+<#
+    One file, fetched over several connections at once, straight into its final offsets.
+
+    Ranges write into ONE pre-allocated file rather than into per-part files joined afterwards:
+    concatenating 1.1 GB costs about as long as the download time this saves, which would hand
+    the whole gain straight back. Progress per range is journalled beside it, because sparse
+    writes into a file cannot be read back to work out how far each range got.
+
+    Throws rather than returning false, so the caller can fall back to BITS - which is what
+    happens when the server will not do Range, or when anything else here objects.
+
+    The SHA-256 the worker verifies afterwards is the real safety net: nothing here has to be
+    trusted to have assembled the file correctly, only to say so honestly when it did not.
+#>
+function Invoke-SegmentedDownload([object]$Item, [string]$Dest, [int]$Streams = 0) {
+    if ($Streams -le 0) { $Streams = $script:SegmentStreams }
+    $total = [long]$Item.SizeBytes
+    # Without a known total there is nothing to divide. The catalog always has one; a URL
+    # somebody typed by hand might not.
+    if ($total -le 0) { throw 'segmented download needs the size from the catalog' }
+    if ($Streams -gt 1 -and $total -lt $Streams) { $Streams = 1 }
+
+    $tmp     = "$Dest.part"
+    $journal = "$Dest.parts"
+
+    # ---- will this server do Range at all? One tiny request settles it.
+    $probe = [Net.HttpWebRequest]::Create($Item.Url)
+    $probe.UserAgent = 'PC2GoDeploy/1.0'
+    $probe.Timeout = 30000
+    $probe.AddRange(0, 0)
+    $pr = $probe.GetResponse()
+    $pcode = [int]$pr.StatusCode
+    $pr.Close()
+    if ($pcode -ne 206) { throw "the server ignored a Range request (HTTP $pcode)" }
+
+    # ---- where each range starts, and how far it got last time
+    $per = [long][Math]::Floor($total / $Streams)
+    $ranges = @()
+    for ($i = 0; $i -lt $Streams; $i++) {
+        $from = [long]($i * $per)
+        $to   = $(if ($i -eq $Streams - 1) { [long]($total - 1) } else { [long]($from + $per - 1) })
+        $ranges += [pscustomobject]@{ Index = $i; From = $from; To = $to; Done = [long]0 }
+    }
+    # A journal from an earlier attempt is only usable if it describes THIS file at THIS split.
+    if ((Test-Path -LiteralPath $tmp) -and (Test-Path -LiteralPath $journal)) {
+        try {
+            $j = (Get-Content -LiteralPath $journal -Raw) | ConvertFrom-Json
+            if ([long]$j.total -eq $total -and [int]$j.streams -eq $Streams -and
+                (Get-Item -LiteralPath $tmp).Length -eq $total) {
+                for ($i = 0; $i -lt $Streams; $i++) {
+                    $d = [long]$j.done[$i]
+                    $len = $ranges[$i].To - $ranges[$i].From + 1
+                    if ($d -gt 0 -and $d -le $len) { $ranges[$i].Done = $d }
+                }
+                $already = ($ranges | Measure-Object -Property Done -Sum).Sum
+                if ($already -gt 0) { Add-Log "Resuming $($Item.Name) - $(Format-Size $already) of $(Format-Size $total) already here." }
+            }
+        } catch { }
+    }
+    if (-not (Test-Path -LiteralPath $tmp) -or (Get-Item -LiteralPath $tmp).Length -ne $total) {
+        # Pre-allocated once, so every range can seek straight to where it belongs.
+        $fsInit = [IO.File]::Open($tmp, 'Create', 'Write', 'None')
+        try { $fsInit.SetLength($total) } finally { $fsInit.Close() }
+        foreach ($r in $ranges) { $r.Done = [long]0 }
+    }
+
+    $shared = [hashtable]::Synchronized(@{
+        Done   = [long[]]::new($Streams)
+        Errors = [Collections.ArrayList]::Synchronized((New-Object Collections.ArrayList))
+        Cancel = $false
+        # Pause stops the ranges the same way Cancel does - by ending their reads - rather
+        # than holding the sockets open and idle. A held socket dies anyway: ReadWriteTimeout
+        # is two minutes, so anything longer than a coffee would come back as a transport
+        # error rather than a resumed download. Stopping and re-entering costs nothing here,
+        # because the journal below already knows how to pick each range up where it stopped.
+        Pause  = $false
+    })
+    for ($i = 0; $i -lt $Streams; $i++) { $shared.Done[$i] = $ranges[$i].Done }
+    $carried = [long](($ranges | Measure-Object -Property Done -Sum).Sum)
+
+    $work = {
+        param($Url, $Path, [int]$Index, [long]$From, [long]$To, $Shared)
+        try {
+            [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor 3072
+            # .NET allows two connections per host by default, which would quietly turn eight
+            # streams into two and make this whole exercise pointless.
+            [Net.ServicePointManager]::DefaultConnectionLimit = 64
+            $start = [long]$From + [long]$Shared.Done[$Index]
+            if ($start -gt $To) { return }
+            $req = [Net.HttpWebRequest]::Create($Url)
+            $req.UserAgent = 'PC2GoDeploy/1.0'
+            $req.Timeout = 60000
+            $req.ReadWriteTimeout = 120000
+            $req.AddRange($start, $To)
+            $resp = $req.GetResponse()
+            if ([int]$resp.StatusCode -ne 206) { $resp.Close(); throw "expected 206, got $([int]$resp.StatusCode)" }
+            $st = $resp.GetResponseStream()
+            # ReadWrite sharing: every range holds its own handle on the same file at once
+            $fs = [IO.File]::Open($Path, 'Open', 'Write', 'ReadWrite')
+            try {
+                [void]$fs.Seek($start, 'Begin')
+                $buf = New-Object byte[] 1048576
+                while (($n = $st.Read($buf, 0, $buf.Length)) -gt 0) {
+                    if ($Shared.Cancel -or $Shared.Pause) { break }
+                    $fs.Write($buf, 0, $n)
+                    $Shared.Done[$Index] = [long]$Shared.Done[$Index] + $n
+                }
+            } finally { $fs.Close(); $st.Close(); $resp.Close() }
+        } catch {
+            [void]$Shared.Errors.Add("range $Index : $($_.Exception.Message)")
+        }
+    }
+
+    $pool = [runspacefactory]::CreateRunspacePool(1, $Streams)
+    $pool.Open()
+    $jobs = @()
+    foreach ($r in $ranges) {
+        $ps = [powershell]::Create()
+        $ps.RunspacePool = $pool
+        [void]$ps.AddScript($work).AddArgument($Item.Url).AddArgument($tmp).
+              AddArgument($r.Index).AddArgument($r.From).AddArgument($r.To).AddArgument($shared)
+        $jobs += [pscustomobject]@{ ps = $ps; handle = $ps.BeginInvoke() }
+    }
+
+    $lastJournal = Get-Date
+    $spPrev = $null
+    $spTxt  = ''
+    $etaTxt = ''
+    try {
+        while ($true) {
+            $running = @($jobs | Where-Object { -not $_.handle.IsCompleted }).Count
+            $done = [long]0
+            for ($i = 0; $i -lt $Streams; $i++) { $done += [long]$shared.Done[$i] }
+
+            $pct = 0
+            if ($total -gt 0) { $pct = [math]::Floor($done * 100 / $total) }
+            $now = Get-Date
+            if ($null -eq $spPrev) { $spPrev = @{ bytes = $done; time = $now } }
+            else {
+                $dt = ($now - $spPrev.time).TotalSeconds
+                if ($dt -ge 1) {
+                    $delta = $done - [long]$spPrev.bytes
+                    if ($delta -gt 0) {
+                        $rate   = [double]$delta / $dt
+                        $spTxt  = (Format-Size ([long]$rate)) + '/s'
+                        $etaTxt = Format-Eta ($total - $done) $rate
+                    }
+                    $spPrev = @{ bytes = $done; time = $now }
+                }
+            }
+            $txt = "Downloading $pct%"
+            if ($spTxt)  { $txt += "  $spTxt" }
+            if ($etaTxt) { $txt += "  -  $etaTxt" }
+            Set-Status $Item $txt 'active'
+            $Item.ProgressVis = 'Visible'
+            $Item.Progress = $pct
+            Update-Overall $pct
+            Update-UI
+
+            # Journalled on a clock, not on every block: this is a small file rewritten over and
+            # over, and losing two seconds of progress to a crash costs two seconds of refetch.
+            if (($now - $lastJournal).TotalSeconds -ge 2) {
+                try {
+                    (@{ total = $total; streams = $Streams; done = @($shared.Done) } | ConvertTo-Json -Compress) |
+                        Set-Content -LiteralPath $journal -Encoding ASCII
+                } catch { }
+                $lastJournal = $now
+            }
+
+            if ($script:CancelPath -and (Test-Path -LiteralPath $script:CancelPath)) { $shared.Cancel = $true }
+            # Pause was previously unreachable here at all: the button returned early unless a
+            # BITS job was in flight, and a segmented download has none - so the one control
+            # that mattered on a 15 GB package did nothing at all when pressed.
+            if ($script:Paused) {
+                $shared.Pause = $true
+                Set-Status $Item 'Paused' 'warn'
+            }
+            # Update-UI above pumps the dispatcher, so the remove button IS clickable while this
+            # loop runs. The status it sets is how that click reaches the streams.
+            if ($Item.Status -like 'Removed*') { $shared.Cancel = $true }
+            if ($running -eq 0) { break }
+            Start-Sleep -Milliseconds 200
+        }
+    } finally {
+        foreach ($j in $jobs) { try { [void]$j.ps.EndInvoke($j.handle) } catch { }; $j.ps.Dispose() }
+        $pool.Close(); $pool.Dispose()
+        try {
+            (@{ total = $total; streams = $Streams; done = @($shared.Done) } | ConvertTo-Json -Compress) |
+                Set-Content -LiteralPath $journal -Encoding ASCII
+        } catch { }
+    }
+
+    # A pause is not a failure and must not be reported as one. Every range stopped on the
+    # flag, the journal in the finally above recorded exactly how far each got, and $false
+    # tells the pump to leave this item where it is - the next entry into this function
+    # resumes it. Checked BEFORE the error list, because a range that was mid-read when it
+    # was stopped can report the closed stream as an error.
+    if ($shared.Pause) {
+        Set-Status $Item 'Paused' 'warn'
+        $Item.ProgressVis = 'Collapsed'
+        Add-Log "$($Item.Name): download paused - $(Format-Size (($shared.Done | Measure-Object -Sum).Sum)) of $(Format-Size $total) kept."
+        return $false
+    }
+    if (@($shared.Errors).Count) { throw ((@($shared.Errors) | Select-Object -First 2) -join '; ') }
+
+    # The catalog's size outranks anything the server said - same rule as the single-stream
+    # path, and the reason a truncating proxy cannot promote a partial file to a finished one.
+    $actual = (Get-Item -LiteralPath $tmp).Length
+    if ($actual -ne $total) { throw "incomplete download: got $actual of $total bytes" }
+    $done = [long]0
+    for ($i = 0; $i -lt $Streams; $i++) { $done += [long]$shared.Done[$i] }
+    if ($done -ne $total) { throw "incomplete download: $done of $total bytes accounted for" }
+
+    Move-Item -LiteralPath $tmp -Destination $Dest -Force
+    Remove-Item -LiteralPath $journal -Force -ErrorAction SilentlyContinue
+    return $true
+}
+
 function Invoke-ResumableDownload([object]$Item, [string]$Dest) {
     $tmp = "$Dest.part"
     $maxAttempts = 5
@@ -5110,6 +7532,15 @@ function Invoke-ResumableDownload([object]$Item, [string]$Dest) {
                     $done = $existing; $i = 0
                     while (($n = $stream.Read($buf, 0, $buf.Length)) -gt 0) {
                         $fs.Write($buf, 0, $n); $done += $n
+                        # This path had no way out at all. It is the fallback for a machine
+                        # with BITS switched off, and on one of those a Cancel did nothing
+                        # until the whole file had come down - on a 15 GB package, an hour of
+                        # a technician watching a button they had already pressed. Stopping
+                        # here keeps the .part file, so a resume picks up where it left off.
+                        if ($script:CancelPath -and (Test-Path -LiteralPath $script:CancelPath)) {
+                            throw 'the batch was cancelled'
+                        }
+                        if ($Item.Status -like 'Removed*') { throw 'removed from the batch' }
                         if ((++$i % 4) -eq 0) {
                             $pct = 0; if ($total -gt 0) { $pct = [math]::Floor($done * 100 / $total) }
                             Set-Status $Item "Downloading $pct%" 'active'
@@ -5143,6 +7574,11 @@ function Invoke-ResumableDownload([object]$Item, [string]$Dest) {
             # link that aged out cannot be fixed by waiting, and retrying it just burns
             # every remaining attempt. Mint a fresh URL once, then carry on resuming from
             # the same .part file.
+            # Neither of these is a transport fault, so the retry ladder below must not run:
+            # five attempts with exponential backoff on a download nobody wants any more is
+            # about a minute of the batch refusing to end.
+            if ($script:CancelPath -and (Test-Path -LiteralPath $script:CancelPath)) { throw }
+            if ($Item.Status -like 'Removed*') { throw }
             $we = $_.Exception
             while ($we -and -not ($we -is [Net.WebException])) { $we = $we.InnerException }
             $code = 0
@@ -5185,13 +7621,25 @@ function Update-Overall([int]$CurrentPct) {
 # immediately before execution, so installs overlap the remaining downloads
 # without weakening integrity checking.
 $workerScript = @'
-param([string]$QueueFile, [string]$StatusFile, [string]$CancelFile)
+param([string]$QueueFile, [string]$StatusFile, [string]$CancelFile, [string]$SkipFile,
+      [string]$TestWatchRoots)
 $ErrorActionPreference = 'Continue'
 
 # One JSON line per event, appended and never rewritten. It lives beside the status file
 # in the cache folder, which self-deletes on a clean run and is deliberately KEPT after a
 # failure - so the log survives exactly when someone needs to ask what happened.
 $script:ActivityLog = Join-Path (Split-Path -Parent $StatusFile) 'activity.jsonl'
+
+# The cache folder, derived the same way the activity log is - the worker is handed file paths,
+# never the folder itself.
+#
+# It was simply MISSING, and one place referenced it: the tar fallback's stderr log. Join-Path
+# against $null throws, so that whole branch died on its first line with "Cannot bind argument
+# to parameter 'Path' because it is null" - and that branch is the entirety of .rar support and
+# the only recovery for a .zip written with LZMA, BZip2 or Zstd, which 7-Zip and WinRAR pick by
+# default. Every such package failed AFTER its multi-gigabyte download, quoting a parameter
+# binding error that named nothing a technician could act on.
+$script:CacheDir = Split-Path -Parent $StatusFile
 
 function Write-Activity([string]$Id, [string]$Phase, [string]$State, [string]$Detail) {
     try {
@@ -5204,6 +7652,29 @@ function Write-Activity([string]$Id, [string]$Phase, [string]$State, [string]$De
         }
         Add-Content -LiteralPath $script:ActivityLog -Value ($rec | ConvertTo-Json -Compress) -Encoding UTF8
     } catch { }   # logging must never be the reason an install fails
+}
+
+# The other half of Protect-Secret in the GUI - see the block above it for why the queue
+# carries protected values at all, and why the scope is LocalMachine and not CurrentUser.
+#
+# A value without the marker is returned as-is, on purpose: the test harnesses hand-write
+# queue lines, and an unprotected password from one of those must still work. Nothing else
+# writes this file, so this is not a downgrade an attacker gains anything from - anyone who
+# can write the queue can already name any account action they like.
+function Unprotect-Secret([string]$Value) {
+    if ([string]::IsNullOrEmpty($Value)) { return '' }
+    if (-not $Value.StartsWith('DPAPI:')) { return $Value }
+    try {
+        Add-Type -AssemblyName System.Security -ErrorAction Stop
+        $blob = [Convert]::FromBase64String($Value.Substring(6))
+        $clear = [Security.Cryptography.ProtectedData]::Unprotect($blob, $null, 'LocalMachine')
+        try { return [Text.Encoding]::UTF8.GetString($clear) }
+        finally { [Array]::Clear($clear, 0, $clear.Length) }
+    } catch {
+        # Empty, never the ciphertext. Returning the blob would sail on and SET it as the
+        # password - locking the client out of an account with a string nobody has ever seen.
+        throw "the password could not be unprotected on this machine - $($_.Exception.Message)"
+    }
 }
 
 # Every abnormal ending arrives as a single number, and reporting it raw tells a technician
@@ -5230,10 +7701,56 @@ function Write-Activity([string]$Id, [string]$Phase, [string]$State, [string]$De
 #
 # What it cannot do is say what a file USED to contain, so it can undo a creation but never an
 # overwrite. That is what a System Restore point is for.
+#
+# WHOSE AppData? Not this process's. %LocalAppData% and %AppData% inside the elevated worker
+# belong to the ELEVATING account, and that is not always the technician: a standard user can
+# have an administrator colleague type the credentials, at which point these two roots point
+# into the wrong profile entirely. Everything that installs per-user - Teams, Discord, Zoom,
+# most Electron apps - then lands somewhere this snapshot never looks, `created` comes back
+# empty, and Install-One reports "installed nothing" and offers a working install for deletion.
+#
+# Resolve-WatchRoots takes the technician's SID off the queue and reads the profile path out of
+# ProfileList instead. Exactly the fix Resolve-Reg already applies to HKCU, for exactly the
+# same reason; the directory watcher was simply never brought in line with it.
 $script:WatchRoots = @($env:ProgramFiles, ${env:ProgramFiles(x86)}, $env:ProgramData,
                        $env:LocalAppData, $env:AppData)
-# a test seam, so the harness can point this at a sandbox instead of the real machine
-if ($env:PC2GO_WATCH_ROOTS) { $script:WatchRoots = @($env:PC2GO_WATCH_ROOTS -split ';' | Where-Object { $_ }) }
+
+# A test seam, so the harness can point this at a sandbox instead of the real machine.
+#
+# On the WORKER'S COMMAND LINE, not in the environment. It used to read $env:PC2GO_WATCH_ROOTS,
+# which any process running as this user could set and an elevated process would then inherit -
+# an outside handle on where the elevated side looks, for a seam that exists only for tests.
+# The command line is built by Start-Worker and by the harness, and by nothing else.
+# Captured BEFORE $script:WatchRoots is assigned, and under a different name on purpose. At a
+# script's top level $script:WatchRoots and $WatchRoots are THE SAME variable, so a parameter
+# sharing that name is destroyed by the default assignment above before it can ever be read -
+# measured, not imagined: the harness passed a sandbox root and the worker went on watching
+# Program Files.
+$script:WatchRootsFixed = [bool]$TestWatchRoots
+if ($script:WatchRootsFixed) { $script:WatchRoots = @($TestWatchRoots -split ';' | Where-Object { $_ }) }
+
+function Resolve-WatchRoots([string]$Sid) {
+    if ($script:WatchRootsFixed) { return }      # the harness said where to look
+    $roots = @($env:ProgramFiles, ${env:ProgramFiles(x86)}, $env:ProgramData)
+    $prof = ''
+    if ($Sid) {
+        try {
+            $pl = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList\$Sid"
+            if (Test-Path -LiteralPath $pl) {
+                $prof = ('' + (Get-ItemProperty -LiteralPath $pl -Name ProfileImagePath -ErrorAction SilentlyContinue).ProfileImagePath)
+                $prof = [Environment]::ExpandEnvironmentVariables($prof).TrimEnd('\')
+            }
+        } catch { }
+    }
+    if ($prof -and (Test-Path -LiteralPath $prof)) {
+        $roots += @((Join-Path $prof 'AppData\Local'), (Join-Path $prof 'AppData\Roaming'))
+    } else {
+        # no SID on the queue, or a profile that is not on this machine - the elevating
+        # account's own roots are still better than watching nothing per-user at all
+        $roots += @($env:LocalAppData, $env:AppData)
+    }
+    $script:WatchRoots = @($roots | Where-Object { $_ } | Select-Object -Unique)
+}
 
 function Get-DirSnapshot {
     $set = @{}
@@ -5406,7 +7923,20 @@ function ConvertTo-PSRegPath([string]$Path) {
                   -replace '^HKCU\\', 'HKCU:\' `
                   -replace '^HKCR\\', 'HKCR:\')
 }
-function Write-Status([string]$Id, [string]$State, [string]$Detail, [bool]$Dirty = $false, [string[]]$Created = @()) {
+# $Pct/$Bytes/$Total/$Rate/$Elapsed are how a long-running action reports NUMBERS, not just a
+# sentence. Until now this record carried none: {id,state,detail,dirty} and nothing else, so the
+# elevated worker physically could not drive a progress bar and the GUI had nothing to bind to.
+# A multi-gigabyte profile copy showed one unchanging line of text for the whole hour.
+#
+# All five are OPTIONAL and omitted when unset, so every one of the ~90 existing Write-Status
+# calls keeps producing byte-identical records and Read-WorkerStatus needs no special case for
+# the actions that do not report progress.
+function Write-Status([string]$Id, [string]$State, [string]$Detail, [bool]$Dirty = $false, [string[]]$Created = @(),
+                      [int]$Pct = -1, [long]$Bytes = -1, [long]$Total = -1, [double]$Rate = -1, [int]$Elapsed = -1) {
+    # A step that reports Failed raises this, and the queue loop reads it to decide whether the
+    # REST of a chained sequence should still run. Set here rather than returned, because every
+    # action reports its outcome through this function and none of them return anything.
+    if ($State -eq 'Failed') { $script:StepFailed = $true }
     # $Dirty is the verdict travelling back to the GUI: this failure left files on the
     # machine. The GUI turns it into a leftover scan, so the flag has to be on the wire -
     # the elevated side cannot show the preview itself.
@@ -5414,6 +7944,14 @@ function Write-Status([string]$Id, [string]$State, [string]$Detail, [bool]$Dirty
     # only when there is something to say - every status line is read and logged, and an empty
     # array on all of them would be noise
     if (@($Created).Count) { $rec['created'] = @($Created) }
+    # -1 means 'not reported', which is not the same as zero: 0% and 0 bytes are real readings a
+    # copy legitimately starts at, and a bar that cannot tell them apart would sit at 100% for
+    # anything that never reports.
+    if ($Pct     -ge 0) { $rec['pct']     = $Pct }
+    if ($Bytes   -ge 0) { $rec['bytes']   = $Bytes }
+    if ($Total   -ge 0) { $rec['total']   = $Total }
+    if ($Rate    -ge 0) { $rec['rate']    = [long]$Rate }
+    if ($Elapsed -ge 0) { $rec['elapsed'] = $Elapsed }
     $line = $rec | ConvertTo-Json -Compress
     for ($i = 0; $i -lt 10; $i++) {
         try { Add-Content -LiteralPath $StatusFile -Value $line -Encoding UTF8; break }
@@ -5560,6 +8098,15 @@ function Invoke-PostStep($step, [string]$appId, [int]$n, [int]$total) {
             if ($step.sha256) {
                 $h = (Get-FileHash -LiteralPath $f -Algorithm SHA256).Hash.ToUpper()
                 if ($h -ne ('' + $step.sha256).ToUpper()) { return "step $n ($label): SHA-256 mismatch - not copied" }
+            } elseif (-not $step.from) {
+                # Same rule as 'run', and for the same reason. A `from` file came out of the
+                # package, whose own hash was checked before a byte was unpacked, so it is
+                # already covered. Anything else arrived over the network with nothing
+                # vouching for it, and this step writes it wherever the catalog says while
+                # running elevated - a DLL beside a signed exe, a file into Startup. "Copied,
+                # not executed" is not a smaller thing than 'run'; it is the same thing one
+                # step later. Only 'run' refused before, which made the gap silent.
+                return "step $n ($label): refused - no sha256 in the catalog, and unverified files are never placed by the elevated worker"
             }
             # "drop it in the app directory": a dest that is a folder keeps the source name,
             # so the catalog does not have to repeat the filename
@@ -5627,7 +8174,15 @@ function Invoke-PostInstall($app) {
         if ($err) {
             $problems += $err
             # a failed activation step must not silently cascade into the next one
-            if ($steps[$i].stopOnError -ne $false) { $problems += 'remaining steps skipped'; break }
+            if ($steps[$i].stopOnError -ne $false) {
+                # ...but only say so when there ARE any after this one. A failure on the LAST
+                # step used to add this anyway, which invented a second issue and claimed
+                # something had been skipped when nothing had: one step, "2 post-install
+                # issue(s)". The count a technician reads has to be the number of things
+                # actually wrong.
+                if ($i -lt ($steps.Count - 1)) { $problems += 'remaining steps skipped' }
+                break
+            }
         }
     }
     return $problems
@@ -5637,7 +8192,90 @@ function Invoke-PostInstall($app) {
 # package doubles its footprint while it exists - but it cannot be deleted the moment the
 # installer exits, because a post-install step may still need to copy a file OUT of it.
 # So it lives until the app is completely finished, and every exit path goes through here.
+<#
+    Run an installer and refuse to wait for it for ever.
+
+    Start-Process -Wait has no timeout, so until now a wrong silent switch was unbounded: the
+    installer opened its GUI, that window was invisible because the worker runs elevated and
+    hidden, and the batch waited on it until somebody noticed hours later. Nothing reported a
+    fault, because nothing had failed - it was still "installing".
+
+    Two separate signals, because they mean different things:
+
+      * a window that stays up   -> the silent switch is wrong. This is the common case and the
+        one worth naming, because the fix is a catalog edit, not a retry.
+      * the wall clock runs out  -> something is genuinely stuck. Revit legitimately takes half
+        an hour, so the default is deliberately generous and per-app overridable.
+
+    A brief window is NOT enough: some installers flash a splash even when silent. It has to be
+    present continuously for UiGraceSec before that is called a verdict.
+#>
+function Start-InstallerWatched {
+    param(
+        [Parameter(Mandatory = $true)][string]$FilePath,
+        [string[]]$ArgumentList,
+        [hashtable]$Extra = @{},
+        [int]$TimeoutSec  = 5400,     # 90 minutes
+        [int]$UiGraceSec  = 180,      # 3 minutes of a visible window
+        [switch]$AllowUi
+    )
+    $sp = @{ FilePath = $FilePath; PassThru = $true }
+    if ($ArgumentList -and $ArgumentList.Count) { $sp['ArgumentList'] = $ArgumentList }
+    foreach ($k in $Extra.Keys) { $sp[$k] = $Extra[$k] }
+
+    $p  = Start-Process @sp
+    $t0 = Get-Date
+    $uiSince = $null
+
+    while ($true) {
+        if ($p.WaitForExit(1000)) {
+            return [pscustomobject]@{ ExitCode = $p.ExitCode; ShowedUi = $false; TimedOut = $false }
+        }
+        $hasUi = $false
+        try { $p.Refresh(); $hasUi = ($p.MainWindowHandle -ne [IntPtr]::Zero) } catch { }
+
+        if ($hasUi -and -not $AllowUi) {
+            if (-not $uiSince) { $uiSince = Get-Date }
+            if (((Get-Date) - $uiSince).TotalSeconds -ge $UiGraceSec) {
+                Stop-ProcessTree $p.Id
+                return [pscustomobject]@{ ExitCode = -1; ShowedUi = $true; TimedOut = $false }
+            }
+        } else { $uiSince = $null }
+
+        if (((Get-Date) - $t0).TotalSeconds -ge $TimeoutSec) {
+            Stop-ProcessTree $p.Id
+            return [pscustomobject]@{ ExitCode = -1; ShowedUi = $hasUi; TimedOut = $true }
+        }
+    }
+}
+
+# Stop-Process kills only the process named. An installer is almost always a stub that launches
+# the real thing, so killing the parent alone leaves the actual installer running - still
+# holding the files the leftover scan is about to offer to delete.
+function Stop-ProcessTree {
+    param([Parameter(Mandatory = $true)][int]$ProcessId)
+    try {
+        $tk = Join-Path $env:SystemRoot 'System32\taskkill.exe'
+        Start-Process -FilePath $tk -ArgumentList @('/PID', "$ProcessId", '/T', '/F') `
+                      -Wait -WindowStyle Hidden -ErrorAction Stop | Out-Null
+    } catch {
+        try { Stop-Process -Id $ProcessId -Force -ErrorAction SilentlyContinue } catch { }
+    }
+}
+
 function Remove-Unpacked {
+    # A mounted image is a device to let go of, not a folder to delete. Falling through to the
+    # Remove-Item below would try to erase the contents of a read-only disc - failing, and
+    # leaving the image still mounted, which locks the .iso the batch-end sweep then tries to
+    # remove and quietly costs a drive letter for every app installed this way.
+    if ($script:MountedIso) {
+        $iso = $script:MountedIso
+        $script:MountedIso = $null
+        $script:UnpackedDir = $null
+        try { Dismount-DiskImage -ImagePath $iso -ErrorAction Stop | Out-Null }
+        catch { Write-Activity '' 'install' 'Warning' "could not dismount $([IO.Path]::GetFileName($iso)) - $($_.Exception.Message)" }
+        return
+    }
     if ($script:UnpackedDir -and (Test-Path -LiteralPath $script:UnpackedDir)) {
         try { Remove-Item -LiteralPath $script:UnpackedDir -Recurse -Force } catch {}
     }
@@ -5645,10 +8283,29 @@ function Remove-Unpacked {
 }
 
 function Install-One($app) {
+    # before the before/after snapshot, or the per-user half of it watches the wrong profile
+    Resolve-WatchRoots ([string]$app.userSid)
     Write-Status $app.id 'Verifying file' ''
     $hash = (Get-FileHash -LiteralPath $app.file -Algorithm SHA256).Hash.ToUpper()
     if ($hash -ne $app.sha256.ToUpper()) {
-        Write-Status $app.id 'Failed' 'SHA-256 mismatch - file rejected, not executed'
+        # DELETE it, or this app can never install again on this machine.
+        #
+        # The GUI treats a cached file whose SIZE matches the catalogue as already downloaded
+        # and hands it straight over. So a file that is the right length and the wrong bytes -
+        # a truncating proxy that padded, a resume that interleaved two products, an antivirus
+        # that rewrote it - fails here, is left exactly where it was, and is then re-offered on
+        # every retry for ever. The batch also keeps the cache when anything failed, which is
+        # precisely this case. Removing it costs one re-download and is the only way out that
+        # does not involve telling somebody to go and empty a folder by hand.
+        Write-Activity $app.id 'verify' 'Failed' "expected $($app.sha256.ToUpper()), got $hash"
+        $why = 'SHA-256 mismatch - file rejected, not executed'
+        try {
+            Remove-Item -LiteralPath $app.file -Force -ErrorAction Stop
+            $why += '. The bad copy has been deleted, so a retry downloads it again'
+        } catch {
+            $why += ". The bad copy could not be deleted ($($_.Exception.Message)) - remove $($app.file) by hand before retrying"
+        }
+        Write-Status $app.id 'Failed' $why
         return
     }
     # Most vendors' silent installers are a FOLDER, not a file: an Adobe Admin Console
@@ -5673,9 +8330,56 @@ function Install-One($app) {
     $runFile = $app.file
     $workDir = $null
     $unpacked = $null
-    if ($app.entry -or [IO.Path]::GetExtension($app.file).ToLower() -eq '.zip') {
+    $pkgExt = [IO.Path]::GetExtension($app.file).ToLower()
+
+    # An ISO is mounted, never unpacked - and it is checked BEFORE the archive branch, because
+    # tar would happily "read" one and silently truncate every name past 31 characters on an
+    # image with no Joliet extension. The installer would then be handed paths that do not
+    # exist, after the whole image had already been downloaded.
+    if ($pkgExt -eq '.iso') {
         if (-not $app.entry) {
-            Write-Status $app.id 'Failed' 'package is a .zip but the catalog does not say which file inside it to run (entry)'
+            Write-Status $app.id 'Failed' 'package is an .iso but the catalog does not say which file inside it to run (entry)'
+            return
+        }
+        try {
+            Write-Status $app.id 'Installing' 'mounting image'
+            # A run that was cancelled or crashed leaves the image mounted, and Mount-DiskImage
+            # then throws for ever after - making that application permanently uninstallable
+            # until somebody reboots. Adopt an existing mount instead; it is dismounted at the
+            # end either way, which is also how the stale one finally gets cleaned up.
+            $img = Get-DiskImage -ImagePath $app.file -ErrorAction SilentlyContinue
+            if (-not ($img -and $img.Attached)) {
+                $img = Mount-DiskImage -ImagePath $app.file -Access ReadOnly -PassThru -ErrorAction Stop
+            }
+            $root = ''
+            # The volume is not there the moment the mount call returns.
+            for ($i = 0; $i -lt 40 -and -not $root; $i++) {
+                Start-Sleep -Milliseconds 250
+                $v = Get-Volume -DiskImage $img -ErrorAction SilentlyContinue
+                if ($v -and $v.DriveLetter) { $root = "$($v.DriveLetter):\" }
+            }
+            if (-not $root) { throw 'the image mounted but Windows gave it no drive letter' }
+        } catch {
+            Write-Status $app.id 'Failed' "could not mount the image - $($_.Exception.Message)"
+            try { Dismount-DiskImage -ImagePath $app.file -ErrorAction SilentlyContinue | Out-Null } catch { }
+            return
+        }
+        # Recorded before anything can fail, so Remove-Unpacked always has something to let go
+        # of. A left-behind mount locks the image file the batch-end sweep then tries to delete.
+        $script:MountedIso  = $app.file
+        $script:UnpackedDir = $root      # post-install `from` steps resolve against the disc
+        $runFile = Join-Path $root ([string]$app.entry)
+        if (-not (Test-Path -LiteralPath $runFile)) {
+            Write-Status $app.id 'Failed' "the image does not contain '$($app.entry)'"
+            Remove-Unpacked
+            return
+        }
+        $workDir = Split-Path -Parent $runFile
+        Write-Activity $app.id 'install' 'Mounted' "$([IO.Path]::GetFileName($app.file)) -> $($app.entry)"
+    }
+    elseif ($app.entry -or $pkgExt -in '.zip', '.rar') {
+        if (-not $app.entry) {
+            Write-Status $app.id 'Failed' 'package is an archive but the catalog does not say which file inside it to run (entry)'
             return
         }
         $unpacked = Join-Path (Split-Path -Parent $app.file) "$($app.id)-unpacked"
@@ -5694,15 +8398,68 @@ function Install-One($app) {
                 # has already been downloaded. Windows ships bsdtar (libarchive) with those
                 # codecs linked in, so it can read what .NET cannot. Present since Windows 10
                 # 1803, which is below this tool's floor anyway.
+                #
+                # This is also the whole of .rar support: .NET does not know what a .rar is, so
+                # it throws immediately and lands here. RAR5 is proven end to end (listed,
+                # extracted, bytes identical) against bsdtar 3.8.4 / libarchive 3.8.4. RAR4 is
+                # NOT proven - libarchive documents a reader for it, but WinRAR 7.x removed the
+                # ability to create one, so there was nothing to test against. If an old vendor
+                # .rar ever fails here, that is the first thing to check.
                 $tar = Join-Path $env:SystemRoot 'System32\tar.exe'
                 if (-not (Test-Path -LiteralPath $tar)) { throw }
                 Write-Activity $app.id 'install' 'Unpacking' 'unsupported zip codec - retrying with tar'
                 if (-not (Test-Path -LiteralPath $unpacked)) {
                     New-Item -ItemType Directory -Force -Path $unpacked | Out-Null
                 }
+                # libarchive says WHY on stderr, and this used to throw it away: a hidden window
+                # with no redirect, so the only thing that survived a multi-GB download was
+                # "tar exited 1". That names nothing a technician can act on - it is the same
+                # sentence whether the disk filled, the archive was truncated, or antivirus
+                # deleted a file out from under the extraction.
+                $errLog = Join-Path $script:CacheDir "$($app.id)-tar.err"
                 $tp = Start-Process -FilePath $tar -ArgumentList @('-xf', "`"$($app.file)`"", '-C', "`"$unpacked`"") `
-                                    -Wait -PassThru -WindowStyle Hidden
-                if ($tp.ExitCode -ne 0) { throw "tar exited $($tp.ExitCode)" }
+                                    -Wait -PassThru -WindowStyle Hidden -RedirectStandardError $errLog
+                $why = ''
+                try {
+                    # The LAST line is nearly always "Error exit delayed from previous errors",
+                    # which is only tar restating that it failed. The first real line is the cause.
+                    $errLines = @(Get-Content -LiteralPath $errLog -ErrorAction SilentlyContinue |
+                                  ForEach-Object { $_.Trim() } |
+                                  Where-Object { $_ -and $_ -notmatch 'Error exit delayed' })
+                    if ($errLines.Count) { $why = (@($errLines | Select-Object -First 2) -join '; ') }
+                } catch { }
+                try { Remove-Item -LiteralPath $errLog -Force -ErrorAction SilentlyContinue } catch { }
+                if ($tp.ExitCode -ne 0) {
+                    # Name the MACHINE, not just the archive.
+                    #
+                    # A .rar is read only by tar, and libarchive's RAR5 decoder was not reliable
+                    # before 3.6: an archive that extracts in seconds on a current build fails on
+                    # an older one with "Truncated data in huffman tables", which reads exactly
+                    # like a corrupt download. It is not - the file's sha256 was verified before
+                    # a byte of it was unpacked. Measured on one package: identical bytes,
+                    # libarchive 3.8.4 extracts in 7s, libarchive 3.5.2 fails.
+                    #
+                    # tar.exe ships WITH Windows, so its version is the OS build's and cannot be
+                    # updated on its own. Saying which version is here turns a mystery into a
+                    # packaging decision.
+                    $ver = ''
+                    try { $ver = ([string](& $tar --version 2>$null | Select-Object -First 1)).Trim() } catch { }
+                    $advice = ''
+                    if ($pkgExt -eq '.rar') {
+                        $advice = " This machine has $(if ($ver) { $ver } else { 'an unknown tar' })," +
+                                  ' and a .rar can only be read by tar. libarchive before 3.6 cannot' +
+                                  ' extract many RAR5 archives, so republish this application as a .zip' +
+                                  ' rather than trying to upgrade tar.'
+                    } elseif ($ver) {
+                        $advice = " ($ver)"
+                    }
+                    if ($why) { throw "tar exited $($tp.ExitCode) - $why.$advice" }
+                    throw "tar exited $($tp.ExitCode) and said nothing about why.$advice"
+                }
+                # A zero exit with complaints on stderr means some members were skipped. The
+                # entry check below catches a missing setup file, but a package whose extraction
+                # was partly refused should say so while there is still something to read.
+                if ($why) { Write-Activity $app.id 'install' 'Unpacking' "tar reported: $why" }
             }
         } catch {
             Write-Status $app.id 'Failed' "could not unpack the package - $($_.Exception.Message)"
@@ -5742,16 +8499,41 @@ function Install-One($app) {
         # from its own folder, a bare installer keeps the worker's default
         $extra = @{}
         if ($workDir) { $extra['WorkingDirectory'] = $workDir }
+        # Per-app overrides: a genuinely long installer raises installTimeoutSec, and one that
+        # is known to show a window even when silent sets allowUi so the guard does not fire.
+        $watch = @{ Extra = $extra }
+        if ($app.PSObject.Properties['installTimeoutSec'] -and [int]$app.installTimeoutSec -gt 0) {
+            $watch['TimeoutSec'] = [int]$app.installTimeoutSec
+        }
+        if ($app.PSObject.Properties['allowUi'] -and $app.allowUi) { $watch['AllowUi'] = $true }
+
         if ($ext -eq '.msi') {
             $msiArgs = "/i `"$runFile`" /qn /norestart"
             if ($app.silentArgs) { $msiArgs += " $($app.silentArgs)" }
-            $p = Start-Process msiexec.exe -ArgumentList $msiArgs -Wait -PassThru @extra
+            $p = Start-InstallerWatched -FilePath 'msiexec.exe' -ArgumentList @($msiArgs) @watch
         } elseif ([string]::IsNullOrWhiteSpace($app.silentArgs)) {
-            $p = Start-Process -FilePath $runFile -Wait -PassThru @extra
+            $p = Start-InstallerWatched -FilePath $runFile @watch
         } else {
-            $p = Start-Process -FilePath $runFile -ArgumentList $app.silentArgs -Wait -PassThru @extra
+            $p = Start-InstallerWatched -FilePath $runFile -ArgumentList @($app.silentArgs) @watch
         }
         $mins = [math]::Round(((Get-Date) - $t0).TotalMinutes, 1)
+
+        # These two are not exit codes and must not be read as one. A wrong silent switch is a
+        # catalog problem with a specific fix, so it is named rather than folded into "failed".
+        if ($p.ShowedUi -or $p.TimedOut) {
+            $created = Get-CreatedDirs $before
+            $why = $(if ($p.ShowedUi) {
+                        "the installer opened a window instead of installing silently, so it was stopped after $mins min - the silent switch '$($app.silentArgs)' is probably wrong for this installer"
+                     } else {
+                        "the installer was still running after $mins min and was stopped - raise installTimeoutSec for this app if it genuinely takes longer"
+                     })
+            Write-Activity $app.id 'install' 'Failed' $why
+            # Dirty on purpose: it was killed part-way, so something may well be on disk and the
+            # leftover scan should offer it.
+            Write-Status $app.id 'Failed' $why $true $created
+            Remove-Unpacked
+            return
+        }
         $created = Get-CreatedDirs $before
         if (@($created).Count) {
             Write-Activity $app.id 'install' 'Created' (@($created) -join ' | ')
@@ -5788,9 +8570,42 @@ function Install-One($app) {
         if ($vp -and -not (Test-Path -LiteralPath ([Environment]::ExpandEnvironmentVariables($vp)))) { $ok = $false }
     }
     if (-not $ok) {
-        # The installer claimed success but the product is not on disk. Usually a wrapper
-        # that spawned the real engine and returned early, or a silent switch that made it
-        # exit 0 without doing anything. Dirty by definition - something ran.
+        $missing = @(@($app.verifyPaths) | Where-Object {
+            $_ -and -not (Test-Path -LiteralPath ([Environment]::ExpandEnvironmentVariables($_))) })
+
+        if (@($created).Count) {
+            # The installer exited cleanly, ran for real, and the directory watcher SAW it create
+            # these folders. Saying "installed nothing" while holding a list of what it installed
+            # is simply false - and marking it dirty put a working 9.4 GB Office installation in
+            # front of a technician as debris to delete. That is the worst thing this tool could
+            # do, so it no longer does it.
+            #
+            # By far the likelier explanation is that verifyPaths is wrong. The editor derives
+            # those from the application's NAME when the product is not installed on the machine
+            # building the catalog, and says so - for an app called "OfficeSetup" it guessed
+            # %ProgramFiles%\OfficeSetup\OfficeSetup.exe, while Office installs into
+            # %ProgramFiles%\Microsoft Office. That same entry's uninstall.detect had the real
+            # path all along.
+            #
+            # Still reported as Failed, because the install genuinely could not be VERIFIED, and
+            # claiming a success we cannot prove is exactly what verifyPaths exists to prevent.
+            # But nothing is offered for removal, and the message names the actual fix.
+            # The full lists go to the activity log; the row gets one sentence a technician can act
+            # on. The paragraph that used to sit on the row was true and went unread.
+            Write-Activity $app.id 'verify' 'Failed' (
+                "created $(@($created).Count) folder(s) but no verifyPath matched (exit $($p.ExitCode)). " +
+                "created: $(@($created) -join ' | '); missing verifyPaths: $($missing -join ' | ')")
+            Write-Status $app.id 'Failed' (
+                "installed but could not be verified - the installer created $(@($created).Count) folder(s) " +
+                "yet none of this app's verifyPaths exist. Fix verifyPaths in the catalog (the log names " +
+                'both). Nothing is offered for removal.') $false @()
+            Remove-Unpacked
+            return
+        }
+
+        # Nothing created and nothing verifies: the installer really did do nothing. Usually a
+        # wrapper that spawned the real engine and returned early, or a silent switch that made
+        # it exit 0 without acting. Dirty by definition - something ran.
         Write-Activity $app.id 'verify' 'Failed' "verifyPaths missing after exit $($p.ExitCode)"
         Write-Status $app.id 'Failed' 'installed nothing - verify paths are missing, so a partial install may be on disk' $true $created
         Remove-Unpacked
@@ -5822,9 +8637,16 @@ function Uninstall-One($app) {
     if ($app.location) {
         $loc = [Environment]::ExpandEnvironmentVariables($app.location).TrimEnd('\')
         if ($loc -and $loc.Length -gt 12) {
+            # The separator is not cosmetic. Matching the bare prefix means an install
+            # location of "...\Program Files\Foo" ALSO matches "...\Program Files\FooBar\x.exe",
+            # and this force-kills whatever it matches - so removing one product would take a
+            # different vendor's running application down with it, mid-edit, with no warning.
+            # Comparing against "$loc\" can only match something genuinely INSIDE the folder.
+            # Same rule as the post-install 'kill' step, which has always done it this way.
+            $locPrefix = $loc + '\'
             foreach ($proc in @(Get-Process -ErrorAction SilentlyContinue)) {
                 try {
-                    if ($proc.Path -and $proc.Path.StartsWith($loc, 'OrdinalIgnoreCase')) {
+                    if ($proc.Path -and $proc.Path.StartsWith($locPrefix, 'OrdinalIgnoreCase')) {
                         Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
                     }
                 } catch {}
@@ -5858,10 +8680,38 @@ function Uninstall-One($app) {
         Write-Status $app.id 'Failed' 'vendor uninstaller not found'
         return
     }
+    # Time-boxed, for the same reason the INSTALL side is: Start-Process -Wait has no timeout,
+    # this worker is elevated and hidden, and a vendor uninstaller that stops on a prompt would
+    # otherwise hold the whole batch open for ever with nothing on screen saying so. That was
+    # already fixed once for installs and never carried across to here.
+    #
+    # The UI rule is the OPPOSITE of the install side, and deliberately. An install is supposed
+    # to be silent, so a window that stays up is a verdict: the silent switch is wrong. An
+    # uninstall is frequently NOT silent - Parse-UninstallString can only promise that for MSI -
+    # and the vendor's wizard appears on the technician's own desktop for them to click through.
+    # Killing that would be destroying work in progress, so an interactive uninstaller is
+    # allowed its window and bounded only by the clock.
+    $unWatch = @{}
+    if (-not $app.silent) {
+        $unWatch['AllowUi'] = $true
+        # long enough for somebody to actually read a wizard, short enough to end a hang
+        $unWatch['TimeoutSec'] = 3600
+    }
     if ([string]::IsNullOrWhiteSpace($app.args)) {
-        $p = Start-Process -FilePath $exe -Wait -PassThru
+        $p = Start-InstallerWatched -FilePath $exe @unWatch
     } else {
-        $p = Start-Process -FilePath $exe -ArgumentList $app.args -Wait -PassThru
+        $p = Start-InstallerWatched -FilePath $exe -ArgumentList @([string]$app.args) @unWatch
+    }
+    if ($p.TimedOut -or $p.ShowedUi) {
+        $why = $(if ($p.ShowedUi) {
+                    "the uninstaller opened a window instead of removing silently and was stopped - '$($app.args)' is probably the wrong silent switch for it"
+                 } else {
+                    'the uninstaller was still running after 60 min and was stopped - it may have been waiting on a prompt'
+                 })
+        # Dirty by definition: it was killed part-way, so the product is neither installed nor
+        # gone. Force remove is the route out, and the leftover scan is what offers it.
+        Write-Status $app.id 'Failed' $why $true
+        return
     }
     $badCode = ($p.ExitCode -ne 0 -and $p.ExitCode -ne 3010)
     # verify removal. For registry-discovered apps the detect target is the uninstall key
@@ -5891,6 +8741,52 @@ function Uninstall-One($app) {
             "removed, though the uninstaller returned exit code $($p.ExitCode)" } else { '' })
     }
 }
+# The GUI's protected-root list, restated on the elevated side.
+#
+# Not duplication for its own sake: Scan-Leftovers filters these out when it BUILDS the kill
+# list, but the kill list travels through the queue, and the queue is a file any process
+# running as this user can write to. Wipe-One is the most destructive thing in this worker -
+# recursive delete, take-ownership, delete-on-reboot - and it was the one that still took its
+# targets entirely on trust. Same rule as Test-AccountActionSafe: check it where it happens.
+$script:WipeProtected = @(
+    $env:SystemRoot, $env:ProgramFiles, ${env:ProgramFiles(x86)}, $env:ProgramData,
+    $env:AppData, $env:LocalAppData, $env:Public, $env:UserProfile,
+    (Join-Path $env:LocalAppData 'Temp'), (Join-Path $env:SystemRoot 'Temp'),
+    (Split-Path $env:UserProfile),
+    (Join-Path $env:SystemRoot 'System32'), (Join-Path $env:SystemRoot 'SysWOW64'),
+    (Join-Path $env:SystemRoot 'assembly'), (Join-Path $env:SystemRoot 'WinSxS'),
+    (Join-Path $env:ProgramFiles 'Common Files'), (Join-Path ${env:ProgramFiles(x86)} 'Common Files')
+) | Where-Object { $_ } | ForEach-Object { $_.TrimEnd('\').ToLower() }
+
+function Test-WipeAllowed([string]$Path) {
+    if ([string]::IsNullOrWhiteSpace($Path)) { return $false }
+    $full = ''
+    # GetFullPath, so "...\Adobe\..\Adobe" and a trailing dot cannot walk past an equality test
+    try { $full = [IO.Path]::GetFullPath([Environment]::ExpandEnvironmentVariables($Path)) } catch { return $false }
+    $t = $full.TrimEnd('\')
+    if ($script:WipeProtected -contains $t.ToLower()) { return $false }
+    # a bare drive root - "C:\" - is not a leftover under any reading
+    if ($t.Length -le 3) { return $false }
+    return $true
+}
+
+# A 'run' target EXECUTES, elevated - so where it may point is the tightest rule in this file.
+# An on-disk remover must live under a Program Files root: those are admin-writable only, so a
+# standard user cannot plant a file there and have this worker run it through a tampered queue.
+# Anything else must arrive as a downloaded file whose SHA-256 travels with the target and is
+# checked before execution - the same gate every installer passes.
+function Test-RunAllowed([string]$Path) {
+    if ([string]::IsNullOrWhiteSpace($Path)) { return $false }
+    $full = ''
+    try { $full = [IO.Path]::GetFullPath([Environment]::ExpandEnvironmentVariables($Path)) } catch { return $false }
+    if ([IO.Path]::GetExtension($full).ToLower() -ne '.exe') { return $false }
+    if (-not (Test-Path -LiteralPath $full)) { return $false }
+    foreach ($root in @($env:ProgramFiles, ${env:ProgramFiles(x86)})) {
+        if ($root -and $full.StartsWith(($root.TrimEnd('\') + '\'), [StringComparison]::OrdinalIgnoreCase)) { return $true }
+    }
+    return $false
+}
+
 function Wipe-One($app) {
     # Remove every approved leftover. Each target was scanned, shown with its size and
     # explicitly ticked by the technician - nothing here is guessed at run time.
@@ -5929,9 +8825,50 @@ function Wipe-One($app) {
                     Unregister-ScheduledTask -TaskName $leaf -TaskPath $path -Confirm:$false -ErrorAction Stop
                     $removed++
                 }
+                'run' {
+                    # A vendor's own removal tool - AdskLicensing's uninstaller, avastclear.
+                    # Two routes, both verified before anything executes: an exe already on the
+                    # machine has to pass Test-RunAllowed; a fetched one has to match the hash
+                    # that travelled with the target. Allowed its window (vendor removers often
+                    # show one) but never allowed to hang the batch.
+                    $exe = ''
+                    if ($t.file) {
+                        $want = ('' + $t.sha256).ToUpper()
+                        if (-not $want) { throw "removal tool '$($t.name)' arrived with no expected hash - not executed" }
+                        $got = (Get-FileHash -LiteralPath $t.file -Algorithm SHA256).Hash.ToUpper()
+                        if ($got -ne $want) { throw "removal tool '$($t.name)' failed its integrity check - not executed" }
+                        $exe = [string]$t.file
+                    } else {
+                        $exe = [Environment]::ExpandEnvironmentVariables([string]$t.path)
+                        if (-not (Test-RunAllowed $exe)) {
+                            $failed++
+                            Write-Activity $app.id 'wipe' 'Refused' "$exe is not an installed vendor tool under Program Files"
+                            break
+                        }
+                    }
+                    Write-Activity $app.id 'wipe' 'Running' "$($t.name): $exe $($t.args)"
+                    $rw = @{ FilePath = $exe; AllowUi = $true; TimeoutSec = 1800 }
+                    if (-not [string]::IsNullOrWhiteSpace([string]$t.args)) { $rw['ArgumentList'] = @([string]$t.args) }
+                    $p = Start-InstallerWatched @rw
+                    if ($p.TimedOut) {
+                        $failed++
+                        Write-Activity $app.id 'wipe' 'Failed' "$($t.name) was still running after 30 min and was stopped"
+                    } elseif ($p.ExitCode -in 0, 3010, 1641) {
+                        $removed++
+                        Write-Activity $app.id 'wipe' 'Done' "$($t.name) finished (exit $($p.ExitCode))"
+                    } else {
+                        $failed++
+                        Write-Activity $app.id 'wipe' 'Failed' "$($t.name) exited $($p.ExitCode)"
+                    }
+                }
                 'hosts' { $hostLines += $t.path }
                 default {
                     $fp = [Environment]::ExpandEnvironmentVariables($t.path)
+                    if (-not (Test-WipeAllowed $t.path)) {
+                        $failed++
+                        Write-Activity $app.id 'wipe' 'Refused' "$fp is a protected system or shared root"
+                        break
+                    }
                     switch (Remove-Stubborn $fp) {
                         'removed' { $removed++ }
                         'reboot'  { $pending++ }
@@ -5977,6 +8914,30 @@ function Set-Reg([string]$Path, [string]$Name, $Value, [string]$Type = 'DWord') 
     $p = Resolve-Reg $Path
     if (-not (Test-Path -LiteralPath $p)) { New-Item -Path $p -Force -ErrorAction Stop | Out-Null }
     New-ItemProperty -LiteralPath $p -Name $Name -Value $Value -PropertyType $Type -Force -ErrorAction Stop | Out-Null
+}
+# Read-back for the undo collision checks: before clearing a value two tweaks share,
+# the undo needs to know whether the sibling is still applied.
+function Get-WorkerReg([string]$Path, [string]$Name) {
+    try {
+        $p = Resolve-Reg $Path
+        if (-not (Test-Path -LiteralPath $p)) { return $null }
+        return (Get-ItemProperty -LiteralPath $p -Name $Name -ErrorAction Stop).$Name
+    } catch { return $null }
+}
+# The filesystem twin of Resolve-Reg: $env:APPDATA / $env:TEMP inside the elevated worker
+# belong to the ELEVATING admin, which may not be the technician's account. Per-user file
+# work (taskbar pins, Explorer recents, temp files) resolves through the profile that owns
+# $script:UserSid, read from ProfileList - falling back to this process's environment when
+# no SID travelled with the entry.
+function Resolve-UserPath([string]$Relative) {
+    if ($script:UserSid) {
+        $root = $null
+        try {
+            $root = (Get-ItemProperty -LiteralPath ("Registry::HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList\" + $script:UserSid) -Name ProfileImagePath -ErrorAction Stop).ProfileImagePath
+        } catch { $root = $null }
+        if ($root) { return (Join-Path $root $Relative) }
+    }
+    return (Join-Path $env:UserProfile $Relative)
 }
 function Remove-RegKey([string]$Path) {
     $p = Resolve-Reg $Path
@@ -6057,12 +9018,42 @@ function Get-UserSid([string]$Name) {
     catch { return '' }
 }
 
+# net.exe is the fallback for machines without the LocalAccounts module, and the obvious way
+# to call it - `net user bob hunter2 /add` - puts the password on a COMMAND LINE. That is
+# readable for the lifetime of the process by anything that can query Win32_Process, which on
+# this machine is every administrator and every EDR agent, and it lands in command-line
+# auditing and Sysmon logs that are shipped off the box and kept.
+#
+# Piping it to `net user bob *` on stdin was tried first and REJECTED. PowerShell 5.1 prepends
+# a byte-order mark to the first line it writes to a native process, so net reads "<BOM>hunter2"
+# at the "Type a password" prompt and "hunter2" at "Retype to confirm", decides the two do not
+# match, and sets nothing at all. Measured, not imagined: findstr /n on the same pipe shows the
+# BOM sitting on line 1 and not on line 2.
+#
+# ADSI takes the password as an ARGUMENT to a method call - no command line, no pipe, and no
+# text encoding to get wrong on a machine whose console codepage is not yours. WinNT:// is older
+# than any machine this will ever run on, and this script already leans on it in
+# Test-IsAdminMember for that exact reason.
+function Set-LocalPasswordFallback([string]$Name, [string]$Plain, [switch]$Create) {
+    try {
+        if ($Create) {
+            $u = ([ADSI]"WinNT://$env:COMPUTERNAME").Create('user', $Name)
+            $u.SetPassword($Plain)
+            $u.SetInfo()
+        } else {
+            $u = [ADSI]"WinNT://$env:COMPUTERNAME/$Name,user"
+            $u.SetPassword($Plain)
+        }
+        return $true
+    } catch { return $false }
+}
+
 function New-LocalAdmin($app) {
     $name = [string]$app.username
     $full = [string]$app.fullname
     Write-Status $app.id 'Applying' 'creating the account'
 
-    $pw = [string]$app.password
+    $pw = Unprotect-Secret ([string]$app.password)
     $created = $false
     try {
         if ($pw) {
@@ -6074,11 +9065,23 @@ function New-LocalAdmin($app) {
         $created = $true
     } catch {
         # PS 5.1 without the LocalAccounts module, or a policy that blocks the cmdlet
-        if ($pw) { & "$env:SystemRoot\System32\net.exe" user $name $pw /add 2>&1 | Out-Null }
-        else { & "$env:SystemRoot\System32\net.exe" user $name /add 2>&1 | Out-Null }
-        $created = ($LASTEXITCODE -eq 0)
+        $why = $_.Exception.Message
+        if ($pw) {
+            $created = Set-LocalPasswordFallback $name $pw -Create
+        } else {
+            & "$env:SystemRoot\System32\net.exe" user $name /add 2>&1 | Out-Null
+            $created = ($LASTEXITCODE -eq 0)
+        }
     }
-    if (-not $created) { Write-Status $app.id 'Failed' 'could not create the account'; return }
+    if (-not $created) {
+        # Name the CAUSE. 'could not create the account' threw away the one sentence that
+        # explains it - nearly always this machine's password policy rejecting the password,
+        # which a technician can fix in seconds once told, and cannot guess at otherwise.
+        $d = 'could not create the account'
+        if ($why) { $d += " - $why" }
+        Write-Status $app.id 'Failed' $d
+        return
+    }
 
     try { Set-LocalUser -Name $name -PasswordNeverExpires $true -ErrorAction Stop } catch {}
     if ($full) {
@@ -6176,7 +9179,7 @@ function Set-AccountAdmin($app) {
 
 function Set-AccountPassword($app) {
     $name = [string]$app.username
-    $pw = [string]$app.password
+    $pw = Unprotect-Secret ([string]$app.password)
     Write-Status $app.id 'Applying' ''
     try {
         if ($pw) {
@@ -6186,8 +9189,10 @@ function Set-AccountPassword($app) {
             Set-LocalUser -Name $name -Password ([securestring]::new()) -ErrorAction Stop
         }
     } catch {
-        & "$env:SystemRoot\System32\net.exe" user $name $pw 2>&1 | Out-Null
-        if ($LASTEXITCODE -ne 0) { Write-Status $app.id 'Failed' "could not set the password: $($_.Exception.Message)"; return }
+        # ADSI, not the command line - see Set-LocalPasswordFallback
+        if (-not (Set-LocalPasswordFallback $name $pw)) {
+            Write-Status $app.id 'Failed' "could not set the password: $($_.Exception.Message)"; return
+        }
     }
     try { Set-LocalUser -Name $name -PasswordNeverExpires $true -ErrorAction Stop } catch {}
     Write-Status $app.id 'Applied' $(if ($pw) { "password set for $name" } else { "password cleared for $name - it can now sign in with no password" })
@@ -6236,49 +9241,618 @@ function Remove-Account($app) {
     Write-Status $app.id 'Applied' $detail
 }
 
+# Every user profile root Windows itself knows about. The authority is ProfileList, not the
+# queue - the same principle Test-AccountActionSafe states above: the queue sits in a folder
+# any process running as this user can write to, so the elevated side must never take a
+# destructive instruction on trust. Migration is a bulk elevated copy between two paths, which
+# is as destructive as anything here, and it was the one action still taking both of them
+# straight off the wire.
+function Get-ProfileRoots {
+    $out = @{}
+    try {
+        $pl = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList'
+        foreach ($k in @(Get-ChildItem -LiteralPath $pl -ErrorAction Stop)) {
+            $p = ('' + (Get-ItemProperty -LiteralPath $k.PSPath -Name ProfileImagePath -ErrorAction SilentlyContinue).ProfileImagePath)
+            if (-not $p) { continue }
+            try { $p = [IO.Path]::GetFullPath([Environment]::ExpandEnvironmentVariables($p)).TrimEnd('\') } catch { continue }
+            if ($p) { $out[$p.ToLower()] = $p }
+        }
+    } catch { }
+    return $out
+}
+
+# A migrate item is a name from the GUI's own list - 'Documents', 'AppData\Roaming\Thunderbird'.
+# Relative, always. Anything rooted, or containing '..', is not one of those, and joining it
+# blindly would put an elevated robocopy somewhere nobody chose. Returns '' for a refusal.
+function Resolve-InProfile([string]$Root, [string]$Rel) {
+    if ([string]::IsNullOrWhiteSpace($Rel)) { return '' }
+    if ($Rel -match '[:*?"<>|]') { return '' }
+    if ([IO.Path]::IsPathRooted($Rel)) { return '' }
+    $full = ''
+    try { $full = [IO.Path]::GetFullPath((Join-Path $Root $Rel)) } catch { return '' }
+    # the separator matters for the same reason it does in Uninstall-One: without it
+    # "C:\Users\bob" would also admit "C:\Users\bobby"
+    $guard = [IO.Path]::GetFullPath($Root).TrimEnd('\') + '\'
+    if (-not $full.StartsWith($guard, 'OrdinalIgnoreCase')) { return '' }
+    return $full.TrimEnd('\')
+}
+
+# ---------- the copy engine ----------
+#
+# robocopy, run so it can actually be WATCHED. The previous call was
+#     robocopy $s $d /E /COPY:DAT /XJ /R:1 /W:1 /NFL /NDL /NJH /NJS /NP 2>&1 | Out-Null
+# which is synchronous, single-threaded, and throws away every byte of feedback robocopy offers.
+# A 200 GB profile showed one unchanging line of text for an hour, and nobody could tell a working
+# copy from a hung one.
+#
+# What each flag is for:
+#   /MT:16      several files at once. The single biggest speed win, and simply absent before.
+#   /J          unbuffered I/O - materially faster on the large files a profile is full of.
+#   /XJ         not optional: a profile is full of legacy junctions ("My Documents" -> "Documents")
+#               and robocopy will loop forever without it.
+#   /COPY:DAT   deliberately NO ACLs, so everything inherits the destination profile's permissions.
+#               Copying the source ACLs is how a new user ends up unable to open their own files.
+#   /DCOPY:DAT  the same for directory timestamps.
+#   /BYTES /NC /NDL   one line per copied file, raw byte count, no class column, no directory
+#               noise. This is precisely what makes progress possible.
+#   /LOG:       to a file instead of Out-Null. Same idea as the tar $errLog above.
+#   NOT /MIR    - a repeat backup must never delete from the destination.
+# One canonical spelling of a path, used for the robocopy ARGUMENT and for the prefix stripped
+# off its output - because robocopy echoes back exactly what it was handed.
+#
+# %TEMP% on this machine is 'C:\Users\LEGION~1\...' while GetFullPath expands the very same
+# path to 'C:\Users\Legion-T7\...'. Hand robocopy the short form and it prints the short
+# form, so a prefix computed the other way never matches and EVERY file comes back missing.
+# Measured: 41 of 41 files reported missing from a copy that was in fact perfect. Get-Item
+# resolves 8.3 to the long form, and using one spelling everywhere keeps the two sides comparable.
+function Get-CanonicalPath([string]$Path) {
+    if (-not $Path) { return '' }
+    try { return (Get-Item -LiteralPath $Path -ErrorAction Stop).FullName.TrimEnd([char]92) } catch { }
+    try { return [IO.Path]::GetFullPath($Path).TrimEnd([char]92) } catch { }
+    return $Path.TrimEnd([char]92)
+}
+
+# A path on its way to robocopy, quoted.
+#
+# robocopy takes its paths POSITIONALLY, and Start-Process -ArgumentList joins an array with spaces
+# without quoting anything. So an unquoted path containing a space arrives as several arguments,
+# and everything after the second is read as a FILE FILTER.
+#
+# MEASURED, and the failure is far worse than an error: a destination of "With Spaces In It" made
+# robocopy exit 0 - the SUCCESS code - having copied nothing whatsoever. One containing a dash
+# exits 16, fatal. A technician picking "E:\My Backups" hits this every single time.
+#
+# The trailing backslash goes first, because "C:\dir\" ends with a backslash that escapes the
+# closing quote and leaves robocopy reading an unterminated argument. A bare drive root keeps its
+# separator - doubled, so it survives that same escaping - since "C:" alone means "wherever the
+# current directory on C: happens to be", which is nobody's intention.
+function Format-RcPath([string]$Path) {
+    $p = ([string]$Path).TrimEnd([char]92)
+    if ($p -match '^[A-Za-z]:$') { $p = $p + [string][char]92 + [string][char]92 }
+    return '"' + $p + '"'
+}
+
+function Invoke-RobocopyWatched {
+    param(
+        [Parameter(Mandatory = $true)][string]$Source,
+        [Parameter(Mandatory = $true)][string]$Dest,
+        [Parameter(Mandatory = $true)][string]$LogPath,
+        [scriptblock]$Tick,
+        [string]$CancelFlag = ''
+    )
+    $rcExe = Join-Path $env:SystemRoot 'System32\robocopy.exe'
+    # canonical on the way in, so this call and the /L listings that verify it speak one dialect
+    $Source = Get-CanonicalPath $Source
+    # Every path quoted - see Format-RcPath. The LOG path too: it lives under %LOCALAPPDATA%, and
+    # an account named "John Smith" puts a space in it without anybody choosing one.
+    $argv = @((Format-RcPath $Source), (Format-RcPath $Dest), '/E', '/COPY:DAT', '/DCOPY:DAT', '/XJ', '/R:1', '/W:1',
+              '/MT:16', '/J', '/BYTES', '/NP', '/NJH', '/NJS', '/NDL', '/NC', "/LOG:$(Format-RcPath $LogPath)")
+    try { if (Test-Path -LiteralPath $LogPath) { Remove-Item -LiteralPath $LogPath -Force -ErrorAction Stop } } catch { }
+    $t0 = Get-Date
+    $p = Start-Process -FilePath $rcExe -ArgumentList $argv -PassThru -WindowStyle Hidden
+    $script:__rcOffset = [long]0
+    $script:__rcFiles  = 0
+    $script:__rcDone   = [long]0
+    $cancelled = $false
+
+    # Reads whatever whole lines have appeared since last time. robocopy keeps the log open, so
+    # this must share Read AND Write or the open throws on every poll and progress silently
+    # freezes. Only COMPLETE lines are consumed - a half-written final line is left for the next
+    # pass, or a byte count gets truncated mid-digit and the running total jumps backwards.
+    $drain = {
+        if (-not (Test-Path -LiteralPath $LogPath)) { return }
+        $fs = $null
+        try { $fs = [IO.File]::Open($LogPath, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::ReadWrite) }
+        catch { return }
+        try {
+            if ($fs.Length -le $script:__rcOffset) { return }
+            [void]$fs.Seek($script:__rcOffset, 'Begin')
+            $buf = New-Object byte[] ([int][Math]::Min(4194304, $fs.Length - $script:__rcOffset))
+            $n = $fs.Read($buf, 0, $buf.Length)
+            if ($n -le 0) { return }
+            # /LOG: is ANSI. The byte counts are ASCII digits in every codepage, and the counts
+            # are all this needs - filenames are never read here, so no encoding can corrupt it.
+            $text = [Text.Encoding]::Default.GetString($buf, 0, $n)
+            $cut = $text.LastIndexOf([char]10)
+            if ($cut -lt 0) { return }
+            $whole = $text.Substring(0, $cut + 1)
+            $script:__rcOffset = $script:__rcOffset + [Text.Encoding]::Default.GetByteCount($whole)
+            foreach ($line in ($whole -split "`r?`n")) {
+                if ($line -match '^\s*(\d+)\s+(.+)$') {
+                    $script:__rcFiles++
+                    $script:__rcDone = $script:__rcDone + [long]$Matches[1]
+                }
+            }
+        } catch { } finally { if ($fs) { $fs.Dispose() } }
+    }
+
+    while (-not $p.HasExited) {
+        # Checked FIRST, before the poll interval. A cancel that was already pending when this
+        # started - the technician pressed it while the previous folder was finishing - would
+        # otherwise not be noticed for another 400ms, and on a small folder robocopy can finish
+        # inside that window, so the cancel would appear to have been ignored entirely.
+        if ($CancelFlag -and (Test-Path -LiteralPath $CancelFlag)) {
+            $cancelled = $true
+            Stop-ProcessTree $p.Id
+            break
+        }
+        Start-Sleep -Milliseconds 400
+        & $drain
+        if ($CancelFlag -and (Test-Path -LiteralPath $CancelFlag)) {
+            $cancelled = $true
+            Stop-ProcessTree $p.Id
+            break
+        }
+        if ($Tick) {
+            try { & $Tick $script:__rcDone $script:__rcFiles ([int]((Get-Date) - $t0).TotalSeconds) } catch { }
+        }
+    }
+    try { [void]$p.WaitForExit(15000) } catch { }
+    & $drain
+    $code = -1
+    try { $code = $p.ExitCode } catch { }
+    return [pscustomobject]@{
+        ExitCode  = $code
+        Bytes     = $script:__rcDone
+        Files     = $script:__rcFiles
+        Seconds   = [int]((Get-Date) - $t0).TotalSeconds
+        Cancelled = $cancelled
+    }
+}
+
+# Enumerate a tree with robocopy in LIST-ONLY mode, returning @{ '<relative path>' = <bytes> }.
+#
+# NOT [IO.Directory]::EnumerateFiles, which is what this replaces. On Windows PowerShell 5.1 that
+# API is bound by MAX_PATH, and the old verification wrapped it in a bare try{}catch{} - so one
+# path over 260 characters threw, was swallowed, and the destination came back "short". robocopy
+# copies such a path perfectly well (it uses the extended API internally), so a CORRECT copy was
+# being reported as a failed one. The copy worked; the check lied.
+#
+# /L writes nothing. /UNILOG gives UTF-16 so non-ASCII filenames survive - unlike the copy above,
+# this one does need the names. Returns $null for "could not read", which callers must never
+# confuse with an empty tree.
+function Get-RobocopyListing([string]$Root, [string]$LogPath) {
+    if (-not $Root) { return $null }
+    $asked = $Root.TrimEnd([char]92)
+    $Root  = Get-CanonicalPath $Root
+    $rcExe = Join-Path $env:SystemRoot 'System32\robocopy.exe'
+    try { if (Test-Path -LiteralPath $LogPath) { Remove-Item -LiteralPath $LogPath -Force -ErrorAction Stop } } catch { }
+    try {
+        # Quoted for the same reason as the copy itself: unquoted, a root with a space in it lists
+        # nothing and returns 0, which this would read as "the tree is empty" rather than "I could
+        # not look". The verification would then report every file missing.
+        $p = Start-Process -FilePath $rcExe -WindowStyle Hidden -PassThru -Wait -ArgumentList @(
+                 (Format-RcPath $Root), 'NULL', '/L', '/E', '/BYTES', '/NC', '/NDL', '/NJH', '/NJS', '/NP',
+                 "/UNILOG:$(Format-RcPath $LogPath)")
+        # bit 16 is the only fatal one; /L legitimately exits 1 ("files would be copied")
+        if (($p.ExitCode -band 16) -ne 0) { return $null }
+    } catch { return $null }
+    if (-not (Test-Path -LiteralPath $LogPath)) { return $null }
+    $map = @{}
+    # The FULL path is printed, not a relative one, so the root prefix is stripped here. Keyed
+    # lower-case because NTFS is case-insensitive, and normalised through GetFullPath so an 8.3
+    # short name on one side and a long name on the other cannot look like two different files -
+    # the trap that already caught Convert-PackageToZip and Test-DirtyCleanup.
+    # Both spellings are tried. The canonical one is what robocopy was handed and so is what it
+    # should echo, but a path can arrive here already-short from elsewhere, and a key that keeps
+    # its full prefix silently fails to match its opposite number.
+    $prefixes = @(($Root.TrimEnd([char]92) + [string][char]92))
+    if ($asked -and $asked -ne $Root) { $prefixes += ($asked + [string][char]92) }
+    $stripped = 0; $kept = 0
+    try {
+        foreach ($line in [IO.File]::ReadAllLines($LogPath, [Text.Encoding]::Unicode)) {
+            if ($line -notmatch '^\s*(\d+)\s+(.+)$') { continue }
+            $len  = [long]$Matches[1]
+            $full = $Matches[2].Trim()
+            $hit = $false
+            foreach ($pfx in $prefixes) {
+                if ($full.StartsWith($pfx, 'OrdinalIgnoreCase')) { $full = $full.Substring($pfx.Length); $hit = $true; break }
+            }
+            if ($hit) { $stripped++ } else { $kept++ }
+            if ($full) { $map[$full.ToLower()] = $len }
+        }
+    } catch { return $null }
+    # A listing whose paths could not be made relative is unusable for comparison - every key
+    # would carry a machine-specific prefix and match nothing. Say so, rather than hand back a
+    # map that reads as 'everything is missing'.
+    if ($kept -gt 0 -and $stripped -eq 0) { return $null }
+    return $map
+}
+
+# A backup describes itself, or it is just a folder of files somebody has to guess at.
+#
+# Written into the backup ROOT so a restore - or a re-verify months later, or a different
+# technician entirely - can answer: where did this come from, when, which folders, how many files
+# and how big was each. Without it, restoring means eyeballing a directory tree and hoping.
+#
+# Conventions borrowed from the two places in this codebase that already write JSON:
+#   * UTF-8 with NO byte-order mark, because ConvertFrom-Json chokes on one (Write-RunRecord
+#     learned that the hard way, and Load-Catalog carries a whole comment block about it).
+#   * tmp-then-move, so a manifest is never found half-written. A backup interrupted mid-write
+#     would otherwise leave a file that parses as garbage and reads as corruption.
+function Write-BackupManifest([string]$Root, [string]$SourceProfile, [object[]]$Items,
+                              [datetime]$Started, [int]$Seconds) {
+    if (-not $Root -or -not (Test-Path -LiteralPath $Root)) { return $false }
+    try {
+        $doc = [ordered]@{
+            version       = 1
+            kind          = 'profile-backup'
+            sourceMachine = "$env:COMPUTERNAME"
+            sourceUser    = $(if ($script:UserSid) { "$script:UserSid" } else { '' })
+            sourceProfile = "$SourceProfile"
+            startedUtc    = $Started.ToUniversalTime().ToString('o')
+            finishedUtc   = ([datetime]::UtcNow).ToString('o')
+            seconds       = $Seconds
+            items         = @($Items)
+        }
+        $json = $doc | ConvertTo-Json -Depth 6
+        $path = Join-Path $Root 'pc2go-backup.json'
+        $tmp  = "$path.tmp"
+        [IO.File]::WriteAllText($tmp, $json, (New-Object Text.UTF8Encoding $false))
+        if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue }
+        Move-Item -LiteralPath $tmp -Destination $path -Force
+        return $true
+    } catch { return $false }
+}
+
+# Read one back. Returns $null when there is no manifest or it will not parse - which a caller
+# must treat as "this folder is not a backup I wrote", never as "an empty backup".
+function Read-BackupManifest([string]$Root) {
+    if (-not $Root) { return $null }
+    $path = Join-Path $Root 'pc2go-backup.json'
+    if (-not (Test-Path -LiteralPath $path)) { return $null }
+    try {
+        $raw = [IO.File]::ReadAllText($path)
+        # a BOM here is not ours, but somebody may have edited it in Notepad - strip rather than fail
+        return ($raw.TrimStart([char]0xFEFF) | ConvertFrom-Json)
+    } catch { return $null }
+}
+
+# ---------- reaching a share that wants a password ----------
+#
+# A UNC destination already works through the folder path above - a share is just a directory to
+# robocopy. What did not work is a share needing credentials the elevated worker does not already
+# hold, which is most of them: the worker runs as an administrator, and that account is usually a
+# stranger to the other machine.
+#
+# WNetAddConnection2, not `net use`. Same reasoning as Set-LocalPasswordFallback: `net use
+# \\pc\share /user:bob hunter2` puts the password on a COMMAND LINE, readable by anything that can
+# query Win32_Process and captured by the command-line auditing that ships off the box. The API
+# takes it as an argument, so it never becomes a string anyone else can read.
+if (-not ('Native.Share' -as [type])) {
+    Add-Type -Namespace Native -Name Share -MemberDefinition @"
+[System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential, CharSet = System.Runtime.InteropServices.CharSet.Unicode)]
+public struct NETRESOURCE {
+    public int dwScope; public int dwType; public int dwDisplayType; public int dwUsage;
+    public string lpLocalName; public string lpRemoteName; public string lpComment; public string lpProvider;
+}
+[System.Runtime.InteropServices.DllImport("mpr.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode)]
+public static extern int WNetAddConnection2(ref NETRESOURCE r, string password, string username, int flags);
+[System.Runtime.InteropServices.DllImport("mpr.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode)]
+public static extern int WNetCancelConnection2(string name, int flags, bool force);
+"@ -ErrorAction SilentlyContinue
+}
+
+# \\server\share out of \\server\share\some\folder. A connection is made to the SHARE, never to a
+# folder inside it - mpr refuses the latter, and the error it returns says nothing about why.
+function Get-ShareRoot([string]$Path) {
+    if (-not $Path) { return '' }
+    $bs = [string][char]92
+    $p = $Path.Trim()
+    if (-not $p.StartsWith($bs + $bs)) { return '' }
+    $parts = @($p.TrimStart([char]92) -split '\\+' | Where-Object { $_ })
+    if ($parts.Count -lt 2) { return '' }
+    return ($bs + $bs + $parts[0] + $bs + $parts[1])
+}
+
+# Returns '' on success, or a sentence saying why not. A path that is not UNC returns '' as well:
+# there is nothing to connect, and that is not a failure.
+function Connect-Share([string]$Path, [string]$User, [string]$Password) {
+    $root = Get-ShareRoot $Path
+    if (-not $root) { return '' }
+    if (-not ('Native.Share' -as [type])) { return 'the network connection API is unavailable' }
+    $nr = New-Object Native.Share+NETRESOURCE
+    $nr.dwType = 1                                     # RESOURCETYPE_DISK
+    $nr.lpRemoteName = $root
+    $rc = 0
+    try { $rc = [Native.Share]::WNetAddConnection2([ref]$nr, $Password, $User, 0) }
+    catch { return "could not reach $root - $($_.Exception.Message)" }
+    if ($rc -eq 0) { return '' }
+    # 1219 is worth naming precisely: Windows allows only ONE identity per server at a time, so
+    # the fix is to drop the existing session, not to retype the password.
+    if ($rc -eq 1219) {
+        return "$root is already connected as a different user. Windows allows one identity per " +
+               'server at a time - disconnect the existing connection first.'
+    }
+    # 67 is what a bad host or share name actually returns - measured, not guessed. 53 is the
+    # one everybody expects and it comes back far less often.
+    # MEASURED against the real network stack: a host that does not exist returns 64
+    # (ERROR_NETNAME_DELETED) or 67 (ERROR_BAD_NET_NAME), depending on how far the connection got
+    # before giving up. 53/55 are the older pair, 1231/1232 an unreachable network or host.
+    # Leaving 64 unmapped printed a bare "(error 64)" for the commonest failure there is.
+    if ($rc -eq 53 -or $rc -eq 55 -or $rc -eq 64 -or $rc -eq 67 -or $rc -eq 1231 -or $rc -eq 1232) {
+        return "$root could not be reached - check that PC is on, awake, and on this network"
+    }
+    # mpr returns 5 BOTH for "you may not use this share" and for "there is no such share", with
+    # no way at all to tell them apart, so this must not claim to know which one it was.
+    if ($rc -eq 5) {
+        return "$root refused the connection. Either that folder is not shared, or the sign-in given is not allowed to use it."
+    }
+    if ($rc -eq 1326) { return "the username or password for $root was not accepted" }
+    return "could not connect to $root (error $rc)"
+}
+
+function Disconnect-Share([string]$Path) {
+    $root = Get-ShareRoot $Path
+    if (-not $root) { return }
+    if (-not ('Native.Share' -as [type])) { return }
+    # not forced: a copy that has genuinely finished holds no handles, and tearing down a session
+    # somebody else on this machine is using would be rude at best
+    try { [void][Native.Share]::WNetCancelConnection2($root, 0, $false) } catch { }
+}
+
 function Copy-ProfileData($app) {
     $src = ([string]$app.src).TrimEnd('\')
     $dstUser = [string]$app.dstUser
     $dstPath = ([string]$app.dstPath).TrimEnd('\')
 
-    if (-not (Test-Path -LiteralPath $src)) { Write-Status $app.id 'Failed' "source profile not found: $src"; return }
+    # A share has to be reachable before anything can be said about what is on it, so this comes
+    # ahead of every other check. Credentials are optional: an open share, or one Windows is
+    # already signed into, needs none.
+    $netUser = [string]$app.netUser
+    $netPass = Unprotect-Secret ([string]$app.netPassword)
+    $script:NetMapped = @()
+    foreach ($unc in @($src, $dstPath)) {
+        $why = Connect-Share $unc $netUser $netPass
+        if ($why) { Write-Status $app.id 'Failed' "refused: $why"; return }
+        $rootShare = Get-ShareRoot $unc
+        if ($rootShare -and $script:NetMapped -notcontains $rootShare) { $script:NetMapped += $rootShare }
+    }
+    try {
+    if (-not (Test-Path -LiteralPath $src)) { Write-Status $app.id 'Failed' "source not found: $src"; return }
 
-    # destination may be an account that has never signed in - build its profile first
-    if (-not $dstPath -or -not (Test-Path -LiteralPath $dstPath)) {
-        Write-Status $app.id 'Applying' 'creating the destination profile'
-        $sid = Get-UserSid $dstUser
-        if (-not $sid) { Write-Status $app.id 'Failed' "cannot resolve the account $dstUser"; return }
-        $path = ''
-        $hr = 0
-        try { $hr = [UserProfile]::Create($sid, $dstUser, [ref]$path) } catch { $hr = -1 }
-        if (($hr -eq 0 -or $hr -eq -2147024713) -and $path) { $dstPath = $path.TrimEnd('\') }
-        else {
-            # last resort: read it back from ProfileList
-            $pl = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList\$sid"
-            if (Test-Path -LiteralPath $pl) {
-                $dstPath = ('' + (Get-ItemProperty -LiteralPath $pl -Name ProfileImagePath -ErrorAction SilentlyContinue).ProfileImagePath).TrimEnd('\')
-            }
+    # ---- where is this coming FROM?
+    #
+    # 'profile' is a live account on this machine - a backup, or a migration between two accounts.
+    # 'folder' is a RESTORE: the source is a backup previously written to a drive, a stick or a
+    # share, and it has no ProfileList entry because it is not a profile at all.
+    #
+    # Restore is deliberately not a separate function. It is this same engine with the two roots
+    # swapped, and duplicating a hundred lines of copy-verify-report to say so would be two
+    # implementations to keep honest instead of one.
+    $srcKind = ('' + $app.srcKind).ToLower()
+    if (-not $srcKind) { $srcKind = 'profile' }
+    $roots = Get-ProfileRoots
+    $srcKey = ''
+
+    if ($srcKind -eq 'folder') {
+        try { $srcKey = (Get-CanonicalPath $src).ToLower() } catch { }
+        if (-not $srcKey) { Write-Status $app.id 'Failed' "refused: $src could not be resolved"; return }
+        if (-not (Test-Path -LiteralPath $src -PathType Container)) {
+            Write-Status $app.id 'Failed' "refused: $src is not a folder"
+            return
         }
-        if (-not $dstPath -or -not (Test-Path -LiteralPath $dstPath)) {
-            Write-Status $app.id 'Failed' 'could not create the destination profile - sign into the account once, then retry'
+        # A restore source must be a backup THIS TOOL WROTE. Restoring from an arbitrary folder is
+        # how somebody empties a Downloads directory over the top of a user's Documents - the tool
+        # would happily do it and call it a success. The manifest is the proof of provenance, and
+        # demanding it costs nothing because every backup writes one.
+        $mf = Read-BackupManifest $src
+        if (-not $mf) {
+            Write-Status $app.id 'Failed' (
+                "refused: $src does not contain a pc2go-backup.json, so it is not a backup this " +
+                'tool wrote. Restoring from an unknown folder could overwrite a profile with anything.')
+            return
+        }
+        Write-Status $app.id 'Applying' (
+            "restoring a backup of $($mf.sourceProfile) taken on $($mf.sourceMachine)")
+    } else {
+        try { $srcKey = [IO.Path]::GetFullPath($src).TrimEnd([char]92).ToLower() } catch { }
+        # Checked here rather than trusted from the GUI, and cheap enough that there is no reason
+        # not to: the queue file is writable by anything running as this user.
+        if (-not $roots.ContainsKey($srcKey)) {
+            Write-Status $app.id 'Failed' "refused: $src is not a user profile folder on this machine"
             return
         }
     }
 
-    $copied = 0; $failed = 0; $bytes = [long]0
+    # ---- where is this going?
+    #
+    # 'profile' is the original behaviour: another account on this machine, whose folder Windows
+    # may still have to create. 'folder' is a drive, a USB stick or a network share - anywhere
+    # that is simply a writable directory and has no ProfileList entry at all.
+    #
+    # The destination guard has to differ, but everything after it - the copy, the verification,
+    # the manifest - is identical, which is why this is a branch and not a second function.
+    $dstKind = ('' + $app.dstKind).ToLower()
+    if (-not $dstKind) { $dstKind = 'profile' }
+
+    if ($dstKind -eq 'folder') {
+        if (-not $dstPath) { Write-Status $app.id 'Failed' 'refused: no destination folder given'; return }
+        # $dstPath is <chosen folder>\<backup folder>. The CHOSEN folder has to exist already -
+        # that is what stops a mistyped path being conjured into existence - but the backup folder
+        # itself is ours to create, and has to be a plain name so that a hand-written queue entry
+        # cannot walk back out of the place the technician actually picked.
+        $dstLeaf   = Split-Path -Leaf $dstPath
+        $dstParent = Split-Path -Parent $dstPath
+        if (-not $dstLeaf -or $dstLeaf -eq '.' -or $dstLeaf -eq '..' -or
+            $dstLeaf.IndexOfAny([char[]]@([char]92, [char]47, [char]58)) -ge 0) {
+            Write-Status $app.id 'Failed' "refused: '$dstLeaf' is not a plain folder name"
+            return
+        }
+        if (-not $dstParent -or -not (Test-Path -LiteralPath $dstParent -PathType Container)) {
+            Write-Status $app.id 'Failed' "refused: $dstParent is not a folder that exists"
+            return
+        }
+        if (-not (Test-Path -LiteralPath $dstPath -PathType Container)) {
+            try { [void](New-Item -ItemType Directory -Path $dstPath -Force -ErrorAction Stop) }
+            catch {
+                Write-Status $app.id 'Failed' "refused: could not create $dstPath - $($_.Exception.Message)"
+                return
+            }
+        }
+        $dstKey = ''
+        try { $dstKey = (Get-CanonicalPath $dstPath).ToLower() } catch { }
+        if (-not $dstKey) { Write-Status $app.id 'Failed' "refused: $dstPath could not be resolved"; return }
+
+        # Backing a profile up INTO ITSELF is the one arrangement that destroys a machine rather
+        # than merely failing: robocopy /E walks into the destination it is writing, copies what it
+        # just wrote, walks into that, and fills the disk. A technician picking "Desktop\backup" as
+        # the target is not doing anything unreasonable, so this has to be caught rather than
+        # trusted not to happen.
+        if ($dstKey -eq $srcKey -or $dstKey.StartsWith($srcKey + [string][char]92)) {
+            Write-Status $app.id 'Failed' (
+                "refused: $dstPath is inside the profile being backed up. Copying a folder into " +
+                'itself grows without limit until the disk fills. Pick somewhere outside it.')
+            return
+        }
+        # And the reverse: a destination that CONTAINS the source is the same loop seen from the
+        # other end - backing C:\Users\bob up to C:\ would recurse just as happily.
+        if ($srcKey.StartsWith($dstKey + [string][char]92)) {
+            Write-Status $app.id 'Failed' (
+                "refused: $dstPath contains the profile being backed up, so the copy would " +
+                'include its own destination. Pick a folder that is not a parent of it.')
+            return
+        }
+
+        # Provably writable, now, rather than finding out several gigabytes in. A stick can be
+        # read-only, a share can be mounted without write access, and robocopy would report that
+        # as a per-file failure long after the technician had walked away.
+        $probe = Join-Path $dstPath ('.pc2go-write-test-' + [Guid]::NewGuid().ToString('N').Substring(0, 8))
+        try {
+            [IO.File]::WriteAllText($probe, 'x')
+            Remove-Item -LiteralPath $probe -Force -ErrorAction SilentlyContinue
+        } catch {
+            Write-Status $app.id 'Failed' "refused: $dstPath cannot be written to - $($_.Exception.Message)"
+            return
+        }
+    } else {
+        # destination may be an account that has never signed in - build its profile first
+        if (-not $dstPath -or -not (Test-Path -LiteralPath $dstPath)) {
+            Write-Status $app.id 'Applying' 'creating the destination profile'
+            $sid = Get-UserSid $dstUser
+            if (-not $sid) { Write-Status $app.id 'Failed' "cannot resolve the account $dstUser"; return }
+            $path = ''
+            $hr = 0
+            try { $hr = [UserProfile]::Create($sid, $dstUser, [ref]$path) } catch { $hr = -1 }
+            if (($hr -eq 0 -or $hr -eq -2147024713) -and $path) { $dstPath = $path.TrimEnd('\') }
+            else {
+                # last resort: read it back from ProfileList
+                $pl = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList\$sid"
+                if (Test-Path -LiteralPath $pl) {
+                    $dstPath = ('' + (Get-ItemProperty -LiteralPath $pl -Name ProfileImagePath -ErrorAction SilentlyContinue).ProfileImagePath).TrimEnd('\')
+                }
+            }
+            if (-not $dstPath -or -not (Test-Path -LiteralPath $dstPath)) {
+                Write-Status $app.id 'Failed' 'could not create the destination profile - sign into the account once, then retry'
+                return
+            }
+            # a profile just built by UserProfile::Create is new to ProfileList, so re-read it
+            $roots = Get-ProfileRoots
+        }
+        $dstKey = ''
+        try { $dstKey = [IO.Path]::GetFullPath($dstPath).TrimEnd('\').ToLower() } catch { }
+        if (-not $roots.ContainsKey($dstKey)) {
+            Write-Status $app.id 'Failed' "refused: $dstPath is not a user profile folder on this machine"
+            return
+        }
+        if ($dstKey -eq $srcKey) {
+            Write-Status $app.id 'Failed' 'refused: the source and destination are the same profile'
+            return
+        }
+        # RESTORE's version of the recursion trap. A backup living inside the very profile it is
+        # being restored into - C:\Users\bob\Desktop\backup restored into C:\Users\bob - means an
+        # item like 'Desktop' copies a folder into its own ancestor, and robocopy /E then walks
+        # back into what it just wrote. The backup direction refuses the same shape; this is the
+        # other half of it.
+        if ($srcKind -eq 'folder' -and $srcKey.StartsWith($dstKey + [string][char]92)) {
+            Write-Status $app.id 'Failed' (
+                "refused: the backup at $src is inside the profile being restored into. Copying " +
+                'a folder into its own ancestor grows without limit. Move the backup out first.')
+            return
+        }
+    }
+
+    $copied = 0; $failed = 0; $bytes = [long]0; $elapsed = 0
+    $started  = Get-Date
+    $manifest = @()
     $problems = @()
     foreach ($rel in @($app.items)) {
-        $s = (Join-Path $src $rel).TrimEnd('\')
-        $d = (Join-Path $dstPath $rel).TrimEnd('\')
+        $s = Resolve-InProfile $src $rel
+        $d = Resolve-InProfile $dstPath $rel
+        if (-not $s -or -not $d) {
+            $failed++
+            $problems += "$rel (refused - not a plain name inside the profile)"
+            continue
+        }
         if (-not (Test-Path -LiteralPath $s)) { continue }
-        Write-Status $app.id 'Applying' "copying $rel"
 
-        # /COPY:DAT deliberately omits ACLs so everything INHERITS the destination
-        # profile's permissions - copy the source ACLs and the new user often cannot
-        # open their own files. /XJ is not optional: a profile is full of legacy
-        # junctions ("My Documents" -> "Documents") and robocopy will loop forever.
-        & "$env:SystemRoot\System32\robocopy.exe" $s $d /E /COPY:DAT /XJ /R:1 /W:1 /NFL /NDL /NJH /NJS /NP 2>&1 | Out-Null
-        $rc = $LASTEXITCODE
+        # What this folder weighs, so a percentage means something. Measured with robocopy /L for
+        # the same reason the verification below uses it: a .NET walk is capped at MAX_PATH.
+        $listSrc = Get-RobocopyListing $s (Join-Path $script:CacheDir "$($app.id)-srclist.log")
+        $wantBytes = [long]0
+        if ($listSrc) { foreach ($v in $listSrc.Values) { $wantBytes += [long]$v } }
+
+        Write-Status $app.id 'Applying' "copying $rel" $false @() 0 0 $wantBytes
+
+        # Live progress. The tick fires roughly twice a second with bytes copied so far; the rate
+        # is a one-second rolling delta, the same shape the download side uses, because a
+        # cumulative average stays wrong for an hour after a single stall.
+        $itemT0 = Get-Date
+        $tick = {
+            param($sofar, $nfiles, $secs)
+            $now = Get-Date
+            if (($now - $script:__rpAt).TotalSeconds -ge 1) {
+                $delta = [long]$sofar - [long]$script:__rpSeen
+                if ($delta -gt 0) { $script:__rpRate = [double]$delta / ($now - $script:__rpAt).TotalSeconds }
+                $script:__rpSeen = [long]$sofar
+                $script:__rpAt   = $now
+            }
+            # Reporting every tick would append four status lines a second to a file the GUI
+            # re-reads whole; once a second is plenty for a human and keeps the file small.
+            if (($now - $script:__rpRep).TotalSeconds -lt 1) { return }
+            $script:__rpRep = $now
+            $pct = 0
+            if ($script:__rpWant -gt 0) {
+                $pct = [int][Math]::Floor([long]$sofar * 100 / $script:__rpWant)
+                if ($pct -gt 99) { $pct = 99 }   # 100 is reserved for actually finished
+            }
+            $txt = "copying $script:__rpRel  -  $nfiles file(s)"
+            Write-Status $script:__rpId 'Applying' $txt $false @() $pct ([long]$sofar) $script:__rpWant $script:__rpRate $secs
+        }
+        $script:__rpId = $app.id; $script:__rpRel = $rel; $script:__rpWant = $wantBytes
+        $script:__rpSeen = [long]0; $script:__rpAt = $itemT0; $script:__rpRep = $itemT0; $script:__rpRate = 0.0
+
+        $run = Invoke-RobocopyWatched -Source $s -Dest $d `
+                                      -LogPath (Join-Path $script:CacheDir "$($app.id)-copy.log") `
+                                      -Tick $tick -CancelFlag $CancelFile
+        $rc = $run.ExitCode
+        $elapsed += $run.Seconds
+
+        if ($run.Cancelled) {
+            $failed++
+            $problems += "$rel (cancelled)"
+            continue
+        }
         # Robocopy returns a BITFIELD, not a severity: 1 copied, 2 extra, 4 mismatched,
         # 8 some files failed, 16 fatal. Only 16 means the copy itself broke. Treating
         # anything >=8 as failure would report a whole migration as failed because one
@@ -6286,22 +9860,49 @@ function Copy-ProfileData($app) {
         if ($rc -band 16) { $failed++; $problems += "$rel (fatal robocopy error $rc)"; continue }
         if ($rc -band 8) { $problems += "$rel (some files were locked and skipped)" }
 
-        # verify rather than trust the exit code: compare what actually landed
-        $sn = 0; $sb2 = [long]0; $dn = 0; $db = [long]0
-        try {
-            foreach ($f in [IO.Directory]::EnumerateFiles($s, '*', 'AllDirectories')) { $sn++; $sb2 += (New-Object IO.FileInfo $f).Length }
-        } catch {}
-        try {
-            foreach ($f in [IO.Directory]::EnumerateFiles($d, '*', 'AllDirectories')) { $dn++; $db += (New-Object IO.FileInfo $f).Length }
-        } catch {}
-        if ($dn -lt $sn) { $problems += "$rel ($($sn - $dn) file(s) short - likely locked or in use)" }
+        # ---- verify: three-way diff, long-path safe
+        #
+        # Both sides enumerated by robocopy, never by [IO.Directory]::EnumerateFiles. That call is
+        # capped at MAX_PATH on PowerShell 5.1 and used to sit inside a bare try{}catch{}, so a
+        # single path over 260 characters threw, was swallowed, and a perfectly good copy was
+        # reported as "N file(s) short". robocopy has no such limit.
+        #
+        # $null from either listing means COULD NOT CHECK, which is not the same as "nothing
+        # there" - claiming a copy verified when the check never ran is the one thing this must
+        # not do, and the old code could not tell those two apart.
+        $listDst = Get-RobocopyListing $d (Join-Path $script:CacheDir "$($app.id)-dstlist.log")
+        if ($null -eq $listSrc -or $null -eq $listDst) {
+            $problems += "$rel (copied, but NOT verified - the file list could not be read)"
+            $copied++
+            $bytes += $run.Bytes
+            $manifest += [ordered]@{ rel = "$rel"; files = -1; bytes = $run.Bytes; verified = $false }
+            continue
+        }
+        $missing = 0; $wrong = 0
+        foreach ($k in $listSrc.Keys) {
+            if (-not $listDst.ContainsKey($k)) { $missing++; continue }
+            if ([long]$listDst[$k] -ne [long]$listSrc[$k]) { $wrong++ }
+        }
+        # Extra files at the destination are NOT a fault: a backup accumulates, and a repeat run
+        # onto a folder that already holds an older copy is the normal case.
+        if ($missing) { $problems += "$rel ($missing file(s) missing at the destination - likely locked or in use)" }
+        if ($wrong)   { $problems += "$rel ($wrong file(s) arrived at a different length)" }
         $copied++
-        $bytes += $db
+        $bytes += $run.Bytes
+        # what the manifest will say about this folder - counts and sizes measured, not guessed
+        $manifest += [ordered]@{ rel = "$rel"; files = $listSrc.Count; bytes = $wantBytes
+                                 verified = ($missing -eq 0 -and $wrong -eq 0) }
+        Write-Status $app.id 'Applying' "verified $rel  -  $($listSrc.Count) file(s)" $false @() 100 $run.Bytes $wantBytes -1 $run.Seconds
     }
 
     # Everything above was written by the elevated worker. If the destination profile does
     # not actually grant its own user access, the copy "succeeds" and the client signs in
     # to folders they cannot open - a failure that would otherwise surface hours later.
+    #
+    # Only for a PROFILE destination. A USB stick or a share has no owning user to check for,
+    # and FAT32 has no ACLs at all - running this against one would append a problem about a
+    # permission entry that could never exist, on a backup that is perfectly fine.
+    if ($dstKind -ne 'folder') {
     try {
         $dsid = Get-UserSid $dstUser
         $acl = Get-Acl -LiteralPath $dstPath -ErrorAction Stop
@@ -6315,16 +9916,43 @@ function Copy-ProfileData($app) {
             $problems += "$dstUser has no permission entry on its own profile folder - sign in as that account and confirm the files open"
         }
     } catch {}
+    }
 
-    $detail = "$copied item(s) copied, $(Format-SizeW $bytes) into $dstPath; source left untouched"
+    # The backup describes itself. Best-effort on purpose: a manifest that could not be written
+    # - a read-only stick, a share that went away - must not turn a completed copy into a
+    # failure, but it IS worth telling the technician, because restore leans on it.
+    # Only when the destination is a BACKUP. Writing pc2go-backup.json into a live user profile
+    # would be litter in somebody's home folder, and a restore that later scanned that profile
+    # would find a manifest describing a different machine entirely.
+    if ($copied -gt 0 -and $dstKind -eq 'folder') {
+        if (-not (Write-BackupManifest $dstPath $src $manifest $started $elapsed)) {
+            $problems += 'the backup manifest could not be written - restore will have to be done by hand'
+        }
+    }
+
+    # How long it ACTUALLY took, summed from each robocopy run's own stopwatch. The run record
+    # used to say 0s for every migration, because $script:RunStarted is only ever set by
+    # Start-Batch and a user batch never goes through it.
+    $took = $(if ($elapsed -ge 60) { "{0}m {1:00}s" -f [int]($elapsed / 60), ($elapsed % 60) } else { "${elapsed}s" })
+    $detail = "$copied item(s) copied, $(Format-SizeW $bytes) into $dstPath in $took; source left untouched"
+    if ($dstKind -eq 'folder' -and $copied -gt 0) { $detail += '; a pc2go-backup.json manifest was written beside them' }
+    if ($srcKind -eq 'folder') { $detail = $detail -replace 'source left untouched', 'the backup is left untouched' }
     if ($failed) { $detail += "; $failed failed outright" }
     if ($problems.Count) { $detail += ". Check: " + (($problems | Select-Object -First 4) -join ', ') }
     if ($problems.Count -gt 4) { $detail += " (+$($problems.Count - 4) more)" }
     # Anything skipped is worth the technician's attention but is not a failed migration -
     # a file open in Word is the normal case, not a broken run. Say which, precisely.
-    if ($failed) { Write-Status $app.id 'Failed' $detail }
-    elseif ($problems.Count) { Write-Status $app.id 'Skipped' $detail }
-    else { Write-Status $app.id 'Applied' $detail }
+    if ($failed) { Write-Status $app.id 'Failed' $detail $false @() -1 $bytes -1 -1 $elapsed }
+    elseif ($problems.Count) { Write-Status $app.id 'Skipped' $detail $false @() 100 $bytes $bytes -1 $elapsed }
+    else { Write-Status $app.id 'Applied' $detail $false @() 100 $bytes $bytes -1 $elapsed }
+    }
+    finally {
+        # However this ended - success, refusal, or a throw - the session goes. Left mapped, the
+        # next job to touch that server inherits an identity nobody chose, and Windows permits
+        # only one per server.
+        foreach ($m in @($script:NetMapped)) { Disconnect-Share $m }
+        $script:NetMapped = @()
+    }
 }
 
 # the GUI's Format-Size lives in the other process; the worker needs its own
@@ -6345,7 +9973,7 @@ function Invoke-Fix($app) {
 
         'autologon' {
             $u = [string]$app.alUser
-            $pw = [string]$app.alPassword
+            $pw = Unprotect-Secret ([string]$app.alPassword)
             if (-not $u) { Write-Status $app.id 'Failed' 'no account name given'; return }
             if (-not (Get-LocalUser -Name $u -ErrorAction SilentlyContinue)) {
                 Write-Status $app.id 'Failed' "no local account called $u"; return
@@ -6403,6 +10031,18 @@ function Invoke-Fix($app) {
             return
         }
 
+        # Both moved here from the preferences column: neither is an optimization - they are
+        # targeted repairs that can hurt a healthy machine, which is what Fixes is for.
+        'mpo' {
+            Set-Reg 'HKLM\SOFTWARE\Microsoft\Windows\Dwm' 'OverlayTestMode' 5
+            Write-Status $app.id 'Applied' 'multiplane overlay disabled - fixes flicker/stutter on affected GPUs (sign out or reboot to apply)'
+            return
+        }
+        's3sleep' {
+            Set-Reg 'HKLM\SYSTEM\CurrentControlSet\Control\Power' 'PlatformAoAcOverride' 0
+            Write-Status $app.id 'Applied' 'S3 sleep forced over Modern Standby - reboot to apply; revert by deleting PlatformAoAcOverride if wake misbehaves'
+            return
+        }
         'wureset' {
             $svcs = @('wuauserv', 'bits', 'cryptsvc', 'msiserver')
             foreach ($s in $svcs) { try { Stop-Service -Name $s -Force -ErrorAction SilentlyContinue } catch {} }
@@ -6664,6 +10304,109 @@ function Apply-Pref($app) {
     Write-Status $app.id 'Applied' "turned $want"
 }
 
+# Cleanup rows report reclaimed space by measuring the system drive before and after -
+# honest and cheap, where summing per-file sizes undercounts (folders, ACL-blocked files).
+function Get-FreeBytes {
+    try { return [long](Get-PSDrive -Name ($env:SystemDrive.TrimEnd(':')) -ErrorAction Stop).Free } catch { return -1 }
+}
+function Format-Reclaim([long]$Before) {
+    $after = Get-FreeBytes
+    if ($Before -lt 0 -or $after -lt 0) { return '' }
+    $d = $after - $Before
+    if ($d -lt 1MB) { return 'under 1 MB reclaimed' }
+    if ($d -ge 1GB) { return ('{0:N1} GB reclaimed' -f ($d / 1GB)) }
+    return ('{0:N0} MB reclaimed' -f ($d / 1MB))
+}
+function Remove-AppxSet([string[]]$Patterns) {
+    $n = 0
+    foreach ($p in $Patterns) { $n += Remove-AppxByName "$p*" }
+    return $n
+}
+
+# ---------- gaming helpers (worker side) ----------
+# Processor/power AC index on the ACTIVE scheme. Write via powercfg, then the mandatory
+# /setactive SCHEME_CURRENT (without it the index is stored but the live policy ignores it).
+# Undo deletes the explicit registry value so the setting INHERITS the scheme default again
+# rather than baking in a guessed literal - GameOpt's inherited-vs-explicit rule.
+function Get-ActiveScheme {
+    $out = "$(& "$env:SystemRoot\System32\powercfg.exe" /getactivescheme 2>&1)"
+    if ($out -match '([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})') { return $Matches[1] }
+    return $null
+}
+function Set-PowerAc([string]$Sub, [string]$Setting, [int]$Value) {
+    & "$env:SystemRoot\System32\powercfg.exe" /setacvalueindex SCHEME_CURRENT $Sub $Setting $Value 2>&1 | Out-Null
+}
+function Commit-PowerScheme { & "$env:SystemRoot\System32\powercfg.exe" /setactive SCHEME_CURRENT 2>&1 | Out-Null }
+function Clear-PowerAcIndex([string]$Sub, [string]$Setting) {
+    $s = Get-ActiveScheme
+    if (-not $s) { return $false }
+    $k = "Registry::HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Control\Power\User\PowerSchemes\$s\$Sub\$Setting"
+    if ((Test-Path -LiteralPath $k) -and ($null -ne (Get-ItemProperty -LiteralPath $k -Name 'ACSettingIndex' -ErrorAction SilentlyContinue).ACSettingIndex)) {
+        Remove-ItemProperty -LiteralPath $k -Name 'ACSettingIndex' -Force -ErrorAction SilentlyContinue
+        return $true
+    }
+    return $false
+}
+
+# The double-guarded NIC advanced-property lookup, ported from GameOpt's Get-GoNicProperty.
+# -RegistryKeyword matches with WILDCARDS and every NDIS standardized keyword starts with a
+# literal '*', so passing '*EEE' to the cmdlet also writes 'AdvancedEEE'. Two defences,
+# both required: resolve in memory with case-sensitive -ceq to exactly ONE property (a
+# second match is refused, never picked), and Escape the keyword on every cmdlet call so
+# the leading '*' is a literal. One cached query per adapter.
+$script:NicPropCache = @{}
+function Get-NicAdvProp([string]$Adapter, [string]$Keyword) {
+    if (-not $script:NicPropCache.ContainsKey($Adapter)) {
+        $script:NicPropCache[$Adapter] = @(Get-NetAdapterAdvancedProperty -Name $Adapter -ErrorAction SilentlyContinue)
+    }
+    $exact = @($script:NicPropCache[$Adapter] | Where-Object { [string]$_.RegistryKeyword -ceq $Keyword })
+    if ($exact.Count -eq 1) { return $exact[0] }
+    if ($exact.Count -eq 0) { return $null }
+    throw "keyword '$Keyword' resolved to $($exact.Count) properties on '$Adapter'; refusing to write."
+}
+function Set-NicAdvProp([string]$Adapter, [string]$Keyword, [string]$Value) {
+    $prop = Get-NicAdvProp $Adapter $Keyword
+    if (-not $prop) { return $false }                     # absent = vendor does not expose it (normal)
+    # enum / numeric-range validation - skip rather than force an out-of-range value that
+    # could leave the adapter with no network at all
+    $valid = @($prop.ValidRegistryValues | Where-Object { $null -ne $_ -and "$_" -ne '' })
+    if ($valid.Count -gt 0 -and ($valid -notcontains $Value)) { return $false }
+    Set-NetAdapterAdvancedProperty -Name $Adapter -RegistryKeyword ([System.Management.Automation.WildcardPattern]::Escape($Keyword)) -RegistryValue @([string[]]$Value) -NoRestart:$false -ErrorAction Stop
+    return $true
+}
+function Reset-NicAdvProp([string]$Adapter, [string]$Keyword) {
+    $prop = Get-NicAdvProp $Adapter $Keyword
+    if (-not $prop) { return $false }
+    Reset-NetAdapterAdvancedProperty -Name $Adapter -RegistryKeyword ([System.Management.Automation.WildcardPattern]::Escape($Keyword)) -NoRestart:$false -ErrorAction Stop
+    return $true
+}
+
+# Interrupt-management key for a PCI device (GPU or NIC), keyed by its PNP/PnP instance id.
+function Get-InterruptKey([string]$PnpId) {
+    return "HKLM\SYSTEM\CurrentControlSet\Enum\$PnpId\Device Parameters\Interrupt Management"
+}
+
+# NVAPI in the worker: the GUI's $script:NvApiSource is injected here as $NvApiSrc at
+# Start-Worker time (single source of truth, and avoids nesting an @'...'@ inside the
+# worker here-string). Writes need admin; a non-elevated SaveSettings surfaces as a
+# non-zero return, which the caller reports.
+#__NVAPISOURCE__
+$script:NvReady = $null
+function Initialize-NvApi {
+    if ($null -ne $script:NvReady) { return $script:NvReady }
+    $script:NvReady = $false
+    if (Test-Path -LiteralPath "$env:SystemRoot\System32\nvapi64.dll") {
+        try {
+            # NvApiSrc is injected as an assignment at Start-Worker time (the placeholder
+            # sits just above this function) rather than inlined - a nested here-string
+            # would terminate the outer worker here-string early. Same as PrefTable.
+            if (-not ('GoNvApi' -as [type])) { Add-Type -ErrorAction Stop -TypeDefinition $NvApiSrc }
+            $script:NvReady = ([GoNvApi]::Initialize() -eq 0)
+        } catch { $script:NvReady = $false }
+    }
+    return $script:NvReady
+}
+
 function Apply-Tweak($app) {
     $id = [string]$app.tweak
     Write-Status $app.id 'Applying' ''
@@ -6700,19 +10443,75 @@ function Apply-Tweak($app) {
             [void](Set-SvcStart 'DoSvc' 'Manual')
             $detail = 'peer-to-peer update sharing off (HTTP only)'
         }
+        # cleanmgr ONLY - the DISM half is its own row (componentstore) so the slow part is
+        # visible on its own and never runs twice per batch. /VERYLOWDISK is gone: it ends
+        # in a message box nobody can click in a headless elevated worker, which hung the
+        # whole batch. /sagerun against StateFlags we set ourselves runs to completion
+        # unattended. The Recycle Bin category is deliberately excluded - it has its own row.
         'diskcleanup' {
-            & "$env:SystemRoot\System32\cleanmgr.exe" /d C: /VERYLOWDISK 2>&1 | Out-Null
+            $before = Get-FreeBytes
+            $vc = 'Registry::HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\VolumeCaches'
+            $set = 0
+            foreach ($k in @(Get-ChildItem -LiteralPath $vc -ErrorAction SilentlyContinue)) {
+                if ($k.PSChildName -eq 'Recycle Bin') { continue }
+                try { New-ItemProperty -LiteralPath $k.PSPath -Name 'StateFlags0064' -Value 2 -PropertyType DWord -Force -ErrorAction Stop | Out-Null; $set++ } catch {}
+            }
+            & "$env:SystemRoot\System32\cleanmgr.exe" /sagerun:64 2>&1 | Out-Null
+            foreach ($k in @(Get-ChildItem -LiteralPath $vc -ErrorAction SilentlyContinue)) {
+                try { Remove-ItemProperty -LiteralPath $k.PSPath -Name 'StateFlags0064' -Force -ErrorAction SilentlyContinue } catch {}
+            }
+            $gain = Format-Reclaim $before
+            $detail = "disk cleanup ran across $set categor(ies)" + $(if ($gain) { " - $gain" } else { '' })
+        }
+        'componentstore' {
+            # the DISM half split out of diskcleanup - typically the slow part, minutes to
+            # well over half an hour on an old disk. Never /ResetBase: that reclaims more
+            # but makes every installed update permanently uninstallable.
+            $before = Get-FreeBytes
             & "$env:SystemRoot\System32\Dism.exe" /Online /Cleanup-Image /StartComponentCleanup /Quiet 2>&1 | Out-Null
-            $detail = 'cleanmgr and component store cleanup completed'
+            $gain = Format-Reclaim $before
+            $detail = 'component store cleanup completed' + $(if ($gain) { " - $gain" } else { '' })
+        }
+        'recyclebin' {
+            $before = Get-FreeBytes
+            # -DriveLetter unset = every volume; Clear-RecycleBin throws on an already
+            # empty bin on some builds, which is a non-event
+            try { Clear-RecycleBin -Force -ErrorAction Stop } catch {}
+            $gain = Format-Reclaim $before
+            $detail = 'recycle bin emptied on all drives' + $(if ($gain) { " - $gain" } else { '' })
+        }
+        'windowsold' {
+            # The biggest single disk number available - and the reason this row is
+            # optional: removing Windows.old permanently removes Windows-version rollback.
+            # Update services are stopped around the cache clear, the same set wureset uses.
+            $before = Get-FreeBytes
+            $old = Join-Path $env:SystemDrive 'Windows.old'
+            $removedOld = $false
+            if (Test-Path -LiteralPath $old) {
+                # Windows.old is ACL-armoured; take ownership first or Remove-Item dies on
+                # the first TrustedInstaller-owned file
+                & "$env:SystemRoot\System32\takeown.exe" /F $old /R /A /D Y 2>&1 | Out-Null
+                & "$env:SystemRoot\System32\icacls.exe" $old /grant "*S-1-5-32-544:(OI)(CI)F" /T /C /Q 2>&1 | Out-Null
+                try { Remove-Item -LiteralPath $old -Recurse -Force -ErrorAction Stop; $removedOld = $true }
+                catch { $removedOld = -not (Test-Path -LiteralPath $old) }
+            }
+            $svcs = @('wuauserv', 'bits', 'cryptsvc', 'msiserver')
+            foreach ($s in $svcs) { try { Stop-Service -Name $s -Force -ErrorAction SilentlyContinue } catch {} }
+            $dl = Join-Path $env:SystemRoot 'SoftwareDistribution\Download'
+            $clearedDl = 0
+            if (Test-Path -LiteralPath $dl) {
+                foreach ($e in @(Get-ChildItem -LiteralPath $dl -Force -ErrorAction SilentlyContinue)) {
+                    try { Remove-Item -LiteralPath $e.FullName -Recurse -Force -ErrorAction Stop; $clearedDl++ } catch {}
+                }
+            }
+            foreach ($s in $svcs) { try { Start-Service -Name $s -ErrorAction SilentlyContinue } catch {} }
+            $gain = Format-Reclaim $before
+            $detail = $(if ($removedOld) { 'Windows.old removed (version rollback is gone)' } else { 'no Windows.old on this machine' }) +
+                      "; $clearedDl update cache item(s) cleared" + $(if ($gain) { " - $gain" } else { '' })
         }
         'endtask' {
             Set-Reg 'HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced\TaskbarDeveloperSettings' 'TaskbarEndTask' 1
             $detail = 'End Task added to the taskbar right-click menu'
-        }
-        'folderdiscovery' {
-            [void](Remove-RegKey 'HKCU\Software\Classes\Local Settings\Software\Microsoft\Windows\Shell\Bags\AllFolders\Shell')
-            Set-Reg 'HKCU\Software\Classes\Local Settings\Software\Microsoft\Windows\Shell\Bags\AllFolders\Shell' 'FolderType' 'NotSpecified' 'String'
-            $detail = 'all folders forced to General Items layout'
         }
         'hibernation' {
             & "$env:SystemRoot\System32\powercfg.exe" /hibernate off 2>&1 | Out-Null
@@ -6755,10 +10554,6 @@ function Apply-Tweak($app) {
             }
             $detail = "$n service(s) set to Manual, $miss not present on this machine"
         }
-        'startlayout' {
-            Set-Reg 'HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced' 'Start_ShowClassicMode' 1
-            $detail = 'classic Start layout enabled (sign out to apply)'
-        }
         'telemetry' {
             Set-Reg 'HKLM\SOFTWARE\Policies\Microsoft\Windows\DataCollection' 'AllowTelemetry' 0
             Set-Reg 'HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\DataCollection' 'AllowTelemetry' 0
@@ -6772,22 +10567,29 @@ function Apply-Tweak($app) {
             $t += [int](Disable-Task '\Microsoft\Windows\Customer Experience Improvement Program\' 'Consolidator')
             $t += [int](Disable-Task '\Microsoft\Windows\Customer Experience Improvement Program\' 'UsbCeip')
             $t += [int](Disable-Task '\Microsoft\Windows\DiskDiagnostic\' 'Microsoft-Windows-DiskDiagnosticDataCollector')
+            $t += [int](Disable-Task '\Microsoft\Windows\Autochk\' 'Proxy')
+            $t += [int](Disable-Task '\Microsoft\Windows\Maintenance\' 'WinSAT')
+            $t += [int](Disable-Task '\Microsoft\Windows\Feedback\Siuf\' 'DmClient')
+            $t += [int](Disable-Task '\Microsoft\Windows\Feedback\Siuf\' 'DmClientOnScenarioDownload')
+            $t += [int](Disable-Task '\Microsoft\Windows\Windows Error Reporting\' 'QueueReporting')
+            $t += [int](Disable-Task '\Microsoft\Windows\CloudExperienceHost\' 'CreateObjectTask')
+            $t += [int](Disable-Task '\Microsoft\Windows\Shell\' 'FamilySafetyMonitor')
+            $t += [int](Disable-Task '\Microsoft\Windows\Shell\' 'FamilySafetyRefreshTask')
             $detail = "telemetry policy set, DiagTrack disabled, $t scheduled task(s) disabled"
         }
         'tempfiles' {
-            $freed = 0; $n = 0
-            foreach ($dir in @($env:TEMP, (Join-Path $env:SystemRoot 'Temp'))) {
+            # the TECHNICIAN'S temp, not the elevating admin's - $env:TEMP in this elevated
+            # process belongs to whoever answered the UAC prompt (the old wrong-profile bug)
+            $before = Get-FreeBytes
+            $n = 0
+            foreach ($dir in @((Resolve-UserPath 'AppData\Local\Temp'), (Join-Path $env:SystemRoot 'Temp'))) {
                 if (-not (Test-Path -LiteralPath $dir)) { continue }
                 foreach ($e in @(Get-ChildItem -LiteralPath $dir -Force -ErrorAction SilentlyContinue)) {
-                    try {
-                        $sz = 0
-                        if ($e.PSIsContainer) { $sz = 0 } else { $sz = $e.Length }
-                        Remove-Item -LiteralPath $e.FullName -Recurse -Force -ErrorAction Stop
-                        $freed += $sz; $n++
-                    } catch {}
+                    try { Remove-Item -LiteralPath $e.FullName -Recurse -Force -ErrorAction Stop; $n++ } catch {}
                 }
             }
-            $detail = "$n temp item(s) removed"
+            $gain = Format-Reclaim $before
+            $detail = "$n temp item(s) removed" + $(if ($gain) { " - $gain" } else { '' })
         }
         'widgets' {
             Set-Reg 'HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced' 'TaskbarDa' 0
@@ -6795,12 +10597,7 @@ function Apply-Tweak($app) {
             $n = Remove-AppxByName 'MicrosoftWindows.Client.WebExperience'
             $detail = "widgets hidden and disabled by policy; $n package(s) removed"
         }
-        'wpbt' {
-            Set-Reg 'HKLM\SYSTEM\CurrentControlSet\Control\Session Manager' 'DisableWpbtExecution' 1
-            $detail = 'OEM firmware-injected binaries blocked (reboot to apply)'
-        }
-
-        # ---------------- Advanced (CAUTION) ----------------
+        # ---------------- CAUTION ----------------
         'adobeblock' {
             # Appended between markers so the block is identifiable and reversible, and
             # the client's own hosts entries are never touched.
@@ -6829,18 +10626,6 @@ function Apply-Tweak($app) {
             Set-Reg 'HKCU\Software\Microsoft\Windows\CurrentVersion\Search' 'BackgroundAppGlobalToggle' 0
             $detail = 'UWP background execution disabled'
         }
-        'bravedebloat' {
-            foreach ($kv in @(@('BraveRewardsDisabled', 1), @('BraveWalletDisabled', 1), @('BraveVPNDisabled', 1),
-                              @('BraveAIChatEnabled', 0), @('TorDisabled', 1), @('BraveSpeedreaderEnabled', 0),
-                              @('PasswordManagerEnabled', 0), @('MetricsReportingEnabled', 0))) {
-                Set-Reg 'HKLM\SOFTWARE\Policies\BraveSoftware\Brave' $kv[0] $kv[1]
-            }
-            $detail = 'Rewards, Wallet, VPN, Tor and AI chat disabled by policy'
-        }
-        'utctime' {
-            Set-Reg 'HKLM\SYSTEM\CurrentControlSet\Control\TimeZoneInformation' 'RealTimeIsUniversal' 1
-            $detail = 'hardware clock now interpreted as UTC'
-        }
         'reservedstorage' {
             & "$env:SystemRoot\System32\Dism.exe" /Online /Set-ReservedStorageState /State:Disabled 2>&1 | Out-Null
             $detail = 'reserved storage disabled'
@@ -6852,28 +10637,6 @@ function Apply-Tweak($app) {
             Set-Reg 'HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced' 'LaunchTo' 1
             $detail = "$r namespace entr(ies) removed; Explorer opens on This PC"
         }
-        'fullscreenopt' {
-            Set-Reg 'HKCU\System\GameConfigStore' 'GameDVR_DXGIHonorFSEWindowsCompatible' 1
-            Set-Reg 'HKCU\System\GameConfigStore' 'GameDVR_FSEBehavior' 2
-            Set-Reg 'HKCU\System\GameConfigStore' 'GameDVR_FSEBehaviorMode' 2
-            Set-Reg 'HKCU\System\GameConfigStore' 'GameDVR_HonorUserFSEBehaviorMode' 1
-            Set-Reg 'HKCU\System\GameConfigStore' 'GameDVR_EFSEFeatureFlags' 0
-            $detail = 'fullscreen optimizations disabled'
-        }
-        'ipv6disable' {
-            Set-Reg 'HKLM\SYSTEM\CurrentControlSet\Services\Tcpip6\Parameters' 'DisabledComponents' 255
-            $n = 0
-            try {
-                foreach ($b in @(Get-NetAdapterBinding -ComponentID ms_tcpip6 -ErrorAction Stop | Where-Object { $_.Enabled })) {
-                    try { Disable-NetAdapterBinding -Name $b.Name -ComponentID ms_tcpip6 -ErrorAction Stop; $n++ } catch {}
-                }
-            } catch {}
-            $detail = "IPv6 disabled in registry and unbound from $n adapter(s) - reboot to apply"
-        }
-        'ipv4prefer' {
-            Set-Reg 'HKLM\SYSTEM\CurrentControlSet\Services\Tcpip6\Parameters' 'DisabledComponents' 32
-            $detail = 'IPv4 preferred over IPv6 (IPv6 left enabled) - reboot to apply'
-        }
         'edgedebloat' {
             foreach ($kv in @(@('PersonalizationReportingEnabled', 0), @('ShowRecommendationsEnabled', 0),
                               @('HideFirstRunExperience', 1), @('UserFeedbackAllowed', 0),
@@ -6882,33 +10645,15 @@ function Apply-Tweak($app) {
                               @('MicrosoftEdgeInsiderPromotionEnabled', 0), @('ShowMicrosoftRewards', 0),
                               @('WebWidgetAllowed', 0), @('DiagnosticData', 0),
                               @('EdgeAssetDeliveryServiceEnabled', 0), @('CryptoWalletEnabled', 0),
-                              @('WalletDonationEnabled', 0), @('SpotlightExperiencesAndRecommendationsEnabled', 0))) {
+                              @('WalletDonationEnabled', 0), @('SpotlightExperiencesAndRecommendationsEnabled', 0),
+                              @('StartupBoostEnabled', 0), @('BackgroundModeEnabled', 0))) {
                 Set-Reg 'HKLM\SOFTWARE\Policies\Microsoft\Edge' $kv[0] $kv[1]
             }
-            $detail = 'Edge telemetry, shopping, rewards and widgets disabled by policy'
-        }
-        'edgeremove' {
-            # Edge resists removal and Windows Update reinstalls it; the uninstaller is
-            # run where present and the reinstall blocked, but this can revert.
-            $done = 0
-            foreach ($root in @(${env:ProgramFiles(x86)}, $env:ProgramFiles)) {
-                if (-not $root) { continue }
-                $appDir = Join-Path $root 'Microsoft\Edge\Application'
-                if (-not (Test-Path -LiteralPath $appDir)) { continue }
-                foreach ($v in @(Get-ChildItem -LiteralPath $appDir -Directory -ErrorAction SilentlyContinue)) {
-                    $setup = Join-Path $v.FullName 'Installer\setup.exe'
-                    if (Test-Path -LiteralPath $setup) {
-                        try {
-                            Start-Process -FilePath $setup -ArgumentList '--uninstall --system-level --verbose-logging --force-uninstall' -Wait -ErrorAction Stop
-                            $done++
-                        } catch {}
-                    }
-                }
-            }
-            Set-Reg 'HKLM\SOFTWARE\Microsoft\EdgeUpdate' 'DoNotUpdateToEdgeWithChromium' 1
-            [void](Remove-AppxByName 'Microsoft.MicrosoftEdge*')
-            $detail = "$done Edge installation(s) uninstalled; chromium reinstall blocked"
-            if ($done -eq 0) { $detail = 'no removable Edge installer found - Edge may be OS-integrated on this build' }
+            # the same two for Chrome - both browsers keep processes resident after the
+            # window closes, and these are the only values here that actually free RAM
+            Set-Reg 'HKLM\SOFTWARE\Policies\Google\Chrome' 'StartupBoostEnabled' 0
+            Set-Reg 'HKLM\SOFTWARE\Policies\Google\Chrome' 'BackgroundModeEnabled' 0
+            $detail = 'Edge telemetry, shopping, rewards, widgets and background/startup-boost disabled; same two RAM policies set for Chrome'
         }
         'onedriveremove' {
             Get-Process -Name 'OneDrive' -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
@@ -6938,32 +10683,12 @@ function Apply-Tweak($app) {
             }
             $detail = "auto-install of device companion apps blocked; $k Razer service(s) disabled"
         }
-        'rdpwarnings' {
-            Set-Reg 'HKCU\Software\Microsoft\Terminal Server Client' 'AuthenticationLevelOverride' 0
-            $detail = 'unsigned .rdp publisher warnings suppressed'
-        }
         'rightclickmenu' {
             # empty InprocServer32 default value = Windows 11 falls back to the full menu
             $p = Resolve-Reg 'HKCU\Software\Classes\CLSID\{86ca1aa0-34aa-4e8b-a509-50c905bae2a2}\InprocServer32'
             if (-not (Test-Path -LiteralPath $p)) { New-Item -Path $p -Force -ErrorAction Stop | Out-Null }
             New-ItemProperty -LiteralPath $p -Name '(Default)' -Value '' -PropertyType String -Force -ErrorAction Stop | Out-Null
             $detail = 'classic right-click menu enabled (restart Explorer to apply)'
-        }
-        'storagesense' {
-            Set-Reg 'HKCU\Software\Microsoft\Windows\CurrentVersion\StorageSense\Parameters\StoragePolicy' '01' 0
-            Set-Reg 'HKLM\SOFTWARE\Policies\Microsoft\Windows\StorageSense' 'AllowStorageSenseGlobal' 0
-            $detail = 'Storage Sense turned off'
-        }
-        'traynotify' {
-            Set-Reg 'HKCU\Software\Policies\Microsoft\Windows\Explorer' 'DisableNotificationCenter' 1
-            Set-Reg 'HKCU\Software\Microsoft\Windows\CurrentVersion\PushNotifications' 'ToastEnabled' 0
-            Set-Reg 'HKCU\Software\Microsoft\Windows\CurrentVersion\Notifications\Settings' 'NOC_GLOBAL_SETTING_TOASTS_ENABLED' 0
-            $detail = 'notification centre, calendar flyout and toasts disabled'
-        }
-        'teredo' {
-            & "$env:SystemRoot\System32\netsh.exe" interface teredo set state disabled 2>&1 | Out-Null
-            Set-Reg 'HKLM\SOFTWARE\Policies\Microsoft\Windows\TCPIP\v6Transition' 'Teredo_State' 'Disabled' 'String'
-            $detail = 'Teredo tunnelling disabled'
         }
         'visualeffects' {
             Set-Reg 'HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\VisualEffects' 'VisualFXSetting' 2
@@ -6975,7 +10700,9 @@ function Apply-Tweak($app) {
             Set-Reg 'HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced' 'ListviewShadow' 0
             Set-Reg 'HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced' 'TaskbarAnimations' 0
             Set-Reg 'HKCU\Software\Microsoft\Windows\DWM' 'EnableAeroPeek' 0
-            $detail = 'visual effects set to best performance (sign out to fully apply)'
+            # acrylic/blur is a real cost on weak integrated graphics and the old row missed it
+            Set-Reg 'HKCU\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize' 'EnableTransparency' 0
+            $detail = 'visual effects set to best performance, transparency off (sign out to fully apply)'
         }
         'windowsai' {
             Set-Reg 'HKLM\SOFTWARE\Policies\Microsoft\Windows\WindowsAI' 'DisableAIDataAnalysis' 1
@@ -6989,6 +10716,343 @@ function Apply-Tweak($app) {
             }
             try { Disable-WindowsOptionalFeature -Online -FeatureName 'Recall' -NoRestart -ErrorAction Stop | Out-Null } catch {}
             $detail = "Recall and Copilot disabled by policy; $n package(s) removed"
+        }
+
+        # ---------------- performance ----------------
+        'powerplan' {
+            # Chassis-aware: a desktop switches to High Performance outright; a laptop is
+            # where the cost sits (battery, heat, fans), so only its AC profile gets the
+            # High Performance processor floor and battery behaviour is untouched.
+            $isLaptop = $false
+            try {
+                $types = @((Get-CimInstance Win32_SystemEnclosure -ErrorAction Stop).ChassisTypes)
+                $isLaptop = [bool]@($types | Where-Object { $_ -in 8, 9, 10, 11, 12, 13, 14, 30, 31, 32 }).Count
+            } catch {}
+            if (-not $isLaptop) {
+                try { $isLaptop = [bool]@(Get-CimInstance Win32_Battery -ErrorAction SilentlyContinue).Count } catch {}
+            }
+            $prev = ''
+            try { $prev = ("$(& "$env:SystemRoot\System32\powercfg.exe" /getactivescheme 2>&1)" -replace '^.*GUID:\s*([0-9a-f-]+).*$', '$1').Trim() } catch {}
+            if ($isLaptop) {
+                # High Performance processor settings on the AC profile of the ACTIVE scheme
+                & "$env:SystemRoot\System32\powercfg.exe" /setacvalueindex SCHEME_CURRENT SUB_PROCESSOR PROCTHROTTLEMIN 100 2>&1 | Out-Null
+                & "$env:SystemRoot\System32\powercfg.exe" /setacvalueindex SCHEME_CURRENT SUB_PROCESSOR PROCTHROTTLEMAX 100 2>&1 | Out-Null
+                & "$env:SystemRoot\System32\powercfg.exe" /setactive SCHEME_CURRENT 2>&1 | Out-Null
+                $detail = "laptop: High Performance processor settings applied to the plugged-in (AC) profile only; battery behaviour untouched (previous scheme $prev)"
+            } else {
+                $out = & "$env:SystemRoot\System32\powercfg.exe" /setactive SCHEME_MIN 2>&1
+                $now = ''
+                try { $now = "$(& "$env:SystemRoot\System32\powercfg.exe" /getactivescheme 2>&1)" } catch {}
+                if ($now -notmatch '8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c') {
+                    # some OEMs hide or lock schemes - report it rather than claiming success
+                    Write-Status $app.id 'Failed' "could not activate High Performance - the scheme may be hidden or locked by the OEM ($out)"
+                    return
+                }
+                $detail = "High Performance plan active (was $prev)"
+            }
+        }
+        'gamedvr' {
+            Set-Reg 'HKCU\System\GameConfigStore' 'GameDVR_Enabled' 0
+            Set-Reg 'HKCU\Software\Microsoft\Windows\CurrentVersion\GameDVR' 'AppCaptureEnabled' 0
+            Set-Reg 'HKLM\SOFTWARE\Policies\Microsoft\Windows\GameDVR' 'AllowGameDVR' 0
+            $detail = 'Game DVR background recording off - stops constant background capture'
+        }
+        'oembloat' {
+            # Vendor updaters matched by pattern - names vary by OEM. Manual, never
+            # Disabled, for the same reason as servicesmanual: Windows can still start
+            # them on demand, so nothing breaks that quietly depended on one.
+            $svcN = 0; $taskN = 0
+            foreach ($p in $script:OemBloatPatterns) {
+                foreach ($svc in @(Get-Service -Name $p -ErrorAction SilentlyContinue)) {
+                    if ($svc.StartType -eq 'Automatic' -and (Set-SvcStart $svc.Name 'Manual')) { $svcN++ }
+                }
+                foreach ($t in @(Get-ScheduledTask -TaskName $p -ErrorAction SilentlyContinue | Where-Object { $_.State -ne 'Disabled' })) {
+                    try { Disable-ScheduledTask -TaskName $t.TaskName -TaskPath $t.TaskPath -ErrorAction Stop | Out-Null; $taskN++ } catch {}
+                }
+            }
+            $detail = "$svcN OEM updater service(s) set to Manual, $taskN scheduled task(s) disabled"
+        }
+        'nettuning' {
+            # Windows otherwise caps network to ~10 packets/ms whenever multimedia plays -
+            # a real ceiling during a Teams call - and reserves a fifth of CPU for background
+            Set-Reg 'HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia\SystemProfile' 'NetworkThrottlingIndex' 0xffffffff
+            Set-Reg 'HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia\SystemProfile' 'SystemResponsiveness' 10
+            $detail = 'multimedia network throttling off, background CPU reservation halved'
+        }
+        'nicpower' {
+            # the fix for "my internet drops randomly" / "slow after waking". Enumerate real
+            # adapters via Get-NetAdapter and match the class subkey on NetCfgInstanceId -
+            # the class key also holds VPN/Hyper-V/loopback entries that must be left alone.
+            $class = 'Registry::HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Control\Class\{4d36e972-e325-11ce-bfc1-08002be10318}'
+            $n = 0
+            $phys = @(Get-NetAdapter -Physical -ErrorAction SilentlyContinue)
+            foreach ($k in @(Get-ChildItem -LiteralPath $class -ErrorAction SilentlyContinue | Where-Object { $_.PSChildName -match '^\d{4}$' })) {
+                $cfg = Get-ItemProperty -LiteralPath $k.PSPath -ErrorAction SilentlyContinue
+                if (-not $cfg) { continue }
+                if (@($phys | Where-Object { "$($_.InterfaceGuid)" -eq "$($cfg.NetCfgInstanceId)" }).Count) {
+                    try { New-ItemProperty -LiteralPath $k.PSPath -Name 'PnPCapabilities' -Value 24 -PropertyType DWord -Force -ErrorAction Stop | Out-Null; $n++ } catch {}
+                }
+            }
+            $detail = "power saving disabled on $n physical network adapter(s) (reconnect or reboot to apply)"
+        }
+        'dnsresolver' {
+            # NEVER on a domain: internal DNS is how domain machines find everything.
+            # The guard runs even though the row is optional - a tick must not break AD.
+            $onDomain = $false
+            try { $onDomain = [bool](Get-CimInstance Win32_ComputerSystem -ErrorAction Stop).PartOfDomain } catch {}
+            if ($onDomain) {
+                Write-Status $app.id 'Skipped' 'domain-joined machine - internal DNS left alone deliberately'
+                return
+            }
+            $n = 0
+            foreach ($a in @(Get-NetAdapter -Physical -ErrorAction SilentlyContinue | Where-Object { $_.Status -eq 'Up' })) {
+                try { Set-DnsClientServerAddress -InterfaceIndex $a.ifIndex -ServerAddresses @('1.1.1.1', '8.8.8.8') -ErrorAction Stop; $n++ } catch {}
+            }
+            $detail = "Cloudflare (1.1.1.1) + Google (8.8.8.8) DNS set on $n adapter(s) - cross-provider redundancy"
+        }
+
+        # ---------------- store debloat ----------------
+        # Six grouped rows; patterns live in $script:DebloatPacks, shared with the GUI's
+        # detection probes. Remove-AppxByName removes -AllUsers AND deprovisions, so the
+        # apps do not return for new profiles. Everything here reinstalls from the Store.
+        'debloatweb'    { $n = Remove-AppxSet $script:DebloatPacks['debloatweb'];    $detail = "$n package(s) removed - Store can restore any of them" }
+        'debloatdev'    { $n = Remove-AppxSet $script:DebloatPacks['debloatdev'];    $detail = "$n package(s) removed - Store can restore any of them" }
+        'debloatxbox'   { $n = Remove-AppxSet $script:DebloatPacks['debloatxbox'];   $detail = "$n package(s) removed - Xbox sign-in goes too (accepted: business machines); Store can restore" }
+        'debloatmsapps' { $n = Remove-AppxSet $script:DebloatPacks['debloatmsapps']; $detail = "$n package(s) removed - Store can restore any of them" }
+        'debloatmobile' { $n = Remove-AppxSet $script:DebloatPacks['debloatmobile']; $detail = "$n package(s) removed - Store can restore any of them" }
+        'debloatutil'   { $n = Remove-AppxSet $script:DebloatPacks['debloatutil'];   $detail = "$n package(s) removed - Store can restore any of them" }
+
+        # ---------------- post-format setup ----------------
+        'taskbarclean' {
+            # Clearing Taskband empties the taskbar completely rather than restoring the
+            # OEM default set - intended, since the default still carries Edge and Store.
+            Remove-RegVal 'HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Taskband' 'Favorites'
+            Remove-RegVal 'HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Taskband' 'FavoritesResolve'
+            $pinDir = Resolve-UserPath 'AppData\Roaming\Microsoft\Internet Explorer\Quick Launch\User Pinned\TaskBar'
+            if (Test-Path -LiteralPath $pinDir) {
+                foreach ($e in @(Get-ChildItem -LiteralPath $pinDir -Force -ErrorAction SilentlyContinue)) {
+                    try { Remove-Item -LiteralPath $e.FullName -Force -ErrorAction Stop } catch {}
+                }
+            }
+            Set-Reg 'HKCU\Software\Microsoft\Windows\CurrentVersion\Search' 'SearchboxTaskbarMode' 0
+            Set-Reg 'HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced' 'ShowTaskViewButton' 0
+            Set-Reg 'HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced' 'TaskbarDa' 0
+            Set-Reg 'HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced' 'TaskbarMn' 0
+            Set-Reg 'HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced' 'ShowCopilotButton' 0
+            # NOTE (do not guess): the Win11 24H2/25H2 taskbar "Resume" toggle's registry
+            # value is unverified - determine it by diffing Advanced + CrossDevice on a
+            # live machine before adding it here.
+            $detail = 'taskbar unpinned and cleaned - search box, Task View, widgets, chat and Copilot buttons off (Explorer restart applies it)'
+        }
+        'startclean' {
+            Set-Reg 'HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced' 'MakeAllAppsDefault' 1
+            Set-Reg 'HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced' 'Start_Layout' 1
+            Set-Reg 'HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced' 'Start_TrackProgs' 0
+            Set-Reg 'HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced' 'Start_TrackDocs' 0
+            Set-Reg 'HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced' 'Start_IrisRecommendations' 0
+            Set-Reg 'HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced' 'Start_AccountNotifications' 0
+            $detail = 'Start opens on All apps, more pins, no recents/recommendations/account nags'
+        }
+        'explorerprivacy' {
+            Set-Reg 'HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced' 'ShowRecent' 0
+            Set-Reg 'HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced' 'ShowFrequent' 0
+            Set-Reg 'HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced' 'ShowCloudFilesInQuickAccess' 0
+            $n = 0
+            foreach ($rel in @('AppData\Roaming\Microsoft\Windows\Recent',
+                               'AppData\Roaming\Microsoft\Windows\Recent\AutomaticDestinations',
+                               'AppData\Roaming\Microsoft\Windows\Recent\CustomDestinations')) {
+                $dir = Resolve-UserPath $rel
+                if (-not (Test-Path -LiteralPath $dir)) { continue }
+                foreach ($e in @(Get-ChildItem -LiteralPath $dir -File -Force -ErrorAction SilentlyContinue)) {
+                    try { Remove-Item -LiteralPath $e.FullName -Force -ErrorAction Stop; $n++ } catch {}
+                }
+            }
+            $detail = "recent/frequent tracking off; $n history item(s) cleared - the cleared history cannot be restored"
+        }
+        'desktopicons' {
+            # 0 = shown. Written unconditionally - idempotent, so a machine that already
+            # shows them is unaffected. ClassicStartMenu mirrors what the Settings UI does.
+            foreach ($k in @('HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\HideDesktopIcons\NewStartPanel',
+                             'HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\HideDesktopIcons\ClassicStartMenu')) {
+                Set-Reg $k '{20D04FE0-3AEA-1069-A2D8-08002B30309D}' 0
+                Set-Reg $k '{59031a47-3f72-44a7-89c5-5595fe6b30ee}' 0
+            }
+            $detail = 'This PC and User Files shown on the desktop'
+        }
+        'sysdefaults' {
+            # settings a technician always sets, promoted out of the preferences column
+            Set-Reg 'HKLM\SYSTEM\CurrentControlSet\Control\FileSystem' 'LongPathsEnabled' 1
+            Set-Reg 'HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced' 'HideFileExt' 0
+            Set-Reg 'HKCU\Control Panel\Accessibility\StickyKeys' 'Flags' '506' 'String'
+            Set-Reg 'HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced' 'ShowBatteryPercentage' 1
+            Set-Reg 'Registry::HKEY_USERS\.DEFAULT\Control Panel\Keyboard' 'InitialKeyboardIndicators' '2' 'String'
+            Set-Reg 'HKCU\Control Panel\Keyboard' 'InitialKeyboardIndicators' '2' 'String'
+            Set-Reg 'HKLM\SYSTEM\CurrentControlSet\Control\CrashControl' 'DisplayParameters' 1
+            Set-Reg 'HKLM\SOFTWARE\Policies\Microsoft\Windows\System' 'DisableAcrylicBackgroundOnLogon' 1
+            $detail = 'long paths, file extensions, Sticky Keys off, battery %, Num Lock, BSOD detail, logon blur off'
+        }
+        'nagsoff' {
+            # The per-user complement to consumerfeatures: Windows HOME ignores the
+            # CloudContent policies entirely, so these HKCU values are the only thing that
+            # works there. Complements, not duplicates - never merge the two rows.
+            $cdm = 'HKCU\Software\Microsoft\Windows\CurrentVersion\ContentDeliveryManager'
+            foreach ($v in @('SubscribedContent-338387Enabled', 'RotatingLockScreenEnabled', 'RotatingLockScreenOverlayEnabled',
+                             'SystemPaneSuggestionsEnabled', 'SubscribedContent-338393Enabled', 'SubscribedContent-353694Enabled',
+                             'SubscribedContent-353696Enabled', 'SubscribedContent-310093Enabled', 'SilentInstalledAppsEnabled',
+                             'PreInstalledAppsEnabled', 'OemPreInstalledAppsEnabled', 'SoftLandingEnabled')) {
+                Set-Reg $cdm $v 0
+            }
+            Set-Reg 'HKCU\Software\Microsoft\Windows\CurrentVersion\UserProfileEngagement' 'ScoobeSystemSettingEnabled' 0
+            Set-Reg 'HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced' 'ShowSyncProviderNotifications' 0
+            # VERIFY on a live 24H2/25H2 machine that the lock-screen status dropdown
+            # reads "None" after this - it is the documented policy, but recent builds
+            # moved that setting; if it does not take, diff the per-user keys and replace.
+            Set-Reg 'HKLM\SOFTWARE\Policies\Microsoft\Windows\System' 'DisableLockScreenAppNotifications' 1
+            $detail = 'Spotlight ads, suggestions, tips, auto-installed apps and lock-screen nags off (SilentInstalledApps off keeps the debloat rows from undoing themselves)'
+        }
+        'updatecontrol' {
+            Set-Reg 'HKLM\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU' 'NoAutoRebootWithLoggedOnUsers' 1
+            Set-Reg 'HKLM\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate' 'ExcludeWUDriversInQualityUpdate' 1
+            $detail = 'no reboots while signed in, drivers excluded from updates - security and quality updates untouched'
+        }
+        'faststartup' {
+            Set-Reg 'HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Power' 'HiberbootEnabled' 0
+            $detail = 'shutdown now actually shuts down - "have you restarted it?" becomes a reliable question'
+        }
+        'uisnappy' {
+            Set-Reg 'HKCU\Control Panel\Desktop' 'MenuShowDelay' '0' 'String'
+            $detail = 'menu delays removed (sign out to fully apply)'
+        }
+
+        # ---------------- gaming ----------------
+        'gamingmode' {
+            Set-Reg 'HKCU\Software\Microsoft\GameBar' 'AutoGameModeEnabled' 1
+            Set-Reg 'HKCU\Software\Microsoft\GameBar' 'AllowAutoGameMode' 1
+            $detail = 'Game Mode on - Windows prioritises the running game'
+        }
+        'gpupriority' {
+            $k = 'HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia\SystemProfile\Tasks\Games'
+            Set-Reg $k 'GPU Priority' 8
+            Set-Reg $k 'Priority' 6
+            Set-Reg $k 'Scheduling Category' 'High' 'String'
+            Set-Reg $k 'SFIO Priority' 'High' 'String'
+            $detail = 'MMCSS Games task raised to High scheduling and I/O priority'
+        }
+        'fullscreenopt' {
+            Set-Reg 'HKCU\System\GameConfigStore' 'GameDVR_DXGIHonorFSEWindowsCompatible' 1
+            Set-Reg 'HKCU\System\GameConfigStore' 'GameDVR_FSEBehavior' 2
+            Set-Reg 'HKCU\System\GameConfigStore' 'GameDVR_FSEBehaviorMode' 2
+            Set-Reg 'HKCU\System\GameConfigStore' 'GameDVR_HonorUserFSEBehaviorMode' 1
+            Set-Reg 'HKCU\System\GameConfigStore' 'GameDVR_EFSEFeatureFlags' 0
+            $detail = 'fullscreen optimizations disabled - games get true exclusive fullscreen'
+        }
+        'coreparking' {
+            # AC profile only - on a laptop the battery profile keeps parking cores, the
+            # same chassis logic as powerplan. BOTH halves are needed (GameOpt: min-unparked
+            # alone lets the scheduler still park cores under light load) - by GUID, not the
+            # SUB_PROCESSOR/CPMINCORES aliases, which some OEM schemes do not expose.
+            $sub = '54533251-82be-4824-96c1-47b60b740d00'
+            Set-PowerAc $sub '0cc5b647-c1df-4637-891a-dec35c318583' 100   # min unparked cores
+            Set-PowerAc $sub 'ea062031-0e34-4ff1-9b6d-eb1059334028' 100   # max unparked cores
+            Commit-PowerScheme
+            $detail = 'core parking off while plugged in - all cores stay awake for the game (battery profile untouched)'
+        }
+        'gamepower' {
+            # Everything that removes clock-ramp and wake latency, AC-rail only so battery
+            # behaviour is untouched. Read GameOpt's cpu.power + os.power blocks for each.
+            $sub = '54533251-82be-4824-96c1-47b60b740d00'
+            Set-PowerAc $sub '36687f9e-e3a5-4dbf-b1dc-15eb381c6863' 0     # EPP = max performance
+            Set-PowerAc $sub 'be337238-0d82-4146-a960-4f3749d470c7' 2     # boost mode = aggressive
+            Set-PowerAc $sub '619b7505-003b-4e82-b7a6-4dd29c300971' 99    # latency sensitivity hint
+            Set-PowerAc $sub '893dee8e-2bef-41e0-89c6-b55d0929964c' 100   # min processor state
+            Set-PowerAc $sub '93b8b6dc-0698-4d1c-9ee4-0644e900c85d' 2     # hybrid: prefer P-cores (no-op off-hybrid)
+            Set-PowerAc $sub 'bae08b81-2d5e-4688-ad6a-13243356654b' 2     # hybrid: short threads on P-cores
+            Set-PowerAc '501a4d13-42af-4429-9fd1-a8218c268e20' 'ee12f906-d277-404b-b6da-e5fa1a576df5' 0  # PCIe ASPM off
+            Set-PowerAc '2a737441-1930-4402-8d77-b2bebba308a3' '48e6b7a6-50f5-4782-a5d4-53bb8f07e226' 0  # USB selective suspend off
+            Commit-PowerScheme
+            $detail = 'processor, PCIe and USB power-saving off while plugged in - removes clock-ramp and device wake latency'
+        }
+        'gamescheduler' {
+            Set-Reg 'HKLM\SYSTEM\CurrentControlSet\Control\PriorityControl' 'Win32PrioritySeparation' 38
+            Set-Reg 'HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Memory Management' 'DisablePagingExecutive' 1
+            # NOTE: SystemResponsiveness and NetworkThrottlingIndex are owned by the business
+            # nettuning row - not duplicated here, so the two lists never fight over a value.
+            $detail = 'foreground game favoured (Win32PrioritySeparation 0x26), kernel kept resident (sign out or reboot to apply)'
+        }
+        'gamebaroff' {
+            Set-Reg 'HKCU\Software\Microsoft\GameBar' 'UseNexusForGameBarEnabled' 0
+            $detail = 'Game Bar overlay off - removes its hook from the present path (capture itself untouched)'
+        }
+        'inputqueue' {
+            # 1000 Hz+ mice can overflow the default 100-entry queue under load
+            Set-Reg 'HKLM\SYSTEM\CurrentControlSet\Services\mouclass\Parameters' 'MouseDataQueueSize' 150
+            Set-Reg 'HKLM\SYSTEM\CurrentControlSet\Services\kbdclass\Parameters' 'KeyboardDataQueueSize' 150
+            $detail = 'mouse and keyboard input queues raised to 150 (reboot to apply)'
+        }
+        'gamenet' {
+            # RSC batches received segments (adds latency); LLMNR is background multicast.
+            # The TCP-only keys (ack frequency, Nagle, delayed-ACK) are deliberately NOT here:
+            # competitive gameplay is UDP, so GameOpt's own traffic detector marks them
+            # irrelevant, and modern Windows largely ignores them.
+            & "$env:SystemRoot\System32\netsh.exe" int tcp set global rsc=disabled 2>&1 | Out-Null
+            Set-Reg 'HKLM\SOFTWARE\Policies\Microsoft\Windows NT\DNSClient' 'EnableMulticast' 0
+            $detail = 'Receive Segment Coalescing off, LLMNR multicast off - lower receive-path latency'
+        }
+        'nvidia' {
+            if (-not (Initialize-NvApi)) {
+                Write-Status $app.id 'Skipped' 'no NVIDIA GPU / NVAPI unavailable on this machine'
+                return
+            }
+            # Written to the BASE (global) profile - the NVIDIA Control Panel "Global
+            # Settings" tab. These are NOT registry values; every .reg guide that claims to
+            # set them is wrong.
+            $ultra = [GoNvApi]::SetDword(0x0005F543, 2)   # Low Latency Mode = Ultra
+            $prer  = [GoNvApi]::SetDword(0x007BA09E, 1)   # Max Prerendered Frames = 1
+            if ($ultra -ne 0 -or $prer -ne 0) {
+                Write-Status $app.id 'Failed' "NVAPI write failed (low-latency=$ultra, prerender=$prer) - the profile database may need an elevated run"
+                return
+            }
+            $detail = 'NVIDIA Low Latency Mode = Ultra, Max Prerendered Frames = 1 (via the driver profile database)'
+        }
+        'hags' {
+            Set-Reg 'HKLM\SYSTEM\CurrentControlSet\Control\GraphicsDrivers' 'HwSchMode' 2
+            $detail = 'hardware-accelerated GPU scheduling enabled - REBOOT required; if a game stutters afterwards, undo this row'
+        }
+        'gamenic' {
+            # Drops the link ~2 s per adapter (that is why the row is CAUTION). Absent
+            # properties are skipped silently - NIC feature sets vary by vendor.
+            $keywords = @('*InterruptModeration', '*EEE', '*FlowControl', 'EnableGreenEthernet', 'PowerSavingMode', 'GigaLite')
+            $script:NicPropCache = @{}
+            $n = 0; $adapters = 0
+            foreach ($a in @(Get-NetAdapter -Physical -ErrorAction SilentlyContinue | Where-Object { $_.Status -eq 'Up' })) {
+                $adapters++
+                foreach ($kw in $keywords) {
+                    try { if (Set-NicAdvProp $a.Name $kw '0') { $n++ } } catch {}
+                }
+            }
+            $detail = "$n adapter setting(s) tuned for latency across $adapters connected adapter(s) - link briefly dropped"
+        }
+        'interrupts' {
+            # MSI + high interrupt priority on the GPU and every physical NIC. The
+            # Affinity Policy subkey usually does not exist; Set-Reg creates it.
+            $done = 0
+            $targets = @()
+            try { $targets += @(Get-CimInstance Win32_VideoController -ErrorAction Stop | Where-Object { $_.PNPDeviceID -like 'PCI\*' } | ForEach-Object { $_.PNPDeviceID }) } catch {}
+            try { $targets += @(Get-NetAdapter -Physical -ErrorAction Stop | Where-Object { $_.PnpDeviceID -like 'PCI\*' } | ForEach-Object { $_.PnpDeviceID }) } catch {}
+            foreach ($pnp in ($targets | Select-Object -Unique)) {
+                $k = Get-InterruptKey $pnp
+                try {
+                    Set-Reg "$k\MessageSignaledInterruptProperties" 'MSISupported' 1
+                    Set-Reg "$k\Affinity Policy" 'DevicePriority' 3
+                    $done++
+                } catch {}
+            }
+            $detail = "message-signalled interrupts + high priority set on $done device(s) - REBOOT required"
+        }
+        'memintegrity' {
+            Set-Reg 'HKLM\SYSTEM\CurrentControlSet\Control\DeviceGuard\Scenarios\HypervisorEnforcedCodeIntegrity' 'Enabled' 0
+            Set-Reg 'HKLM\SYSTEM\CurrentControlSet\Control\DeviceGuard' 'EnableVirtualizationBasedSecurity' 0
+            $detail = 'Memory Integrity / VBS off - REBOOT required. Real FPS gain on CPU-bound games, at the cost of kernel-exploit protection'
         }
 
         default { Write-Status $app.id 'Failed' "unknown tweak id '$id'"; return }
@@ -7053,22 +11117,34 @@ function Undo-Tweak($app) {
             [void](Set-SvcStart 'DoSvc' 'Automatic')
             $detail = 'delivery optimization back to LAN peering (default)'
         }
-        'diskcleanup'  { Write-Status $app.id 'Skipped' 'one-time cleanup - nothing to undo'; return }
-        'tempfiles'    { Write-Status $app.id 'Skipped' 'deleted temp files cannot be restored'; return }
-        'restorepoint' { Write-Status $app.id 'Skipped' 'restore points are left in place deliberately'; return }
+        'diskcleanup'    { Write-Status $app.id 'Skipped' 'one-time cleanup - nothing to undo'; return }
+        'componentstore' { Write-Status $app.id 'Skipped' 'superseded components are gone by design - nothing to undo'; return }
+        'tempfiles'      { Write-Status $app.id 'Skipped' 'deleted temp files cannot be restored'; return }
+        'recyclebin'     { Write-Status $app.id 'Skipped' 'emptied recycle bins cannot be restored'; return }
+        'windowsold'     { Write-Status $app.id 'Skipped' 'Windows.old and the update cache cannot be restored'; return }
+        'restorepoint'   { Write-Status $app.id 'Skipped' 'restore points are left in place deliberately'; return }
+        { $_ -like 'debloat*' } {
+            Write-Status $app.id 'Skipped' 'removed Store apps are NOT reinstalled here - the Microsoft Store can restore any of them in seconds'
+            return
+        }
         'endtask' {
             Set-Reg 'HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced\TaskbarDeveloperSettings' 'TaskbarEndTask' 0
             $detail = 'End Task removed from the taskbar menu'
         }
-        'folderdiscovery' {
-            [void](Remove-RegKey 'HKCU\Software\Classes\Local Settings\Software\Microsoft\Windows\Shell\Bags\AllFolders\Shell')
-            $detail = 'automatic folder type discovery restored'
-        }
         'hibernation' {
+            # COLLISION with faststartup: powercfg /hibernate on sets HiberbootEnabled
+            # back to 1 as a side effect. If Fast Startup - Disable is still applied
+            # (HiberbootEnabled currently 0), re-assert it after - undoing hibernation
+            # must not silently re-enable Fast Startup.
+            $fastStartupApplied = ("$(Get-WorkerReg 'HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Power' 'HiberbootEnabled')" -eq '0')
             & "$env:SystemRoot\System32\powercfg.exe" /hibernate on 2>&1 | Out-Null
             Remove-RegVal 'HKLM\SYSTEM\CurrentControlSet\Control\Power' 'HibernateEnabled'
             Remove-RegVal 'HKLM\SYSTEM\CurrentControlSet\Control\Power' 'HibernateEnabledDefault'
             $detail = 'hibernation re-enabled'
+            if ($fastStartupApplied) {
+                Set-Reg 'HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Power' 'HiberbootEnabled' 0
+                $detail += '; Fast Startup - Disable is still applied, so HiberbootEnabled was re-asserted to 0'
+            }
         }
         'location' {
             Set-Reg 'HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Sensor\Overrides\{BFA794E4-F964-4FDB-90F6-51056BFE4B44}' 'SensorPermissionState' 1
@@ -7086,9 +11162,17 @@ function Undo-Tweak($app) {
             $detail = 'web and store search suggestions restored'
         }
         'devicecompanion' {
-            Remove-RegVal 'HKLM\SOFTWARE\Policies\Microsoft\Windows\Device Metadata' 'PreventDeviceMetadataFromNetwork'
-            Set-Reg 'HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\DriverSearching' 'SearchOrderConfig' 1
-            $detail = 'device metadata and companion apps allowed again'
+            # COLLISION with razerdisable: both rows write PreventDeviceMetadataFromNetwork
+            # and SearchOrderConfig. Razer's unique marker is DontSearchWindowsUpdate - if
+            # it is still present, Razer still owns the shared values and clearing them
+            # here would silently half-undo that row.
+            if ("$(Get-WorkerReg 'HKLM\SOFTWARE\Policies\Microsoft\Windows\DriverSearching' 'DontSearchWindowsUpdate')" -eq '1') {
+                $detail = 'Razer Software Auto-Install - Disable is still applied and owns the shared device-metadata block - undo that row to clear it'
+            } else {
+                Remove-RegVal 'HKLM\SOFTWARE\Policies\Microsoft\Windows\Device Metadata' 'PreventDeviceMetadataFromNetwork'
+                Set-Reg 'HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\DriverSearching' 'SearchOrderConfig' 1
+                $detail = 'device metadata and companion apps allowed again'
+            }
         }
         'servicesmanual' {
             $n = 0
@@ -7098,10 +11182,6 @@ function Undo-Tweak($app) {
                 if (Set-SvcStart $svc $def) { $n++ }
             }
             $detail = "$n service(s) restored to their Windows default startup type"
-        }
-        'startlayout' {
-            Remove-RegVal 'HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced' 'Start_ShowClassicMode'
-            $detail = 'default Start layout restored'
         }
         'telemetry' {
             Remove-RegVal 'HKLM\SOFTWARE\Policies\Microsoft\Windows\DataCollection' 'AllowTelemetry'
@@ -7113,19 +11193,30 @@ function Undo-Tweak($app) {
                              @('\Microsoft\Windows\Application Experience\', 'ProgramDataUpdater'),
                              @('\Microsoft\Windows\Customer Experience Improvement Program\', 'Consolidator'),
                              @('\Microsoft\Windows\Customer Experience Improvement Program\', 'UsbCeip'),
-                             @('\Microsoft\Windows\DiskDiagnostic\', 'Microsoft-Windows-DiskDiagnosticDataCollector'))) {
+                             @('\Microsoft\Windows\DiskDiagnostic\', 'Microsoft-Windows-DiskDiagnosticDataCollector'),
+                             @('\Microsoft\Windows\Autochk\', 'Proxy'),
+                             @('\Microsoft\Windows\Maintenance\', 'WinSAT'),
+                             @('\Microsoft\Windows\Feedback\Siuf\', 'DmClient'),
+                             @('\Microsoft\Windows\Feedback\Siuf\', 'DmClientOnScenarioDownload'),
+                             @('\Microsoft\Windows\Windows Error Reporting\', 'QueueReporting'),
+                             @('\Microsoft\Windows\CloudExperienceHost\', 'CreateObjectTask'),
+                             @('\Microsoft\Windows\Shell\', 'FamilySafetyMonitor'),
+                             @('\Microsoft\Windows\Shell\', 'FamilySafetyRefreshTask'))) {
                 try { Enable-ScheduledTask -TaskPath $t[0] -TaskName $t[1] -ErrorAction Stop | Out-Null } catch {}
             }
-            $detail = 'telemetry policy removed, DiagTrack and CEIP tasks re-enabled'
+            $detail = 'telemetry policy removed, DiagTrack and telemetry tasks re-enabled'
         }
         'widgets' {
-            Set-Reg 'HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced' 'TaskbarDa' 1
             Remove-RegVal 'HKLM\SOFTWARE\Policies\Microsoft\Dsh' 'AllowNewsAndInterests'
-            $detail = 'widgets button restored - the Web Experience Pack is NOT reinstalled (Store can restore it)'
-        }
-        'wpbt' {
-            Remove-RegVal 'HKLM\SYSTEM\CurrentControlSet\Control\Session Manager' 'DisableWpbtExecution'
-            $detail = 'WPBT execution allowed again (reboot to apply)'
+            # TaskbarDa is also owned by taskbarclean; if that row is still applied
+            # (its TaskbarMn marker reads 0), leave the button hidden rather than
+            # half-undoing the taskbar cleanup
+            if ("$(Get-WorkerReg 'HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced' 'TaskbarMn')" -eq '0') {
+                $detail = 'widgets policy removed; taskbar button left hidden because Taskbar - Clean Up is still applied'
+            } else {
+                Set-Reg 'HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced' 'TaskbarDa' 1
+                $detail = 'widgets button restored - the Web Experience Pack is NOT reinstalled (Store can restore it)'
+            }
         }
         'adobeblock' {
             # only the lines between our own markers are removed; the client's entries stay
@@ -7150,14 +11241,6 @@ function Undo-Tweak($app) {
             Set-Reg 'HKCU\Software\Microsoft\Windows\CurrentVersion\Search' 'BackgroundAppGlobalToggle' 1
             $detail = 'background apps allowed again'
         }
-        'bravedebloat' {
-            [void](Remove-RegKey 'HKLM\SOFTWARE\Policies\BraveSoftware\Brave')
-            $detail = 'Brave policy overrides removed'
-        }
-        'utctime' {
-            Remove-RegVal 'HKLM\SYSTEM\CurrentControlSet\Control\TimeZoneInformation' 'RealTimeIsUniversal'
-            $detail = 'hardware clock back to local time'
-        }
         'reservedstorage' {
             & "$env:SystemRoot\System32\Dism.exe" /Online /Set-ReservedStorageState /State:Enabled 2>&1 | Out-Null
             $detail = 'reserved storage re-enabled'
@@ -7170,34 +11253,10 @@ function Undo-Tweak($app) {
             Remove-RegVal 'HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced' 'LaunchTo'
             $detail = 'Home and Gallery restored in File Explorer'
         }
-        'fullscreenopt' {
-            foreach ($v in 'GameDVR_DXGIHonorFSEWindowsCompatible', 'GameDVR_FSEBehavior', 'GameDVR_FSEBehaviorMode',
-                           'GameDVR_HonorUserFSEBehaviorMode', 'GameDVR_EFSEFeatureFlags') {
-                Remove-RegVal 'HKCU\System\GameConfigStore' $v
-            }
-            $detail = 'fullscreen optimizations restored'
-        }
-        'ipv6disable' {
-            Remove-RegVal 'HKLM\SYSTEM\CurrentControlSet\Services\Tcpip6\Parameters' 'DisabledComponents'
-            $n = 0
-            try {
-                foreach ($b in @(Get-NetAdapterBinding -ComponentID ms_tcpip6 -ErrorAction Stop | Where-Object { -not $_.Enabled })) {
-                    try { Enable-NetAdapterBinding -Name $b.Name -ComponentID ms_tcpip6 -ErrorAction Stop; $n++ } catch {}
-                }
-            } catch {}
-            $detail = "IPv6 re-enabled and rebound to $n adapter(s) - reboot to apply"
-        }
-        'ipv4prefer' {
-            Remove-RegVal 'HKLM\SYSTEM\CurrentControlSet\Services\Tcpip6\Parameters' 'DisabledComponents'
-            $detail = 'default IPv6/IPv4 preference restored - reboot to apply'
-        }
         'edgedebloat' {
             [void](Remove-RegKey 'HKLM\SOFTWARE\Policies\Microsoft\Edge')
-            $detail = 'Edge policy overrides removed'
-        }
-        'edgeremove' {
-            Remove-RegVal 'HKLM\SOFTWARE\Microsoft\EdgeUpdate' 'DoNotUpdateToEdgeWithChromium'
-            $detail = 'reinstall block lifted - Edge is NOT reinstalled, get it from microsoft.com/edge or Windows Update'
+            [void](Remove-RegKey 'HKLM\SOFTWARE\Policies\Google\Chrome')
+            $detail = 'Edge and Chrome policy overrides removed'
         }
         'onedriveremove' {
             Remove-RegVal 'HKLM\SOFTWARE\Policies\Microsoft\Windows\OneDrive' 'DisableFileSyncNGSC'
@@ -7208,38 +11267,21 @@ function Undo-Tweak($app) {
             $detail = 'sync policy lifted - OneDrive is NOT reinstalled'
         }
         'razerdisable' {
-            Remove-RegVal 'HKLM\SOFTWARE\Policies\Microsoft\Windows\Device Metadata' 'PreventDeviceMetadataFromNetwork'
-            Set-Reg 'HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\DriverSearching' 'SearchOrderConfig' 1
+            # COLLISION with devicecompanion (see that undo): only what is UNIQUE to this
+            # row is cleared here. The shared device-metadata values stay - Prevent Device
+            # Companion Apps may own them, and its own undo clears them once this row's
+            # marker is gone. The residue case (Razer applied alone, then undone) is named
+            # in the detail rather than silently half-reverting the sibling.
             Remove-RegVal 'HKLM\SOFTWARE\Policies\Microsoft\Windows\DriverSearching' 'DontSearchWindowsUpdate'
             $k = 0
             foreach ($svc in @(Get-Service -ErrorAction SilentlyContinue | Where-Object { $_.Name -like 'Razer*' })) {
                 if (Set-SvcStart $svc.Name 'Automatic') { $k++ }
             }
-            $detail = "driver companion apps allowed again; $k Razer service(s) re-enabled"
-        }
-        'rdpwarnings' {
-            Remove-RegVal 'HKCU\Software\Microsoft\Terminal Server Client' 'AuthenticationLevelOverride'
-            $detail = 'unsigned .rdp warnings restored'
+            $detail = "$k Razer service(s) re-enabled; the shared device-metadata block was left for the Prevent Device Companion Apps row - undo that row too to clear it fully"
         }
         'rightclickmenu' {
             [void](Remove-RegKey 'HKCU\Software\Classes\CLSID\{86ca1aa0-34aa-4e8b-a509-50c905bae2a2}')
             $detail = 'Windows 11 compact right-click menu restored (restart Explorer to apply)'
-        }
-        'storagesense' {
-            Set-Reg 'HKCU\Software\Microsoft\Windows\CurrentVersion\StorageSense\Parameters\StoragePolicy' '01' 1
-            Remove-RegVal 'HKLM\SOFTWARE\Policies\Microsoft\Windows\StorageSense' 'AllowStorageSenseGlobal'
-            $detail = 'Storage Sense re-enabled'
-        }
-        'traynotify' {
-            Remove-RegVal 'HKCU\Software\Policies\Microsoft\Windows\Explorer' 'DisableNotificationCenter'
-            Set-Reg 'HKCU\Software\Microsoft\Windows\CurrentVersion\PushNotifications' 'ToastEnabled' 1
-            Remove-RegVal 'HKCU\Software\Microsoft\Windows\CurrentVersion\Notifications\Settings' 'NOC_GLOBAL_SETTING_TOASTS_ENABLED'
-            $detail = 'notification centre and toasts restored'
-        }
-        'teredo' {
-            & "$env:SystemRoot\System32\netsh.exe" interface teredo set state default 2>&1 | Out-Null
-            Remove-RegVal 'HKLM\SOFTWARE\Policies\Microsoft\Windows\TCPIP\v6Transition' 'Teredo_State'
-            $detail = 'Teredo back to its default state'
         }
         'visualeffects' {
             # 0 = let Windows decide, which is the stock setting
@@ -7251,6 +11293,7 @@ function Undo-Tweak($app) {
             Set-Reg 'HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced' 'ListviewShadow' 1
             Set-Reg 'HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced' 'TaskbarAnimations' 1
             Set-Reg 'HKCU\Software\Microsoft\Windows\DWM' 'EnableAeroPeek' 1
+            Set-Reg 'HKCU\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize' 'EnableTransparency' 1
             $detail = 'visual effects back to the Windows default (sign out to fully apply)'
         }
         'windowsai' {
@@ -7258,8 +11301,262 @@ function Undo-Tweak($app) {
             Remove-RegVal 'HKCU\Software\Policies\Microsoft\Windows\WindowsAI' 'DisableAIDataAnalysis'
             Remove-RegVal 'HKLM\SOFTWARE\Policies\Microsoft\Windows\WindowsCopilot' 'TurnOffWindowsCopilot'
             Remove-RegVal 'HKCU\Software\Policies\Microsoft\Windows\WindowsCopilot' 'TurnOffWindowsCopilot'
-            Set-Reg 'HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced' 'ShowCopilotButton' 1
+            # ShowCopilotButton is also owned by taskbarclean - leave it hidden while that
+            # row is still applied (same guard as the widgets undo)
+            if ("$(Get-WorkerReg 'HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced' 'TaskbarMn')" -ne '0') {
+                Set-Reg 'HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced' 'ShowCopilotButton' 1
+            }
             $detail = 'AI policy removed - removed Copilot packages are NOT reinstalled'
+        }
+
+        # ---------------- performance ----------------
+        'powerplan' {
+            # restore Balanced and clear the AC-profile overrides - covers both the
+            # desktop path (active scheme) and the laptop path (AC values only)
+            & "$env:SystemRoot\System32\powercfg.exe" /setactive SCHEME_BALANCED 2>&1 | Out-Null
+            & "$env:SystemRoot\System32\powercfg.exe" /setacvalueindex SCHEME_CURRENT SUB_PROCESSOR PROCTHROTTLEMIN 5 2>&1 | Out-Null
+            & "$env:SystemRoot\System32\powercfg.exe" /setacvalueindex SCHEME_CURRENT SUB_PROCESSOR PROCTHROTTLEMAX 100 2>&1 | Out-Null
+            & "$env:SystemRoot\System32\powercfg.exe" /setactive SCHEME_CURRENT 2>&1 | Out-Null
+            $detail = 'Balanced plan restored, AC processor overrides cleared'
+        }
+        'gamedvr' {
+            Remove-RegVal 'HKCU\System\GameConfigStore' 'GameDVR_Enabled'
+            Remove-RegVal 'HKCU\Software\Microsoft\Windows\CurrentVersion\GameDVR' 'AppCaptureEnabled'
+            Remove-RegVal 'HKLM\SOFTWARE\Policies\Microsoft\Windows\GameDVR' 'AllowGameDVR'
+            $detail = 'Game DVR policy removed - Windows defaults restored'
+        }
+        'oembloat' {
+            # restores what it can find NOW - services or tasks renamed/removed since the
+            # apply are out of reach, which is why both counts are reported
+            $svcN = 0; $taskN = 0
+            foreach ($p in $script:OemBloatPatterns) {
+                foreach ($svc in @(Get-Service -Name $p -ErrorAction SilentlyContinue)) {
+                    if ($svc.StartType -eq 'Manual' -and (Set-SvcStart $svc.Name 'Automatic')) { $svcN++ }
+                }
+                foreach ($t in @(Get-ScheduledTask -TaskName $p -ErrorAction SilentlyContinue | Where-Object { $_.State -eq 'Disabled' })) {
+                    try { Enable-ScheduledTask -TaskName $t.TaskName -TaskPath $t.TaskPath -ErrorAction Stop | Out-Null; $taskN++ } catch {}
+                }
+            }
+            $detail = "$svcN matching service(s) restored to Automatic, $taskN task(s) re-enabled - restores what it can find now"
+        }
+        'nettuning' {
+            Remove-RegVal 'HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia\SystemProfile' 'NetworkThrottlingIndex'
+            Set-Reg 'HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia\SystemProfile' 'SystemResponsiveness' 20
+            $detail = 'Windows default throttling and responsiveness restored'
+        }
+        'nicpower' {
+            $class = 'Registry::HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Control\Class\{4d36e972-e325-11ce-bfc1-08002be10318}'
+            $n = 0
+            $phys = @(Get-NetAdapter -Physical -ErrorAction SilentlyContinue)
+            foreach ($k in @(Get-ChildItem -LiteralPath $class -ErrorAction SilentlyContinue | Where-Object { $_.PSChildName -match '^\d{4}$' })) {
+                $cfg = Get-ItemProperty -LiteralPath $k.PSPath -ErrorAction SilentlyContinue
+                if (-not $cfg -or $null -eq $cfg.PnPCapabilities) { continue }
+                if (@($phys | Where-Object { "$($_.InterfaceGuid)" -eq "$($cfg.NetCfgInstanceId)" }).Count) {
+                    try { Remove-ItemProperty -LiteralPath $k.PSPath -Name 'PnPCapabilities' -Force -ErrorAction Stop; $n++ } catch {}
+                }
+            }
+            $detail = "driver-default power saving restored on $n adapter(s)"
+        }
+        'dnsresolver' {
+            $n = 0
+            foreach ($a in @(Get-NetAdapter -Physical -ErrorAction SilentlyContinue)) {
+                try { Set-DnsClientServerAddress -InterfaceIndex $a.ifIndex -ResetServerAddresses -ErrorAction Stop; $n++ } catch {}
+            }
+            $detail = "$n adapter(s) back to automatic (DHCP) DNS"
+        }
+
+        # ---------------- post-format setup ----------------
+        'taskbarclean' {
+            # restores the WINDOWS DEFAULT taskbar, not the previous pins - the old
+            # Favorites blob is not captured, consistent with the no-state-file rule
+            [void](Remove-RegKey 'HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Taskband')
+            Set-Reg 'HKCU\Software\Microsoft\Windows\CurrentVersion\Search' 'SearchboxTaskbarMode' 1
+            Set-Reg 'HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced' 'ShowTaskViewButton' 1
+            Remove-RegVal 'HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced' 'TaskbarMn'
+            # TaskbarDa / ShowCopilotButton stay 0 while widgets / windowsai still own them
+            if ("$(Get-WorkerReg 'HKLM\SOFTWARE\Policies\Microsoft\Dsh' 'AllowNewsAndInterests')" -ne '0') {
+                Set-Reg 'HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced' 'TaskbarDa' 1
+            }
+            if ("$(Get-WorkerReg 'HKLM\SOFTWARE\Policies\Microsoft\Windows\WindowsAI' 'DisableAIDataAnalysis')" -ne '1') {
+                Set-Reg 'HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced' 'ShowCopilotButton' 1
+            }
+            $detail = 'Windows default taskbar restored - the previous pins were not captured and cannot be put back'
+        }
+        'startclean' {
+            foreach ($v in 'MakeAllAppsDefault', 'Start_Layout', 'Start_TrackProgs', 'Start_TrackDocs',
+                           'Start_IrisRecommendations', 'Start_AccountNotifications') {
+                Remove-RegVal 'HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced' $v
+            }
+            $detail = 'Start menu back to Windows defaults'
+        }
+        'explorerprivacy' {
+            Set-Reg 'HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced' 'ShowRecent' 1
+            Set-Reg 'HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced' 'ShowFrequent' 1
+            Set-Reg 'HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced' 'ShowCloudFilesInQuickAccess' 1
+            $detail = 'recent/frequent tracking back on - the cleared history is gone and cannot be restored'
+        }
+        'desktopicons' {
+            foreach ($k in @('HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\HideDesktopIcons\NewStartPanel',
+                             'HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\HideDesktopIcons\ClassicStartMenu')) {
+                Remove-RegVal $k '{20D04FE0-3AEA-1069-A2D8-08002B30309D}'
+                Remove-RegVal $k '{59031a47-3f72-44a7-89c5-5595fe6b30ee}'
+            }
+            $detail = 'desktop icons back to the Windows default (hidden)'
+        }
+        'sysdefaults' {
+            # documented Windows defaults, not deletes, where absent is not the default
+            Set-Reg 'HKLM\SYSTEM\CurrentControlSet\Control\FileSystem' 'LongPathsEnabled' 0
+            Set-Reg 'HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced' 'HideFileExt' 1
+            Set-Reg 'HKCU\Control Panel\Accessibility\StickyKeys' 'Flags' '510' 'String'
+            Set-Reg 'HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced' 'ShowBatteryPercentage' 0
+            Set-Reg 'Registry::HKEY_USERS\.DEFAULT\Control Panel\Keyboard' 'InitialKeyboardIndicators' '0' 'String'
+            Set-Reg 'HKCU\Control Panel\Keyboard' 'InitialKeyboardIndicators' '0' 'String'
+            Remove-RegVal 'HKLM\SYSTEM\CurrentControlSet\Control\CrashControl' 'DisplayParameters'
+            Remove-RegVal 'HKLM\SOFTWARE\Policies\Microsoft\Windows\System' 'DisableAcrylicBackgroundOnLogon'
+            $detail = 'system defaults back to Windows out-of-box values'
+        }
+        'nagsoff' {
+            $cdm = 'HKCU\Software\Microsoft\Windows\CurrentVersion\ContentDeliveryManager'
+            foreach ($v in @('SubscribedContent-338387Enabled', 'RotatingLockScreenEnabled', 'RotatingLockScreenOverlayEnabled',
+                             'SystemPaneSuggestionsEnabled', 'SubscribedContent-338393Enabled', 'SubscribedContent-353694Enabled',
+                             'SubscribedContent-353696Enabled', 'SubscribedContent-310093Enabled', 'SilentInstalledAppsEnabled',
+                             'PreInstalledAppsEnabled', 'OemPreInstalledAppsEnabled', 'SoftLandingEnabled')) {
+                Remove-RegVal $cdm $v
+            }
+            Remove-RegVal 'HKCU\Software\Microsoft\Windows\CurrentVersion\UserProfileEngagement' 'ScoobeSystemSettingEnabled'
+            Remove-RegVal 'HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced' 'ShowSyncProviderNotifications'
+            Remove-RegVal 'HKLM\SOFTWARE\Policies\Microsoft\Windows\System' 'DisableLockScreenAppNotifications'
+            $detail = 'suggestion and ad settings back to Windows defaults'
+        }
+        'updatecontrol' {
+            Remove-RegVal 'HKLM\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU' 'NoAutoRebootWithLoggedOnUsers'
+            Remove-RegVal 'HKLM\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate' 'ExcludeWUDriversInQualityUpdate'
+            $detail = 'Windows Update policies removed - default reboot and driver behaviour restored'
+        }
+        'faststartup' {
+            Set-Reg 'HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Power' 'HiberbootEnabled' 1
+            $detail = 'Fast Startup re-enabled (Windows default)'
+        }
+        'uisnappy' {
+            Set-Reg 'HKCU\Control Panel\Desktop' 'MenuShowDelay' '400' 'String'
+            $detail = 'Windows default menu delay restored'
+        }
+
+        # ---------------- gaming ----------------
+        'gamingmode' {
+            # Windows default is Game Mode ON with the values absent - so delete, not 0
+            Remove-RegVal 'HKCU\Software\Microsoft\GameBar' 'AutoGameModeEnabled'
+            Remove-RegVal 'HKCU\Software\Microsoft\GameBar' 'AllowAutoGameMode'
+            $detail = 'Game Mode back to the Windows default'
+        }
+        'gpupriority' {
+            $k = 'HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia\SystemProfile\Tasks\Games'
+            Set-Reg $k 'GPU Priority' 8
+            Set-Reg $k 'Priority' 2
+            Set-Reg $k 'Scheduling Category' 'Medium' 'String'
+            Set-Reg $k 'SFIO Priority' 'Normal' 'String'
+            $detail = 'MMCSS Games task back to the documented defaults'
+        }
+        'fullscreenopt' {
+            foreach ($v in 'GameDVR_DXGIHonorFSEWindowsCompatible', 'GameDVR_FSEBehavior', 'GameDVR_FSEBehaviorMode',
+                           'GameDVR_HonorUserFSEBehaviorMode', 'GameDVR_EFSEFeatureFlags') {
+                Remove-RegVal 'HKCU\System\GameConfigStore' $v
+            }
+            $detail = 'fullscreen optimizations restored'
+        }
+        'coreparking' {
+            # Delete BOTH explicit per-scheme overrides so the scheme INHERITS its defaults
+            # again - never write a guessed literal. Inherited vs explicit is the difference
+            # between a real undo and a hard-coded copy of somebody's default.
+            $sub = '54533251-82be-4824-96c1-47b60b740d00'
+            $c = 0
+            if (Clear-PowerAcIndex $sub '0cc5b647-c1df-4637-891a-dec35c318583') { $c++ }
+            if (Clear-PowerAcIndex $sub 'ea062031-0e34-4ff1-9b6d-eb1059334028') { $c++ }
+            Commit-PowerScheme
+            $detail = $(if ($c) { "core parking override(s) removed ($c) - the power scheme inherits its default again" }
+                        else { 'no explicit core parking override was present - nothing to remove' })
+        }
+        'gamepower' {
+            $sub = '54533251-82be-4824-96c1-47b60b740d00'
+            $c = 0
+            foreach ($s in '36687f9e-e3a5-4dbf-b1dc-15eb381c6863', 'be337238-0d82-4146-a960-4f3749d470c7',
+                           '619b7505-003b-4e82-b7a6-4dd29c300971', '893dee8e-2bef-41e0-89c6-b55d0929964c',
+                           '93b8b6dc-0698-4d1c-9ee4-0644e900c85d', 'bae08b81-2d5e-4688-ad6a-13243356654b') {
+                if (Clear-PowerAcIndex $sub $s) { $c++ }
+            }
+            if (Clear-PowerAcIndex '501a4d13-42af-4429-9fd1-a8218c268e20' 'ee12f906-d277-404b-b6da-e5fa1a576df5') { $c++ }
+            if (Clear-PowerAcIndex '2a737441-1930-4402-8d77-b2bebba308a3' '48e6b7a6-50f5-4782-a5d4-53bb8f07e226') { $c++ }
+            Commit-PowerScheme
+            $detail = "$c power override(s) removed - the scheme inherits its defaults again"
+        }
+        'gamescheduler' {
+            Set-Reg 'HKLM\SYSTEM\CurrentControlSet\Control\PriorityControl' 'Win32PrioritySeparation' 2
+            Remove-RegVal 'HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Memory Management' 'DisablePagingExecutive'
+            $detail = 'foreground boost and paging back to Windows defaults'
+        }
+        'gamebaroff' {
+            Remove-RegVal 'HKCU\Software\Microsoft\GameBar' 'UseNexusForGameBarEnabled'
+            $detail = 'Game Bar overlay restored'
+        }
+        'inputqueue' {
+            Remove-RegVal 'HKLM\SYSTEM\CurrentControlSet\Services\mouclass\Parameters' 'MouseDataQueueSize'
+            Remove-RegVal 'HKLM\SYSTEM\CurrentControlSet\Services\kbdclass\Parameters' 'KeyboardDataQueueSize'
+            $detail = 'input queue sizes back to the Windows default (100)'
+        }
+        'gamenet' {
+            & "$env:SystemRoot\System32\netsh.exe" int tcp set global rsc=enabled 2>&1 | Out-Null
+            Remove-RegVal 'HKLM\SOFTWARE\Policies\Microsoft\Windows NT\DNSClient' 'EnableMulticast'
+            $detail = 'RSC re-enabled and LLMNR policy removed (Windows defaults)'
+        }
+        'nvidia' {
+            # Genuinely delete the settings from the profile so the driver default returns -
+            # the binding GameOpt omitted (NvAPI_DRS_DeleteProfileSetting). "not found" for a
+            # setting that was never explicit is success, not failure.
+            if (-not (Initialize-NvApi)) {
+                Write-Status $app.id 'Skipped' 'NVAPI unavailable - nothing to revert'
+                return
+            }
+            [void][GoNvApi]::DeleteSetting(0x0005F543)
+            [void][GoNvApi]::DeleteSetting(0x007BA09E)
+            $detail = 'NVIDIA low-latency and prerender settings removed - back to the driver default'
+        }
+        'hags' {
+            Remove-RegVal 'HKLM\SYSTEM\CurrentControlSet\Control\GraphicsDrivers' 'HwSchMode'
+            $detail = 'GPU scheduling back to the driver default - reboot to apply'
+        }
+        'gamenic' {
+            # Reset to the DRIVER default (not necessarily the previous value - no journal).
+            $keywords = @('*InterruptModeration', '*EEE', '*FlowControl', 'EnableGreenEthernet', 'PowerSavingMode', 'GigaLite')
+            $script:NicPropCache = @{}
+            $n = 0
+            foreach ($a in @(Get-NetAdapter -Physical -ErrorAction SilentlyContinue | Where-Object { $_.Status -eq 'Up' })) {
+                foreach ($kw in $keywords) {
+                    try { if (Reset-NicAdvProp $a.Name $kw) { $n++ } } catch {}
+                }
+            }
+            $detail = "$n adapter setting(s) reset to the driver default (not necessarily the previous value) - link briefly dropped"
+        }
+        'interrupts' {
+            $done = 0
+            $targets = @()
+            try { $targets += @(Get-CimInstance Win32_VideoController -ErrorAction Stop | Where-Object { $_.PNPDeviceID -like 'PCI\*' } | ForEach-Object { $_.PNPDeviceID }) } catch {}
+            try { $targets += @(Get-NetAdapter -Physical -ErrorAction Stop | Where-Object { $_.PnpDeviceID -like 'PCI\*' } | ForEach-Object { $_.PnpDeviceID }) } catch {}
+            foreach ($pnp in ($targets | Select-Object -Unique)) {
+                $k = Get-InterruptKey $pnp
+                Remove-RegVal "$k\MessageSignaledInterruptProperties" 'MSISupported'
+                Remove-RegVal "$k\Affinity Policy" 'DevicePriority'
+                # remove the Affinity Policy key if we left it empty (it usually did not exist)
+                $ap = Resolve-Reg "$k\Affinity Policy"
+                if ((Test-Path -LiteralPath $ap) -and -not (Get-ChildItem -LiteralPath $ap -ErrorAction SilentlyContinue) -and
+                    -not @(Get-Item -LiteralPath $ap).Property.Count) { Remove-Item -LiteralPath $ap -Force -ErrorAction SilentlyContinue }
+                $done++
+            }
+            $detail = "interrupt settings removed on $done device(s) - reboot to apply"
+        }
+        'memintegrity' {
+            Remove-RegVal 'HKLM\SYSTEM\CurrentControlSet\Control\DeviceGuard\Scenarios\HypervisorEnforcedCodeIntegrity' 'Enabled'
+            Remove-RegVal 'HKLM\SYSTEM\CurrentControlSet\Control\DeviceGuard' 'EnableVirtualizationBasedSecurity'
+            $detail = 'Memory Integrity / VBS policy removed - Windows default (on where supported) restored; reboot to apply'
         }
 
         default { Write-Status $app.id 'Failed' "unknown tweak id '$id'"; return }
@@ -7269,6 +11566,8 @@ function Undo-Tweak($app) {
 
 $offset = 0
 $finished = $false
+# per-id outcomes, for entries that name the steps they depend on (`after`)
+$script:FailedIds = @{}
 while (-not $finished) {
     $lines = @(Get-Content -LiteralPath $QueueFile -ErrorAction SilentlyContinue)
     if ($lines.Count -le $offset) {
@@ -7284,6 +11583,39 @@ while (-not $finished) {
             Write-Status $app.id 'Cancelled' ''
             continue
         }
+        # The same check, one entry finer. Re-read every time rather than cached: the GUI
+        # appends to it long after this process started, which is the whole point of a file.
+        if ($SkipFile -and $app.id -and $app.action -ne 'wipe' -and
+            @(Get-Content -LiteralPath $SkipFile -ErrorAction SilentlyContinue) -contains ([string]$app.id)) {
+            Write-Status $app.id 'Removed' 'pulled out of the batch before it started'
+            continue
+        }
+        # A CHAIN is an ordered sequence where each step assumes the one before it worked:
+        # "create the local account, copy the data into it, then disable the old account".
+        # Every entry used to run regardless, and the failure that mattered was the first one -
+        # if the account could not be created, the copy had nowhere to go and the third step
+        # STILL DISABLED the account being replaced. That leaves a client signed out of the
+        # account they had, with no replacement and none of their data copied.
+        # Test-AccountActionSafe only catches this when the old account is the LAST enabled
+        # administrator, which on any machine with a second admin it is not.
+        if ($app.chain -and $script:ChainFailed) {
+            Write-Status $app.id 'Skipped' 'an earlier step in this sequence failed, so this was not run'
+            continue
+        }
+        # Finer than `chain`: skip only when one of the NAMED steps failed. A dependency
+        # sequence's reinstall must survive a failed BASE install (chain would kill it, and
+        # restoring the add-on is the whole point) yet die with a failed REMOVAL (installing
+        # on top of the copy that would not leave is what the sequence exists to avoid).
+        # One bit cannot say both; ids can.
+        $skipAfter = $false
+        foreach ($aid in @($app.after)) {
+            if ($aid -and $script:FailedIds[[string]$aid]) { $skipAfter = $true; break }
+        }
+        if ($skipAfter) {
+            Write-Status $app.id 'Skipped' 'an earlier step in this sequence failed, so this was not run'
+            continue
+        }
+        $script:StepFailed = $false
         try {
             switch ($app.action) {
                 'uninstall' { Uninstall-One $app }
@@ -7292,7 +11624,15 @@ while (-not $finished) {
                     # per-user tweaks must land in the technician's hive, not the
                     # elevating admin's - the GUI ships its SID with every entry
                     if ($app.userSid) { $script:UserSid = [string]$app.userSid }
-                    Apply-Tweak $app
+                    # The restore point is the undo button for the whole batch and the
+                    # confirm dialog promises it is created FIRST - so if it failed,
+                    # nothing after it may run. Only the restore point gates: any other
+                    # row failing is its own problem, not the batch's.
+                    if ($script:TweakChainFailed) {
+                        Write-Status $app.id 'Skipped' 'the restore point could not be created, so this was not run'
+                    } else {
+                        Apply-Tweak $app
+                    }
                 }
                 'untweak'   {
                     if ($app.userSid) { $script:UserSid = [string]$app.userSid }
@@ -7312,9 +11652,29 @@ while (-not $finished) {
                 'setpassword'   { Set-AccountPassword $app }
                 'toggleacct'    { Set-AccountEnabled $app }
                 'deleteaccount' { Remove-Account $app }
-                default     { Install-One $app }
+                default     {
+                    # finally, not just the exits inside Install-One.
+                    #
+                    # $script:UnpackedDir and $script:MountedIso are module state that says
+                    # "THIS app's package is open". Install-One clears them on every path it
+                    # returns from - but not when it THROWS, and Start-Process throws on its own
+                    # for an entry that cannot be launched. The state then survived into the next
+                    # app, and a post-install step saying `from` - documented as "a file out of
+                    # MY package" - silently resolved against the PREVIOUS app's package and
+                    # reported success. Measured: a bare .exe with no package of its own copied a
+                    # file out of the package before it and reported "1 post-install step
+                    # completed". A left-behind mount also holds the .iso open and costs a drive
+                    # letter for every app installed that way.
+                    try { Install-One $app } finally { Remove-Unpacked }
+                }
             }
         } catch { Write-Status $app.id 'Failed' $_.Exception.Message }
+        if ($app.chain -and $script:StepFailed) { $script:ChainFailed = $true }
+        if ($script:StepFailed -and $app.id) { $script:FailedIds[[string]$app.id] = $true }
+        # set AFTER the catch, because Checkpoint-Computer failing arrives here as a throw
+        if ($app.action -eq 'tweak' -and "$($app.tweak)" -eq 'restorepoint' -and $script:StepFailed) {
+            $script:TweakChainFailed = $true
+        }
     }
     $offset = $lines.Count
 }
@@ -7332,6 +11692,8 @@ $script:Busy = $false
 $script:HadFailures = $false
 $script:SpeedPrev = $null
 $script:SpeedTxt = ''
+# how much longer, not how long it has been going - see Format-Eta
+$script:EtaTxt = ''
 $script:WorkerStarted = $false
 $script:EndQueued = $false
 $script:Paused = $false
@@ -7356,15 +11718,64 @@ function Start-Worker {
     # launch the single elevated worker the moment the first file is ready;
     # it then consumes the streaming queue while the GUI keeps downloading
     if ($script:WorkerStarted) { return $true }
-    # single source of truth: the preference table defined in the GUI is injected into the
-    # worker's own code, so the elevated side never takes registry paths off the queue
-    Set-Content -Path $script:WorkerPath -Value ($workerScript.Replace('#__PREFTABLE__', $script:PrefTableSource)) -Encoding UTF8
+    # A copy left by an earlier run may have been tampered with, or carry a DACL this session
+    # did not set. Start from nothing rather than overwriting whatever is there.
+    Remove-Item -LiteralPath $script:WorkerPath -Force -ErrorAction SilentlyContinue
+    # single source of truth: the preference table AND the NVAPI class source defined in the
+    # GUI are injected into the worker's own code, so the elevated side never takes registry
+    # paths off the queue and the two processes share one copy of the NVAPI binding. The
+    # NVAPI source is injected as a here-string ASSIGNMENT ($NvApiSrc = @'...'@) built here -
+    # it only exists after substitution, so it is never nested inside the worker here-string.
+    $nvAssign = "`$NvApiSrc = @'" + [Environment]::NewLine + $script:NvApiSource + [Environment]::NewLine + "'@"
+    $built = $workerScript.Replace('#__PREFTABLE__', $script:PrefTableSource).Replace('#__NVAPISOURCE__', $nvAssign)
+    Set-Content -Path $script:WorkerPath -Value $built -Encoding UTF8
     Remove-Item -LiteralPath $script:StatusPath, $script:CancelPath -ErrorAction SilentlyContinue
     $script:StatusOffset = 0
     try {
         $psExe = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
-        $psArgs = "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$script:WorkerPath`" -QueueFile `"$script:QueuePath`" -StatusFile `"$script:StatusPath`" -CancelFile `"$script:CancelPath`""
-        Start-Process -FilePath $psExe -Verb RunAs -WindowStyle Hidden -ArgumentList $psArgs | Out-Null
+
+        # ---- the worker is written to a folder this user can write to, and then launched
+        # ELEVATED. Between those two moments anything running as this user can replace it, and
+        # on a machine where the technician is a STANDARD user - so the UAC prompt is answered
+        # with somebody else's administrator credentials - that gap is a privilege boundary: the
+        # standard user would be choosing the code an administrator's token then executes.
+        #
+        # Closed by hashing the file here, immediately after writing it, and checking that hash
+        # on the elevated side before the file is run. The check cannot live INSIDE worker.ps1 -
+        # a swapped file would simply not perform it - so it travels on the COMMAND LINE, which
+        # is fixed when the process is created and cannot be edited afterwards. An ACL would not
+        # do instead: the file's owner keeps WRITE_DAC and can always hand write access back to
+        # itself.
+        #
+        # A stub, not the worker itself: -EncodedCommand has a 32 KB command line to work with
+        # and the worker is 130 KB, nowhere near fitting. The stub is a few hundred bytes.
+        #
+        # Someone who can also rewrite AppDeploy.ps1 is out of scope on purpose - go.ps1 pins
+        # its SHA-256 at the edge, and that pin is this tool's trust root.
+        $want = (Get-FileHash -LiteralPath $script:WorkerPath -Algorithm SHA256).Hash
+        # a path can legitimately contain an apostrophe (a username can), and it would end the
+        # string it is being pasted into
+        $lit = { param($s) "'" + ('' + $s).Replace("'", "''") + "'" }
+        $stub = @"
+`$ErrorActionPreference = 'Stop'
+`$w  = $(& $lit $script:WorkerPath)
+`$st = $(& $lit $script:StatusPath)
+try {
+    if ((Get-FileHash -LiteralPath `$w -Algorithm SHA256).Hash -ne '$want') {
+        Add-Content -LiteralPath `$st -Encoding UTF8 -Value '{"id":"_batch","state":"Complete","detail":"the installer worker was modified on disk after it was written, so it was NOT run - nothing has been installed or changed"}'
+        exit 9
+    }
+    & `$w -QueueFile $(& $lit $script:QueuePath) -StatusFile `$st ``
+          -CancelFile $(& $lit $script:CancelPath) -SkipFile $(& $lit $script:SkipPath)
+} catch {
+    # this window is hidden, so an unreported throw here is a batch that simply never moves
+    Add-Content -LiteralPath `$st -Encoding UTF8 -Value ('{"id":"_batch","state":"Complete","detail":' + (ConvertTo-Json ("the elevated worker could not start - " + `$_.Exception.Message)) + '}')
+    exit 9
+}
+"@
+        $enc = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($stub))
+        Start-Process -FilePath $psExe -Verb RunAs -WindowStyle Hidden `
+                      -ArgumentList "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -EncodedCommand $enc" | Out-Null
         $script:WorkerStarted = $true
         # no prompt at all when the GUI itself already holds the elevated token - saying
         # "one UAC prompt" there would be describing something that did not happen
@@ -7380,7 +11791,49 @@ function Start-Worker {
     }
 }
 
+# Every download gets its own folder, named for the app.
+#
+# The cache used to be flat, keyed on the installer's FILENAME - and vendors overwhelmingly call
+# theirs the same thing. In the live catalogue nine of nineteen applications download a file
+# called "Setup.exe": AutoCAD, Revit, Civil 3D, 3ds Max, Navisworks, Electrical, Photoshop,
+# Illustrator and InDesign. Every one of them resolved to the same path.
+#
+# Two of those in one batch was silent corruption. The queue entry for the first names
+# ...\Setup.exe; the second then downloads over that exact path while the elevated worker may be
+# hashing or launching it. The gentle outcome is a spurious "SHA-256 mismatch" on an app that
+# downloaded perfectly. The bad one is a swap landing between the worker's Get-FileHash and its
+# Start-Process, so a verified hash belongs to one installer and the bytes that run belong to
+# another. The .part file and the .parts resume journal collided the same way, so a resumed
+# download could interleave two different products' bytes.
+#
+# A per-app folder settles all of it and keeps the vendor's own filename intact, which matters -
+# some installers read their own name to decide how to behave.
+function Get-AppCacheDir([string]$Id) {
+    # ids come from the catalogue, so they are tame, but this path is about to be created and
+    # deleted recursively and it must never be talked into leaving the cache folder
+    $safe = ($Id -replace '[^A-Za-z0-9._-]', '_')
+    if (-not $safe) { $safe = 'unknown' }
+    $dir = Join-Path (Join-Path $script:CacheDir 'files') $safe
+    if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Force -Path $dir | Out-Null }
+    return $dir
+}
+
+function Get-AppCachePath([object]$Item) {
+    return (Join-Path (Get-AppCacheDir ([string]$Item.Id)) ([string]$Item.FileName))
+}
+
 function Enqueue-Install([object]$Item) {
+    # Dependency guard, synchronous. The tick-side Sync-DepGuards normally pulls a doomed
+    # reinstall out of the batch, but a package already in the cache can reach here in the
+    # very tick its remove-first step reports Failed - Read-WorkerStatus runs just before the
+    # pump, so the status is fresh and this is the last gate before the worker owns the entry.
+    $unRow = @($script:Pending | Where-Object { $_.BatchAction -eq 'uninstall' -and
+                                                $_.DepAddonId -eq $Item.Id }) | Select-Object -First 1
+    if ($unRow -and ('' + $unRow.Status) -like 'Failed*') {
+        Set-Status $Item 'Skipped: the old copy could not be removed first' 'warn'
+        Set-Ring $Item 'warn'
+        return
+    }
     # hand a finished download to the elevated worker immediately
     if (-not (Start-Worker)) {
         Abort-Batch 'elevation declined'
@@ -7393,15 +11846,42 @@ function Enqueue-Install([object]$Item) {
     $steps = @()
     foreach ($st in @($Item.PostInstall)) {
         if (-not $st) { continue }
+        # EVERY field the worker reads has to be listed here. This hashtable is the only thing
+        # that crosses into the elevated side, so a field missing from it does not arrive - and
+        # the failure is baffling, because the step still has its NAME. A `powershell` step whose
+        # name was "PowerShell: irm https://..." logged that name and then said "no command
+        # given", because `command` was never copied: the step type was added after this list was
+        # written and nobody came back to it. `folder` and `waitMs` were missing the same way.
+        #
+        # Test-Push.ps1 now compares this list against every $step.<field> the worker reads and
+        # fails if one is absent, so the next step type cannot repeat it.
         $step = @{ type = [string]$st.type; name = [string]$st.name; args = [string]$st.args
                    sha256 = ('' + $st.sha256).ToUpper(); dest = [string]$st.dest; from = [string]$st.from
                    path = [string]$st.path; value = [string]$st.value; valueType = [string]$st.valueType
-                   action = [string]$st.action; timeoutSec = [int]$st.timeoutSec }
+                   action = [string]$st.action; timeoutSec = [int]$st.timeoutSec
+                   command = [string]$st.command; folder = [string]$st.folder
+                   waitMs = [int]$st.waitMs }
         if ($st.url) {
-            $fn = [IO.Path]::GetFileName(([Uri][string]$st.url).LocalPath)
+            # The [Uri] cast THROWS on anything that is not a url, and this runs inside the
+            # batch pump - where a throw closed the window. A typo in one catalogue entry's
+            # postInstall block should cost that step, not the tool.
+            $fn = ''
+            try { $fn = [IO.Path]::GetFileName(([Uri][string]$st.url).LocalPath) } catch { $fn = '' }
             if (-not $fn) { $fn = "post-$([Guid]::NewGuid().ToString('N').Substring(0,8))" }
-            $local = Join-Path $script:CacheDir $fn
-            if (-not (Test-Path -LiteralPath $local)) {
+            $local = Join-Path (Get-AppCacheDir ([string]$Item.Id)) $fn
+            # A file already here is only the RIGHT file if its hash says so. The cache folder
+            # is writable by anything running as this user, and reusing whatever happens to
+            # carry the expected name meant a planted file could be handed to the elevated
+            # worker - for a 'copy' step, which had no hash of its own to catch it. Reuse now
+            # has to be earned: matching hash, or fetch it again.
+            $reuse = $false
+            if (Test-Path -LiteralPath $local) {
+                if ($step.sha256) {
+                    try { $reuse = ((Get-FileHash -LiteralPath $local -Algorithm SHA256).Hash.ToUpper() -eq $step.sha256) } catch { $reuse = $false }
+                }
+                if (-not $reuse) { try { Remove-Item -LiteralPath $local -Force -ErrorAction Stop } catch { } }
+            }
+            if (-not $reuse) {
                 try {
                     Add-Log "$($Item.Name): fetching post-install file $fn"
                     Invoke-WebRequest -Uri ([string]$st.url) -OutFile $local -UseBasicParsing -TimeoutSec 60
@@ -7432,10 +11912,19 @@ function Enqueue-Install([object]$Item) {
         }
     }
 
+    # userSid for the same reason the tweaks carry it: the elevated worker may be a different
+    # account, so it cannot ask its own environment which profile is the technician's. Here it
+    # decides where the before/after directory snapshot looks for a per-user install.
+    $sid = ''
+    try { $sid = ([Security.Principal.WindowsIdentity]::GetCurrent()).User.Value } catch {}
     $entry = @{
-        id = $Item.Id; action = 'install'; file = (Join-Path $script:CacheDir $Item.FileName)
+        id = $Item.Id; action = 'install'; file = (Get-AppCachePath $Item)
         sha256 = $Item.Sha256; silentArgs = $Item.SilentArgs; verifyPaths = @($Item.VerifyPaths)
-        entry = $Item.Entry; postInstall = $steps
+        entry = $Item.Entry; postInstall = $steps; userSid = $sid
+        # the worker's own sequencing flags: `chain` on a base install whose way was cleared
+        # by a remove-first step; `after` on a reinstall, naming the removal it depends on
+        chain = [bool]$Item.Chain
+        after = @(@($Item.After) | Where-Object { $_ })
     } | ConvertTo-Json -Compress -Depth 6
     Add-Content -Path $script:QueuePath -Value $entry -Encoding UTF8
     Set-Status $Item 'Queued for install' 'ready'
@@ -7443,10 +11932,50 @@ function Enqueue-Install([object]$Item) {
     Set-Ring $Item 'download'
 }
 
+# Dependency sequencing, watched from the GUI side. The worker's chain flag handles "the
+# removal failed, so skip the base install" on its own; these are the two outcomes only this
+# side can see. Idempotent and derived from Pending every tick - no state to reset.
+#   - the remove-first step FAILED: the old add-on is still there, so its reinstall must not
+#     run on top of it. skip.txt is re-read by the worker before every entry.
+#   - the BASE's download failed while the remove-first entry was never consumed (the worker
+#     only starts on the first finished download): nothing on the machine has changed, and
+#     both the removal and the reinstall must come out of the queue saying exactly that.
+function Sync-DepGuards {
+    foreach ($un in @($script:Pending | Where-Object { $_.BatchAction -eq 'uninstall' })) {
+        $addon = $null
+        if ($un.DepAddonId) { $addon = @($script:Pending | Where-Object { $_.Id -eq $un.DepAddonId }) | Select-Object -First 1 }
+        $base = $null
+        if ($un.DepBaseId) { $base = @($script:Pending | Where-Object { $_.Id -eq $un.DepBaseId }) | Select-Object -First 1 }
+        $st = '' + $un.Status
+        if ($st -like 'Failed*') {
+            if ($addon -and ('' + $addon.Status) -notmatch '^(Skipped|Failed|Installed|Removed)') {
+                try { Add-Content -Path $script:SkipPath -Value ([string]$un.DepAddonId) -Encoding UTF8 } catch { }
+                Set-Status $addon 'Skipped: the old copy could not be removed first' 'warn'
+                Set-Ring $addon 'warn'
+            }
+            continue
+        }
+        if ($base -and ('' + $base.Status) -like 'Failed*' -and $st -like 'Queued*') {
+            try {
+                Add-Content -Path $script:SkipPath -Value ([string]$un.Id) -Encoding UTF8
+                if ($un.DepAddonId) { Add-Content -Path $script:SkipPath -Value ([string]$un.DepAddonId) -Encoding UTF8 }
+            } catch { }
+            Set-Status $un "Skipped: $($base.Name) was not installed, so nothing was changed" 'warn'
+            Set-Ring $un 'warn'
+            if ($addon -and ('' + $addon.Status) -notmatch '^(Skipped|Failed|Installed|Removed)') {
+                Set-Status $addon "Skipped: $($base.Name) was not installed, so nothing was changed" 'warn'
+                Set-Ring $addon 'warn'
+            }
+        }
+    }
+}
+
 function Abort-Batch([string]$Reason) {
     if ($script:CurJob) { Remove-BitsTransfer -BitsJob $script:CurJob -ErrorAction SilentlyContinue; $script:CurJob = $null }
     foreach ($p in $script:Pending) {
-        if ($p.Status -notlike 'Installed*' -and $p.Status -notlike 'Failed*') { Set-Status $p "Failed: $Reason" 'fail'; Set-Ring $p 'fail' }
+        # a row the technician pulled out did not fail - it was never going to run
+        if ($p.Status -notlike 'Installed*' -and $p.Status -notlike 'Failed*' -and
+            $p.Status -notlike 'Remov*') { Set-Status $p "Failed: $Reason" 'fail'; Set-Ring $p 'fail' }
     }
     $script:HadFailures = $true
     Finish-Batch
@@ -7458,7 +11987,13 @@ function Read-WorkerStatus {
     for ($i = $script:StatusOffset; $i -lt $lines.Count; $i++) {
         $s = $null
         try { $s = $lines[$i] | ConvertFrom-Json } catch { continue }
-        if ($s.id -eq '_batch') { $script:StatusOffset = $lines.Count; Finish-Batch; return }
+        if ($s.id -eq '_batch') {
+            # The end marker normally carries nothing. When it does, the worker is explaining
+            # why it stopped early - a failed self-check, a launch that threw - and dropping
+            # that left the batch ending with no reason given for having done nothing at all.
+            if ($s.detail) { Add-Log "Elevated worker: $($s.detail)" }
+            $script:StatusOffset = $lines.Count; Finish-Batch; return
+        }
         $item = $script:Pending | Where-Object { $_.Id -eq $s.id } | Select-Object -First 1
         if ($item) {
             # the worker's verdict that this failure left files behind - it is what puts the
@@ -7469,10 +12004,27 @@ function Read-WorkerStatus {
                 Add-Log "$($item.Name) installed into: $(@($s.created) -join ', ')"
             }
             $txt = $s.state; if ($s.detail) { $txt += ": $($s.detail)" }
+            # Numbers, when the action reports them. Absent on nearly every action, so each is
+            # tested for PRESENCE rather than truthiness - 0 percent and 0 bytes are real
+            # readings a copy legitimately starts at.
+            if ($null -ne $s.pct) {
+                $item.Progress = [double]$s.pct       # this recomputes the ring arc by itself
+                $item.ProgressVis = 'Visible'
+                $item.RingTrackVis = 'Visible'
+            }
+            if ($null -ne $s.bytes -and $null -ne $s.total -and [long]$s.total -gt 0) {
+                $txt += "  -  $(Format-Size ([long]$s.bytes)) of $(Format-Size ([long]$s.total))"
+                if ($null -ne $s.rate -and [long]$s.rate -gt 0) {
+                    $txt += "  at $(Format-Size ([long]$s.rate))/s"
+                    $eta = Format-Eta ([long]$s.total - [long]$s.bytes) ([double]$s.rate)
+                    if ($eta) { $txt += "  -  $eta" }
+                }
+            }
+            if ($null -ne $s.pct) { Update-Overall ([int]$s.pct) }
             $kind = 'active'; $ring = 'busy'
             if ($s.state -in 'Installed', 'Uninstalled', 'Cleaned', 'Applied', 'Reverted') { $kind = 'ok'; $ring = 'ok' }
             elseif ($s.state -eq 'Failed') { $kind = 'fail'; $ring = 'fail' }
-            elseif ($s.state -in 'Cancelled', 'Skipped') { $kind = 'warn'; $ring = 'warn' }
+            elseif ($s.state -in 'Cancelled', 'Skipped', 'Removed') { $kind = 'warn'; $ring = 'warn' }
             # Wiping the debris of a failed install does not make the install a success.
             # Without this the row would go green on 'Cleaned' and the batch would count it
             # as done - the one outcome a technician must never be told.
@@ -7500,7 +12052,7 @@ function Read-WorkerStatus {
     # failed dirty - a clean run must not make the technician sit through a leftover sweep.
     if ($script:AwaitingScan) {
         $busy = @($script:Pending | Where-Object {
-            $_.Status -notmatch '^(Installed|Uninstalled|Cleaned|Applied|Reverted|Failed|Cancelled|Skipped)' })
+            $_.Status -notmatch '^(Installed|Uninstalled|Cleaned|Applied|Reverted|Failed|Cancelled|Skipped|Removed)' })
         if ($busy.Count -eq 0) {
             $script:AwaitingScan = $false
             # A cancel or an abort already released the worker, and the wipe needs it alive.
@@ -7516,50 +12068,157 @@ function Read-WorkerStatus {
 }
 
 function Start-LeftoverScan {
+    if ($script:ScanJob) { return }     # one scan at a time; the tick is already watching it
     $TxtNow.Text = 'Scanning for leftover files, folders and registry keys...'
     $DotNow.Fill = '#FF4C8DFF'
-    Update-UI
-    $ListWipe.ItemsSource = $null       # detach: the scan pumps the dispatcher as it runs
+    $ListWipe.ItemsSource = $null       # detached while the background scan fills the findings
     $script:WipeFindings.Clear()
-    # what got removed, plus what failed to install and left a mess behind
-    $targets = @($script:Pending | Where-Object { $_.Status -like 'Uninstalled*' -or $_.Dirty })
-    $dirtyScan = @($targets | Where-Object { $_.Dirty }).Count -gt 0
-    $i = 0
+    # What got removed, plus what failed to install and left a mess behind. A remove-first
+    # step is deliberately NOT a target: its %AppData% config and licence state are exactly
+    # what the reinstall behind it must inherit, and a review pause here would turn the
+    # sequence's "one approval" into two. Deep clean lives where it always did - the
+    # Uninstall tab.
+    $targets = @($script:Pending | Where-Object {
+        ($_.Status -like 'Uninstalled*' -or $_.Dirty) -and $_.BatchAction -ne 'uninstall' })
+    # a failed install must come OUT of the scan reading exactly as it went in - red, with its
+    # reason - so what each row said is kept here and restored in Complete-LeftoverScan
+    $was = @{}
     foreach ($p in $targets) {
-        $i++
-        $wasStatus = $p.Status; $wasFg = $p.StatusFg
-        $script:ScanLabel = "Scanning $($p.Name)  ($i of $($targets.Count))"
+        $was[[string]$p.Id] = @{ Status = ('' + $p.Status); Fg = ('' + $p.StatusFg) }
         Set-Status $p 'Scanning for leftovers' 'active'
         Set-Ring $p 'busy'
-        Update-UI
-        foreach ($f in @(Scan-Leftovers $p (-not $p.PreExisting))) { $script:WipeFindings.Add($f) }
+    }
+    # Everything the scan needs crosses in one synchronized hashtable. The runspace writes
+    # Label/Stage/Found/Done; the GUI reads them from the timer tick and writes only Cancel.
+    $ctl = [hashtable]::Synchronized(@{
+        Label = 'Scanning...'; Stage = ''; Done = $false; Cancel = $false; Error = ''
+        Found = [Collections.ArrayList]::Synchronized((New-Object Collections.ArrayList))
+        Targets = $targets
+        # captured NOW: Complete-LeftoverScan needs them after the batch state may have moved on
+        Dirty = (@($targets | Where-Object { $_.Dirty }).Count -gt 0)
+        Held  = -not @($targets | Where-Object { -not $_.PreExisting }).Count
+        Was   = $was
+    })
+    # The functions the walk calls, carried over as source text - a runspace starts empty.
+    # WipeItem itself needs nothing: Add-Type assemblies are process-wide.
+    $defs = (@('Scan-Leftovers', 'Get-FolderSize', 'Test-ProtectedPath', 'ConvertTo-PSRegPath', 'Format-Size') |
+             ForEach-Object { (Get-Item "function:$_").ScriptBlock.Ast.Extent.Text }) -join "`n"
+    $work = {
+        param($In)
+        $script:ProtectedPaths = $In.Protected
+        $script:SharedComponentHints = $In.Shared
+        . ([scriptblock]::Create($In.Defs))
+        $ctl = $In.Ctl
+        $stage = { param($what) $ctl.Stage = '' + $what }
+        $i = 0
+        foreach ($t in $ctl.Targets) {
+            $i++
+            if ($ctl.Cancel) { break }
+            $ctl.Label = "Scanning $($t.Name)  ($i of $(@($ctl.Targets).Count))"
+            try {
+                foreach ($f in @(Scan-Leftovers $t (-not $t.PreExisting) $stage $ctl)) { [void]$ctl.Found.Add($f) }
+            } catch { $ctl.Error = '' + $_.Exception.Message }
+        }
+        $ctl.Done = $true
+    }
+    try {
+        $rs = [runspacefactory]::CreateRunspace([initialsessionstate]::CreateDefault())
+        $rs.Open()
+        $ps = [powershell]::Create()
+        $ps.Runspace = $rs
+        [void]$ps.AddScript($work).AddArgument(@{
+            Ctl = $ctl; Defs = $defs
+            Protected = $script:ProtectedPaths; Shared = $script:SharedComponentHints })
+        $script:ScanCtl = $ctl
+        $script:ScanJob = @{ ps = $ps; rs = $rs; handle = $ps.BeginInvoke() }
+    } catch {
+        # Fall back to the old synchronous walk rather than skipping the scan: slower and it
+        # holds the window, but the preview still appears and nothing is silently missed.
+        Add-Log "Background scan could not start ($($_.Exception.Message)) - scanning on the window thread instead."
+        $i = 0
+        foreach ($p in $targets) {
+            $i++
+            $script:ScanLabel = "Scanning $($p.Name)  ($i of $($targets.Count))"
+            Update-UI
+            foreach ($f in @(Scan-Leftovers $p (-not $p.PreExisting))) { [void]$ctl.Found.Add($f) }
+        }
+        $ctl.Done = $true
+        $script:ScanCtl = $ctl
+        Complete-LeftoverScan
+    }
+}
+
+# Polled from the timer tick while a scan job exists: progress while it runs, the hand-off to
+# Complete-LeftoverScan the moment it reports done.
+function Update-LeftoverScan {
+    $ctl = $script:ScanCtl
+    if (-not $ctl) { $script:ScanJob = $null; return }
+    if (-not $ctl.Done) {
+        $TxtNow.Text = "$($ctl.Label)$(if ($ctl.Stage) { "  -  $($ctl.Stage)" })"
+        $DotNow.Fill = '#FF4C8DFF'
+        return
+    }
+    $job = $script:ScanJob
+    $script:ScanJob = $null
+    if ($job -and $job.ps) {
+        try { [void]$job.ps.EndInvoke($job.handle) } catch { Add-Log "Leftover scan error: $($_.Exception.Message)" }
+        try { $job.ps.Dispose(); $job.rs.Close(); $job.rs.Dispose() } catch { }
+    }
+    Complete-LeftoverScan
+}
+
+# The second half of what used to be Start-LeftoverScan: settle the rows, decide what the
+# preview says, and show it. Runs on the dispatcher thread, after the walk has finished.
+function Complete-LeftoverScan {
+    $ctl = $script:ScanCtl
+    $script:ScanCtl = $null
+    if (-not $ctl) { return }
+    if ($ctl.Error) { Add-Log "Leftover scan reported: $($ctl.Error)" }
+    foreach ($f in @($ctl.Found)) { $script:WipeFindings.Add($f) }
+    $targets = @($ctl.Targets)
+    $dirtyScan = [bool]$ctl.Dirty
+    foreach ($p in $targets) {
         if ($p.Dirty) {
             # a failed install stays failed and stays red: it is only its debris being scanned
-            $p.Status = $wasStatus; $p.StatusFg = $wasFg
+            $saved = $ctl.Was[[string]$p.Id]
+            if ($saved) { $p.Status = $saved.Status; $p.StatusFg = $saved.Fg }
             Set-Ring $p 'fail'
         } else {
             Set-Status $p 'Uninstalled' 'ok'
             Set-Ring $p 'ok'
         }
     }
+    $cut = [bool]$ctl.Cancel
+    if ($cut) { Add-Log 'Leftover scan stopped early - the preview shows what was found up to that point.' }
     $ListWipe.ItemsSource = $script:WipeView
     if ($script:WipeFindings.Count -eq 0) {
-        Add-Log 'Leftover scan: nothing found - the machine is already clean.'
-        # force mode never queued work for the elevated worker, so nothing will report
-        # the batch complete on its own
-        if ($script:ForceMode) { Finish-Batch } else { Complete-Worker }
+        Add-Log $(if ($cut) { 'Leftover scan stopped before anything was found.' }
+                  else { 'Leftover scan: nothing found - the machine is already clean.' })
+        Set-ForceRemoveOutcome 'force remove found no traces to delete, and no uninstaller was run'
+        Release-Worker
         return
     }
-    $bytes = ($script:WipeFindings | Measure-Object -Property SizeBytes -Sum).Sum
+    # Name-only guesses on short tokens are graded weak in Scan-Leftovers: sorted last, hidden
+    # until asked for, and the toggle says how many there are. If NOTHING graded strong, show
+    # everything - an overlay standing in front of an empty list explains nothing.
+    $weak = @($script:WipeFindings | Where-Object { $_.Weak }).Count
+    $script:WipeShowWeak = ($weak -eq $script:WipeFindings.Count)
+    $BtnWipeWeak.Content = $(if ($script:WipeShowWeak) { "Hide $weak possible match(es)" } else { "Show $weak possible match(es)" })
+    $BtnWipeWeak.Visibility = $(if ($weak) { 'Visible' } else { 'Collapsed' })
+    try { $script:WipeView.Refresh() } catch { }
+    $shown = @($script:WipeFindings | Where-Object { $script:WipeShowWeak -or -not $_.Weak })
+    $bytes = ($shown | Measure-Object -Property SizeBytes -Sum).Sum
     $pre = @($script:WipeFindings | Where-Object { $_.Del }).Count
     # nothing pre-checked has two very different causes, and the technician has to be told
     # which one: no curated targets to offer, or curated targets that may not be rubbish
-    $held = $dirtyScan -and -not @($targets | Where-Object { -not $_.PreExisting }).Count
+    $held = $dirtyScan -and [bool]$ctl.Held
     $tail = $(if ($pre) { "$pre are known app data and already checked; the rest matched by name only - review before wiping." }
               elseif ($held) { 'Nothing is pre-checked: these products were already installed before this batch, so some of what is listed may belong to the copy that was working. Tick only what should go.' }
               else { 'Nothing is pre-checked - every item here matched by name only. Tick what should go.' })
-    $TxtWipeSub.Text = $(if ($dirtyScan) { "$($script:WipeFindings.Count) item(s) were left on disk by the failed install(s), totalling $(Format-Size $bytes). $tail" }
-                         else { "$($script:WipeFindings.Count) leftover item(s) survived the uninstaller, totalling $(Format-Size $bytes). $tail" })
+    if ($weak -and -not $script:WipeShowWeak) { $tail += " $weak name-only guess(es) are listed behind the Show button." }
+    if ($cut) { $tail += ' The scan was stopped early, so this list may be incomplete.' }
+    $TxtWipeSub.Text = $(if ($dirtyScan) { "$($shown.Count) item(s) were left on disk by the failed install(s), totalling $(Format-Size $bytes). $tail" }
+                         else { "$($shown.Count) leftover item(s) survived the uninstaller, totalling $(Format-Size $bytes). $tail" })
     Add-Log "Leftover scan: $($script:WipeFindings.Count) item(s) found ($(Format-Size $bytes))."
     $TxtNow.Text = "Leftovers found - awaiting review"
     $DotNow.Fill = '#FFFBBF24'
@@ -7579,8 +12238,45 @@ function Complete-Worker {
     }
 }
 
+# Let the elevated worker go, and make sure SOMETHING ends the batch.
+#
+# Force Remove got this wrong three ways over. It never queues an uninstall entry, and a
+# comment concluded from that it had never started a worker either - so its three exits
+# (nothing found, cleanup skipped, nothing ticked) called Finish-Batch directly. But
+# Start-Uninstall starts the worker BEFORE the force branch, because the wipe itself needs
+# it. The end marker was therefore never written, and an elevated PowerShell was left
+# polling a queue file for ever - no window, no console, nothing to notice. The next run
+# then has two workers on one queue, which is the collision the single-instance mutex
+# exists to prevent.
+#
+# Releasing it is enough: the worker reads the marker, exits, and reports '_batch Complete'
+# on its way out, which is what calls Finish-Batch - exactly once, and by the same route
+# every other batch uses. Finish-Batch here is only for the case where no worker ever ran.
+function Release-Worker {
+    if ($script:WorkerStarted) { Complete-Worker } else { Finish-Batch }
+}
+
+# Force Remove does not run an uninstaller - the WIPE is the removal. So a cleanup that was
+# skipped, or that found nothing, means nothing at all was removed.
+#
+# The rows say 'Uninstalled' at that point only because Start-LeftoverScan filters on that
+# status to decide what to scan. Leaving them there reported a removal that never happened:
+# green rows, an 'ok' in the run record, and a product still fully installed.
+function Set-ForceRemoveOutcome([string]$Why) {
+    if (-not $script:ForceMode) { return }
+    foreach ($p in @($script:Pending)) {
+        if (('' + $p.Status) -like 'Uninstalled*') {
+            Set-Status $p "Skipped: $Why" 'warn'
+            Set-Ring $p 'warn'
+        }
+    }
+}
+
 function Finish-Batch {
     $script:Phase = 'Done'
+    # every batch, however it ended, comes through here - so this is the one place the
+    # strip has to be told that nothing can be pulled out any more
+    $script:BatchLive = $false
     $script:Paused = $false
     foreach ($p in $script:Pending) {
         $p.ProgressVis = 'Collapsed'
@@ -7589,15 +12285,28 @@ function Finish-Batch {
     }
     $done = @($script:Pending | Where-Object { $_.Status -match '^(Installed|Uninstalled|Cleaned|Applied|Reverted)' }).Count
     $fail = @($script:Pending | Where-Object { $_.Status -like 'Failed*' }).Count
-    $cans = @($script:Pending | Where-Object { $_.Status -match '^(Cancelled|Skipped)' }).Count
+    $cans = @($script:Pending | Where-Object { $_.Status -match '^(Cancelled|Skipped|Removed)' }).Count
     $script:AwaitingScan = $false
     $script:DeepClean = $false
     $script:ForceMode = $false
     if ($fail -gt 0 -or $cans -gt 0) { $script:HadFailures = $true }
     $BarOverall.Value = 100
     $TxtOverall.Text = ''
+    # Cancelled and Skipped are counted together above because they drive the same decisions -
+    # keep the cache, amber dot, remember the batch was not clean. But they must not be REPORTED
+    # as the same thing. "Skipped" is this tool's amber state for "it worked, with a caveat": an
+    # app that installed and then hit a post-install problem lands there. Printing that as
+    # "1 cancelled" told a technician they had cancelled something they had not, about an
+    # application that was sitting installed on the machine.
+    $wasCancelled = @($script:Pending | Where-Object { $_.Status -match '^Cancelled' }).Count
+    $hadWarnings  = @($script:Pending | Where-Object { $_.Status -match '^Skipped' }).Count
+    # Removed gets its own line for the same reason Skipped does: the technician took these
+    # out deliberately, and reporting a choice as a cancellation misdescribes it.
+    $wasRemoved   = @($script:Pending | Where-Object { $_.Status -match '^Removed' }).Count
     $summary = "$done completed, $fail failed"
-    if ($cans -gt 0) { $summary += ", $cans cancelled" }
+    if ($hadWarnings -gt 0)  { $summary += ", $hadWarnings with warnings" }
+    if ($wasRemoved -gt 0)   { $summary += ", $wasRemoved removed" }
+    if ($wasCancelled -gt 0) { $summary += ", $wasCancelled cancelled" }
     # Firewall batches answer the question the batch file answered: how many rules were
     # actually NEW. Running it twice should visibly change nothing rather than looking
     # like it did the work again.
@@ -7625,13 +12334,76 @@ function Finish-Batch {
     elseif ($cans -gt 0) { $DotNow.Fill = '#FFFBBF24' }
     else { $DotNow.Fill = '#FF34D399' }
     Add-Log "Batch complete: $summary."
-    Remove-Item -LiteralPath $script:CancelPath -ErrorAction SilentlyContinue
+    # The Gaming sub-tab's evidence: a baseline was measured before the batch, so
+    # measure again now and report the delta - to the hint line, the Log tab and the
+    # session file. Rows that need a reboot are named as not yet in effect.
+    if ($script:BatchTab -eq 'Tweak' -and $script:GameBaseline) {
+        $base = $script:GameBaseline
+        $script:GameBaseline = $null
+        try {
+            $after = Measure-GamingLatency
+            $cmp = Compare-GamingProbe $base $after
+            # A spike can only push the number UP, so a WORSE verdict gets one re-measure
+            # and keeps the better of the two - a Defender scan mid-batch must not be
+            # billed to the tweaks. An IMPROVED verdict is not re-tried: floors do not
+            # drop by accident.
+            if ($cmp.Verdict -like 'WORSE*') {
+                $again = Measure-GamingLatency
+                if ($again.PreP99 -lt $after.PreP99) { $after = $again }
+                $cmp = Compare-GamingProbe $base $after
+            }
+            $pendingReboot = @($script:Pending | Where-Object { $_.UnArgs -eq 'hags' -and $_.Status -like 'Applied*' }).Count
+            $note = $(if ($pendingReboot) { ' (GPU scheduling takes effect after the reboot - press Measure again then)' } else { '' })
+            $TxtTweakHint.Text = "$($cmp.Verdict)$note"
+            Add-Log "Gaming before/after: $($cmp.Line)"
+            Add-Log "Gaming verdict: $($cmp.Verdict)$note"
+        } catch { Add-Log "Gaming after-measurement failed: $($_.Exception.Message)" }
+    }
+    # One Explorer restart per batch, only when a row in it changed what Explorer draws
+    # (taskbar, Start, desktop icons, context menu). The GUI runs unelevated as the
+    # signed-in user, so the desktop comes back owned by the right profile - the elevated
+    # worker must never do this itself.
+    if ($script:BatchTab -eq 'Tweak' -and $script:NeedExplorerRestart) {
+        $script:NeedExplorerRestart = $false
+        try {
+            Add-Log 'Restarting Explorer once so the taskbar/Start/desktop changes are visible now.'
+            Stop-Process -Name explorer -Force -ErrorAction Stop
+            Start-Sleep -Milliseconds 900
+            if (-not (Get-Process -Name explorer -ErrorAction SilentlyContinue)) { Start-Process explorer.exe }
+        } catch { Add-Log "Explorer restart failed: $($_.Exception.Message) - sign out and back in to see the changes." }
+    }
+    # Written here because every batch, however it ended, comes through this function - the same
+    # reason the strip is told here that nothing more can be pulled out of it.
+    # A copy is not an install. It was filed as one, so the Activity tab called every profile
+    # migration an 'Install run' and the summary counted it beside applications.
+    Write-RunRecord $script:Pending $(switch ($script:BatchTab) {
+        'Un'      { 'Uninstall' }
+        'Migrate' { 'Backup' }
+        default   { 'Install' }
+    })
+    Remove-Item -LiteralPath $script:CancelPath, $script:SkipPath -ErrorAction SilentlyContinue
+    # The queue has done its job the moment the worker reports the batch complete, and it is
+    # the file that carried the account password. Left behind it outlived the run by weeks,
+    # because the cache is deliberately KEPT after a failure so a batch can be retried - and a
+    # failed password change is exactly the run worth not leaving lying about. Nothing reads it
+    # after this point: every Start-*Batch recreates it from scratch.
+    #
+    # Guarded on the worker having finished. Deleting the queue out from under a worker that is
+    # still consuming it would strand the batch - it would sit on an empty file waiting for an
+    # end marker that no longer exists.
+    if (-not $script:WorkerStarted -or $script:EndQueued) { Clear-QueueFile }
+    # the results stay on screen until dismissed, with whatever went wrong at the top
+    Sort-BatchStrip
+    Sync-BatchStrip
     if ($fail -eq 0 -and $cans -eq 0 -and -not $KeepCache) {
         # Remove the big installer files immediately; the rest goes on window close. .zip is in
         # the list because a package IS the installer here - leaving it out meant a 14 GB Office
         # or Revit download survived a clean batch while this very log line claimed otherwise,
         # and survived indefinitely if the batch had failed.
-        Get-ChildItem $script:CacheDir -Include *.exe, *.msi, *.zip, *.part -Recurse -ErrorAction SilentlyContinue |
+        # .rar and .iso belong here for the same reason .zip does: the package IS the installer,
+        # and leaving them out let a 1.1 GB .rar survive a clean batch while the log line below
+        # said every downloaded installer had been removed.
+        Get-ChildItem $script:CacheDir -Include *.exe, *.msi, *.zip, *.rar, *.iso, *.part -Recurse -ErrorAction SilentlyContinue |
             Remove-Item -Force -ErrorAction SilentlyContinue
         Add-Log 'Downloaded installers removed.'
     } else {
@@ -7649,7 +12421,9 @@ function Finish-Batch {
     $BtnRunFix.IsEnabled = $true
     if ($script:BatchTab -eq 'Fw') { Load-Firewall }
     # an account may have just been created, or a profile filled - re-read on next visit
-    if ($script:BatchTab -eq 'Users') {
+    # 'Migrate' too: a migration creates the destination profile folder, so the account list is
+    # just as stale afterwards as it is after an account action.
+    if ($script:BatchTab -in 'Users', 'Migrate') {
         $TxtNewUser.Clear(); $TxtNewFull.Clear()
         Load-Users
     }
@@ -7693,7 +12467,15 @@ $timer.Add_Tick({
     $script:Busy = $true
     try {
         Drain-IconResults   # apply any icons the background pump has finished
+        # the leftover scan runs off-thread; this is where its progress lands and its end is noticed
+        if ($script:ScanJob) { Update-LeftoverScan }
+        # dependency sequencing: a failed remove-first step or a failed base download has to
+        # pull the steps behind it out of the queue before the worker reaches them
+        if ($script:Phase -in 'Download', 'Install') { Sync-DepGuards }
         if ($script:WorkerStarted -and $script:Phase -in 'Download', 'Install') { Read-WorkerStatus }
+        # header counts and which rows still offer a remove button are both answers about how
+        # far the batch got, so they are recomputed from it rather than tracked separately
+        if ($script:Phase -in 'Download', 'Install') { Sync-BatchStrip }
         if ($script:Phase -eq 'Download') {
             if ($script:Paused) { return }
             if ($null -eq $script:CurJob) {
@@ -7708,6 +12490,9 @@ $timer.Add_Tick({
                             $script:AwaitingScan = $true
                             $script:Phase = 'Install'
                             $TxtStatus.Text = 'Installing remaining apps...'
+                            # nothing can join this batch any more: from here a press starts a
+                            # follow-up batch, with its own UAC prompt
+                            $TxtInstallBtn.Text = 'Queue Next Batch'
                         }
                     } else {
                         Finish-Batch   # nothing downloaded successfully, no worker ever started
@@ -7715,7 +12500,16 @@ $timer.Add_Tick({
                     return
                 }
                 $item = $script:Pending[$script:DlIndex]
-                $dest = Join-Path $script:CacheDir $item.FileName
+                # Pulled out of the batch while it sat in the queue: nothing to fetch, nothing
+                # to hand the worker. The row is left in place rather than spliced out of
+                # $script:Pending - DlIndex counts positions in that array, and removing an
+                # entry behind the index would silently skip its neighbour.
+                # A remove-first step has nothing to download either (its queue entry was
+                # written at batch start), and a row Sync-DepGuards marked Skipped must not
+                # start a download for an install the worker has been told to skip.
+                if ($item.Status -like 'Removed*' -or $item.Status -like 'Skipped*' -or
+                    $item.BatchAction -eq 'uninstall') { $script:DlIndex++; return }
+                $dest = Get-AppCachePath $item
                 # already fully present (size matches) -> hash gets verified by the worker anyway
                 if ((Test-Path $dest) -and ((Get-Item $dest).Length -eq $item.SizeBytes)) {
                     Enqueue-Install $item
@@ -7725,6 +12519,49 @@ $timer.Add_Tick({
                 Set-Status $item 'Starting download' 'active'
                 $script:SpeedPrev = $null
                 $script:SpeedTxt = ''
+                $script:EtaTxt = ''
+                # A large file goes over several connections; a small one stays on BITS, which
+                # survives a reboot and costs nothing to set up. If the server will not do Range
+                # - or anything else here objects - this falls through to BITS untouched, so the
+                # worst case is exactly the behaviour that shipped before.
+                if ([long]$item.SizeBytes -ge $script:SegmentMinBytes) {
+                    try {
+                        Add-Log "Downloading $($item.Name) ($($item.Size)) over $($script:SegmentStreams) connections..."
+                        # $false means PAUSED, not finished: leave the row and the index
+                        # exactly where they are so Resume re-enters and picks the ranges up
+                        # from the journal. Enqueueing here would hand the worker a .part
+                        # file that is only partly written.
+                        if (-not (Invoke-SegmentedDownload -Item $item -Dest $dest)) { return }
+                        $item.ProgressVis = 'Collapsed'
+                        Add-Log "$($item.Name) downloaded."
+                        Enqueue-Install $item
+                        $script:DlIndex++
+                        return
+                    } catch {
+                        # Neither a cancel nor a removal is a transport failure, and the fallback
+                        # below cannot tell the difference on its own - it just sees this call throw.
+                        #
+                        # Cancel is the worse of the two. By the time this runs the Cancel handler
+                        # has already pushed $DlIndex past the end and moved Phase to 'Install', so a
+                        # BITS job started here is never looked at again: it sits in $script:CurJob,
+                        # transferring a file the batch has written off, and the next tick does not
+                        # enter the Download branch to clean it up.
+                        if ($script:CancelPath -and (Test-Path -LiteralPath $script:CancelPath)) {
+                            $item.ProgressVis = 'Collapsed'
+                            Add-Log "$($item.Name): download stopped - the batch was cancelled."
+                            return
+                        }
+                        # A removal: the technician stopped this one app, so retrying it on BITS
+                        # would re-download a file nobody asked for.
+                        if ($item.Status -like 'Removed*') {
+                            $item.ProgressVis = 'Collapsed'
+                            Add-Log "$($item.Name): download stopped - removed from the batch."
+                            $script:DlIndex++
+                            return
+                        }
+                        Add-Log "Multi-connection download did not work for $($item.Name) ($($_.Exception.Message)) - falling back to BITS."
+                    }
+                }
                 try {
                     $existing = Get-BitsTransfer -ErrorAction SilentlyContinue |
                         Where-Object { $_.DisplayName -eq "PC2GoDeploy:$($item.Id)" } | Select-Object -First 1
@@ -7753,11 +12590,25 @@ $timer.Add_Tick({
                         $item.ProgressVis = 'Collapsed'
                         Enqueue-Install $item
                     } catch {
-                        Set-Status $item "Failed: $($_.Exception.Message)" 'fail'
-                        Set-Ring $item 'fail'
-                        $item.ProgressVis = 'Collapsed'
-                        Add-Log "Download failed for $($item.Name): $($_.Exception.Message)"
-                        $script:HadFailures = $true
+                        # Same distinction the segmented path draws above: this download can
+                        # now be stopped by a Cancel or a per-app Remove, and neither is a
+                        # transport failure. Without this the Cancel handler's 'Cancelled' was
+                        # immediately overwritten with 'Failed: the batch was cancelled', which
+                        # reports the technician's own decision back to them as a fault and
+                        # turns the summary red.
+                        if ($script:CancelPath -and (Test-Path -LiteralPath $script:CancelPath)) {
+                            $item.ProgressVis = 'Collapsed'
+                            Add-Log "$($item.Name): download stopped - the batch was cancelled."
+                        } elseif ($item.Status -like 'Removed*') {
+                            $item.ProgressVis = 'Collapsed'
+                            Add-Log "$($item.Name): download stopped - removed from the batch."
+                        } else {
+                            Set-Status $item "Failed: $($_.Exception.Message)" 'fail'
+                            Set-Ring $item 'fail'
+                            $item.ProgressVis = 'Collapsed'
+                            Add-Log "Download failed for $($item.Name): $($_.Exception.Message)"
+                            $script:HadFailures = $true
+                        }
                     }
                     $script:DlIndex++
                 }
@@ -7769,6 +12620,9 @@ $timer.Add_Tick({
                         Complete-BitsTransfer -BitsJob $job
                         $item.ProgressVis = 'Collapsed'
                         $script:CurJob = $null
+                        # or the NEXT app's first network wobble goes unlogged, because the
+                        # latch still says it has already been reported
+                        $script:LastJobState = ''
                         $script:DlIndex++
                         Add-Log "$($item.Name) downloaded."
                         Enqueue-Install $item
@@ -7803,6 +12657,7 @@ $timer.Add_Tick({
                         Add-Log "Download failed for $($item.Name): $err"
                         Remove-BitsTransfer -BitsJob $job -ErrorAction SilentlyContinue
                         $script:CurJob = $null
+                        $script:LastJobState = ''
                         $script:DlIndex++
                         $script:HadFailures = $true
                     }
@@ -7837,22 +12692,57 @@ $timer.Add_Tick({
                             $dt = ($now - $script:SpeedPrev.time).TotalSeconds
                             if ($dt -ge 1) {
                                 $delta = [long]$job.BytesTransferred - $script:SpeedPrev.bytes
-                                if ($delta -gt 0) { $script:SpeedTxt = (Format-Size ([long]($delta / $dt))) + '/s' }
+                                if ($delta -gt 0) {
+                                    $rate = [double]$delta / $dt
+                                    $script:SpeedTxt = (Format-Size ([long]$rate)) + '/s'
+                                    # what is LEFT. The catalog's size is the denominator, the
+                                    # same one the integrity check and the disk check use.
+                                    $script:EtaTxt = Format-Eta ([long]$item.SizeBytes - [long]$job.BytesTransferred) $rate
+                                }
                                 $script:SpeedPrev = @{ bytes = [long]$job.BytesTransferred; time = $now }
                             }
                         }
                         $txt = "Downloading $pct%"
                         if ($script:SpeedTxt) { $txt += "  $script:SpeedTxt" }
+                        if ($script:EtaTxt)   { $txt += "  -  $script:EtaTxt" }
                         Set-Status $item $txt 'active'
                         $item.ProgressVis = 'Visible'
                         $item.Progress = $pct
                         Update-Overall $pct
                         $nowTxt = "Downloading $($item.Name) - $pct%"
                         if ($script:SpeedTxt) { $nowTxt += "  at $script:SpeedTxt" }
+                        if ($script:EtaTxt)   { $nowTxt += "  -  $script:EtaTxt" }
                         $TxtNow.Text = "$nowTxt   (app $($script:DlIndex + 1) of $($script:Pending.Count))"
                         $DotNow.Fill = '#FF4C8DFF'
                     }
                 }
+            }
+        }
+        # A clean pass: forget any earlier stumble, so only CONSECUTIVE faults escalate.
+        $script:PumpFaults = 0
+    } catch {
+        # This used to take the whole tool with it. A DispatcherTimer handler that throws
+        # unwinds ShowDialog(), so the window simply vanished mid-batch - with a part-written
+        # download on disk, the elevated worker still running and still consuming the queue
+        # where nobody could see it, and not one word on screen about why. Measured: a tick
+        # that throws once ends the dialog on that very tick.
+        #
+        # There are real ways in. Complete-BitsTransfer can fail on a locked destination, the
+        # status file can be mid-write, a malformed postInstall url throws on the [Uri] cast.
+        # None of them is worth the application for.
+        $script:PumpFaults = [int]$script:PumpFaults + 1
+        try { Add-Log "Batch error ($script:PumpFaults of 3): $($_.Exception.Message)" } catch { }
+        # Tolerate a stumble, refuse a loop. A fault that repeats is not going to clear by
+        # being retried 2.5 times a second, and the batch has to end SOMEWHERE a technician
+        # can see, rather than spinning in the log for ever.
+        if ($script:PumpFaults -ge 3) {
+            $script:PumpFaults = 0
+            try {
+                Add-Log 'The batch could not continue - stopping it so nothing is left half-done silently.'
+                Abort-Batch 'the batch hit a repeated internal error'
+            } catch {
+                # last resort: leave the phase somewhere the pump will not re-enter
+                $script:Phase = 'Done'
             }
         }
     } finally { $script:Busy = $false }
@@ -7860,15 +12750,54 @@ $timer.Add_Tick({
 
 # ---------- handlers ----------
 
+# How much room this selection actually needs, and how much there is.
+#
+# ONE definition, because there are three callers and they used to disagree. The pre-flight
+# sheet compared the raw download size against free space and said "room for the download";
+# Start-Batch then applied the unpack multiplier and refused the very same selection with
+# "not enough disk space". The sheet exists to answer exactly that question before anyone
+# commits, so it has to ask it the same way the gate behind it does.
+#
+#   x2.2 for a package that unpacks - it is on the disk twice at its peak, and installer
+#        payloads are already compressed so the unpacked tree is about the same size again
+#   x1.2 for a bare installer
+#   minus whatever is already downloaded, which is not space that has to be found twice
+function Get-BatchSpaceNeeded([object[]]$Items) {
+    $need = [long]0
+    foreach ($s in @($Items)) {
+        if (-not $s) { continue }
+        $want = [long]([long]$s.SizeBytes * $(if ($s.Entry) { 2.2 } else { 1.2 }))
+        try {
+            $have = Join-Path (Join-Path (Join-Path $script:CacheDir 'files') (('' + $s.Id) -replace '[^A-Za-z0-9._-]', '_')) ([string]$s.FileName)
+            if (Test-Path -LiteralPath $have) { $want -= [long](Get-Item -LiteralPath $have).Length }
+        } catch { }
+        if ($want -gt 0) { $need += $want }
+    }
+    return $need
+}
+
+# Free space on the drive the cache lives on, or -1 when it cannot be read.
+#
+# DriveInfo, not Get-PSDrive on the first character of the path: folder redirection can put
+# %LOCALAPPDATA% on a UNC path, where "\\" is not a drive name - Get-PSDrive throws there,
+# and it throws inside a button handler. A figure we cannot obtain must never be the reason
+# a batch will not start, so -1 means "skip the check", not "no space".
+function Get-CacheFreeSpace {
+    try { return [long](New-Object IO.DriveInfo ([IO.Path]::GetPathRoot([IO.Path]::GetFullPath($script:CacheDir)))).AvailableFreeSpace }
+    catch {
+        try { return [long](Get-PSDrive -Name ($script:CacheDir.Substring(0, 1)) -ErrorAction Stop).Free } catch { return [long]-1 }
+    }
+}
+
 function Start-Batch([object[]]$Sel) {
     # A .zip package is on the disk twice at its peak: the download, plus everything it
     # unpacks into. Installer payloads are already compressed, so the unpacked tree is about
     # the same size again - budget 2.2x for those and the old 1.2x for a bare installer.
     # Getting this wrong does not warn, it dies part-way through unpacking a 14 GB package.
-    $needed = 0
-    foreach ($s in $Sel) { $needed += [long]($s.SizeBytes * $(if ($s.Entry) { 2.2 } else { 1.2 })) }
-    $free = (Get-PSDrive -Name ($script:CacheDir.Substring(0, 1))).Free
-    if ($free -lt $needed) {
+    $needed = Get-BatchSpaceNeeded $Sel
+    $free   = Get-CacheFreeSpace
+    if ($free -lt 0) { Add-Log 'Free space could not be read for the download folder - the disk check was skipped.' }
+    if ($free -ge 0 -and $free -lt $needed) {
         Show-Overlay 'Not enough disk space' "This batch needs $(Format-Size $needed) including room to unpack, but only $(Format-Size $free) is free."
         return
     }
@@ -7885,14 +12814,38 @@ function Start-Batch([object[]]$Sel) {
     $script:BatchTab = 'Install'
     $script:DlIndex = 0
     $script:CurJob = $null
+    # Per BATCH, not per session. The guard exists so an endlessly 403-ing server cannot put
+    # one download in a refresh loop; carrying it across batches meant a link that expired
+    # while the technician was doing something else could never be refreshed again, and the
+    # app just failed.
+    $script:UrlRefreshed = @{}
+    $script:LastJobState = ''
     $script:HadFailures = $false
     $script:WorkerStarted = $false
     $script:EndQueued = $false
     $script:Paused = $false
     $script:AwaitingScan = $false
-    Remove-Item -LiteralPath $script:QueuePath, $script:StatusPath, $script:CancelPath -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $script:QueuePath, $script:StatusPath, $script:CancelPath, $script:SkipPath -ErrorAction SilentlyContinue
+    # Orchestrated remove-first steps go into the queue NOW, ahead of every install - but the
+    # worker is only launched by the first Enqueue-Install, i.e. after the base's download has
+    # actually landed, so nothing is removed on the strength of a download that may yet fail.
+    # chain=true is the worker's own sequencing flag: if this step fails, every later chain
+    # step (the base install) is skipped. Same entry shape Start-Uninstall writes.
+    foreach ($s in @($Sel | Where-Object { $_.BatchAction -eq 'uninstall' })) {
+        $entry = @{ id = $s.Id; action = 'uninstall'; command = $s.UnCommand; args = $s.UnArgs
+                    detect = $s.DetectPath; location = @($s.CleanPaths)[0]
+                    silent = [bool]$s.IsSilent; chain = $true } | ConvertTo-Json -Compress
+        Add-Content -Path $script:QueuePath -Value $entry -Encoding UTF8
+    }
+    Show-BatchStrip
+    # when this batch began, so the record can say how long it took
+    $script:RunStarted = Get-Date
     $script:Phase = 'Download'
-    $TxtInstallBtn.Text = 'Add to Queue'
+    # The label is the promise. While downloads are still running a press really does extend
+    # the batch on screen; once they have finished the worker has been told no more are
+    # coming, so the same press means something else and has to say so - see the Install
+    # phase in the pump.
+    $TxtInstallBtn.Text = 'Add to Batch'
     $BtnUninstall.IsEnabled = $false
     $BtnRefresh.IsEnabled = $false
     $BtnPause.Content = 'Pause'
@@ -7917,11 +12870,26 @@ $BtnInstall.Add_Click({
             Show-Overlay 'Already queued' 'All selected applications are already in the current batch.'
             return
         }
+        # The disk question again, because adding to a running batch adds real bytes and this
+        # path skipped it entirely - Start-Batch checked, and then a technician could queue
+        # another 15 GB package onto the same drive with nothing asked. Only the NEW rows are
+        # counted: what is already downloading has had its space accounted for once already.
+        $addNeed = Get-BatchSpaceNeeded $new
+        $addFree = Get-CacheFreeSpace
+        if ($addFree -ge 0 -and $addFree -lt $addNeed) {
+            Show-Overlay 'Not enough disk space' (
+                "Adding these needs a further $(Format-Size $addNeed), but only $(Format-Size $addFree) is free. " +
+                'The batch already running is untouched.')
+            return
+        }
         foreach ($s in $new) {
             Set-Status $s 'Queued' 'neutral'
             $s.ProgressVis = 'Collapsed'
             Set-Ring $s 'queued'
+            # same two resets Start-Batch does: a verdict and a folder list from an earlier
+            # batch must not ride into this one's leftover scan
             $s.Dirty = $false
+            $s.CreatedPaths = @()
         }
         $script:Pending = @($script:Pending) + $new
         Add-Log "Added $($new.Count) app(s) to the running batch."
@@ -7940,7 +12908,8 @@ $BtnInstall.Add_Click({
         Add-Log "Queued $($new.Count) app(s) - they start automatically when the current batch finishes (one more UAC prompt)."
         return
     }
-    Start-Batch $sel
+    # was: Start-Batch $sel - straight into a download, with no list and no disk check
+    Show-Preflight $sel 'install'
 })
 
 $BtnRefresh.Add_Click({
@@ -7953,6 +12922,801 @@ $BtnRefresh.Add_Click({
     }
     Load-Catalog
 })
+# ============================================================ pre-flight
+#
+# The one screen between picking and committing. See the PreflightOverlay markup for why it
+# exists; this is the half that answers "will it fit?", which nothing in this tool asked before.
+#
+# State lives in $script: rather than in a closure on purpose. A callback held for later cannot
+# read $script: from inside itself - the comment above Show-Confirm explains why - so this uses
+# plain top-level handlers that read these two, and sidesteps the problem instead of working
+# around it.
+$script:PfItems  = @()
+$script:PfAction = ''
+
+# Free space on the drive the downloads actually land on, which is $script:CacheDir - not
+# always C:, and not necessarily where the installers will put their files either. That second
+# number is unknowable from here: a catalogued size is the DOWNLOAD, and what an installer then
+# writes is its own business. So this reports what it can stand behind, and says as much.
+# The backup writes into a folder of its OWN, never straight into what was picked.
+#
+# A share can be - and on a real network often is - a whole DRIVE. Writing Documents and Desktop
+# into the root of somebody C: drive is not a backup, it is a mess beside Windows and Program
+# Files, and a second backup from another account would merge into the same folders with no way to
+# tell the two apart.
+#
+# The name is STABLE, deliberately not date-stamped: a new folder every run would copy everything
+# again and throw away the entire point of the incremental second pass. The manifest inside carries
+# the dates.
+function Get-BackupFolderName([string]$User) {
+    $raw = 'PC2Go Backup - ' + $env:COMPUTERNAME + ' - ' + $User
+    # an account name may legally hold characters a path may not
+    foreach ($c in [IO.Path]::GetInvalidFileNameChars()) { $raw = $raw.Replace([string]$c, '-') }
+    # a trailing dot or space is legal to ASK for and impossible to create
+    return $raw.Trim().TrimEnd('.')
+}
+
+# ---------- dependency awareness ----------
+# The catalog knows that AutoCAD Electrical sits on top of AutoCAD and that Corona plugs into
+# 3ds Max ("requires": [ids]); this block is what turns that knowledge into behaviour, and all
+# of it surfaces on the pre-flight sheet - the one screen between picking and committing.
+# Two situations, two answers:
+#   case 3: an add-on is ticked and its base is neither installed nor in the batch -> refuse,
+#           with a one-click way to add the base.
+#   case 4: a BASE is ticked while a dependent add-on is already on the machine -> offer the
+#           clean sequence: remove the add-on, install the base, put the add-on back. One
+#           batch, one UAC prompt, ticked by default, decline keeps today's behaviour.
+
+# Is this catalog product on the machine? detect path first (a registry key or the vendor's
+# canonical exe), then verifyPaths - the same unelevated probes Enqueue-Install and
+# Refresh-UnList already trust. A handful of Test-Paths, never a registry enumeration.
+function Test-CatalogInstalled([object]$Item) {
+    try {
+        $d = [string]$Item.DetectPath
+        if ($d) {
+            if ($d -match '^HK(LM|CU|CR|EY)') {
+                if (Test-Path -LiteralPath (ConvertTo-PSRegPath $d)) { return $true }
+            } elseif (Test-Path -LiteralPath ([Environment]::ExpandEnvironmentVariables($d))) { return $true }
+        }
+        foreach ($vp in @($Item.VerifyPaths)) {
+            if ($vp -and (Test-Path -LiteralPath ([Environment]::ExpandEnvironmentVariables($vp)))) { return $true }
+        }
+    } catch { }
+    return $false
+}
+
+# The selection's dependency picture, computed ONCE when the sheet opens (Show-Preflight) and
+# only filtered afterwards - Sync-Preflight re-runs on every row removal and must stay I/O-free.
+# A required id absent from the catalog FAILS OPEN with one log line: a fact we cannot obtain
+# must never be the reason a batch will not start (same rule as Get-CacheFreeSpace's -1).
+function Get-PfDepState([object[]]$Items, [hashtable]$Installed) {
+    $missing = @(); $orphans = @()
+    $selIds = @{}
+    foreach ($s in @($Items)) { if ($s -and $s.Id) { $selIds[[string]$s.Id] = $true } }
+    $byId = @{}
+    foreach ($c in @($script:Items)) { if ($c -and $c.Id) { $byId[[string]$c.Id] = $c } }
+    foreach ($s in @($Items)) {
+        if (-not $s) { continue }
+        foreach ($rid in @($s.Requires)) {
+            if (-not $rid) { continue }
+            $base = $byId[[string]$rid]
+            if (-not $base) {
+                Add-Log "$($s.Name) requires '$rid', which is not in this catalog - the dependency check was skipped for it."
+                continue
+            }
+            if (-not $selIds[[string]$rid] -and -not $Installed[[string]$rid]) {
+                $missing += @{ Addon = $s; Base = $base }
+            }
+        }
+        foreach ($c in @($script:Items)) {
+            if (-not $c -or [string]$c.Id -eq [string]$s.Id) { continue }
+            if (@($c.Requires) -contains [string]$s.Id -and $Installed[[string]$c.Id] -and
+                -not $selIds[[string]$c.Id]) {
+                $orphans += @{ Base = $s; Addon = $c }
+            }
+        }
+    }
+    return @{ Missing = @($missing); Orphans = @($orphans) }
+}
+
+# How the installed add-on would be removed. The catalog's own uninstall block first (with
+# __ODIS_MANIFEST__ resolved against this machine, exactly as Refresh-UnList does); failing
+# that, one registry pass matched by name; failing both, $null - the sheet then says the
+# add-on will be left alone rather than guessing at a command that runs elevated.
+function Resolve-DependentUninstall([object]$Addon) {
+    try {
+        $cat = @($script:LastManifest.apps) | Where-Object { $_ -and ([string]$_.id) -eq [string]$Addon.Id } |
+               Select-Object -First 1
+        if ($cat -and $cat.uninstall -and $cat.uninstall.command) {
+            $unArgs = [string]$cat.uninstall.args
+            $ok = $true
+            if ($unArgs -match '__ODIS_MANIFEST__') {
+                $man = Resolve-OdisManifest ([string]$Addon.Name)
+                if ($man) { $unArgs = $unArgs.Replace('__ODIS_MANIFEST__', $man) } else { $ok = $false }
+            }
+            $exe = [Environment]::ExpandEnvironmentVariables([string]$cat.uninstall.command)
+            if ($ok -and (Test-Path -LiteralPath $exe)) {
+                return @{ Command = [string]$cat.uninstall.command; Args = $unArgs
+                          Detect = [string]$(if ($cat.uninstall.detect) { $cat.uninstall.detect } else { '' })
+                          Silent = $true }
+            }
+        }
+    } catch { }
+    try {
+        $name = ('' + $Addon.Name).ToLower()
+        $reg = @(Get-InstalledPrograms) | Where-Object { ('' + $_.Name).ToLower() -eq $name } |
+               Select-Object -First 1
+        if ($reg) {
+            return @{ Command = [string]$reg.Exe; Args = [string]$reg.Args
+                      Detect = [string]$reg.RegKey; Silent = [bool]$reg.Silent }
+        }
+    } catch { }
+    return $null
+}
+
+# Bases float ahead of the rows that require them - a stable pass, so everything else keeps
+# its order. Applied to EVERY install selection, which turns the catalog-order folklore
+# ("Electrical installs after AutoCAD because of where it sits in the file") into a rule.
+function Sort-ByRequires([object[]]$Items) {
+    $list = @(@($Items) | Where-Object { $_ })
+    $out = New-Object System.Collections.ArrayList
+    foreach ($it in $list) {
+        $ins = $out.Count
+        for ($i = 0; $i -lt $out.Count; $i++) {
+            if (@($out[$i].Requires) -contains [string]$it.Id) { $ins = $i; break }
+        }
+        $out.Insert($ins, $it)
+    }
+    return @($out)
+}
+
+# The synthetic remove-first step. A distinct id ("<addon>~un") so the worker's status report
+# for the removal can never collide with the reinstall row's; chain=true so a failed removal
+# makes the worker skip the base install behind it.
+function New-DepUnRow([object]$Addon, [hashtable]$Un, [object]$Base) {
+    $r = New-Object AppItem
+    $r.Id = "$($Addon.Id)~un"
+    $r.Name = "$($Addon.Name) - remove old copy first"
+    $r.IconText = [string]$Addon.IconText
+    $r.IconBg = [string]$Addon.IconBg
+    $r.IconData = [string]$Addon.IconData
+    $r.SizeBytes = 0; $r.Size = ''
+    $r.UnCommand = [string]$Un.Command; $r.UnArgs = [string]$Un.Args
+    $r.DetectPath = [string]$Un.Detect; $r.IsSilent = [bool]$Un.Silent
+    $r.BatchAction = 'uninstall'; $r.Chain = $true
+    $r.DepBaseId = [string]$Base.Id; $r.DepAddonId = [string]$Addon.Id
+    return $r
+}
+
+# The batch the commit button would actually start: remove-first steps, then the selection
+# with bases sorted ahead, then the add-ons coming back. Also what the disk maths runs on -
+# the sheet must gate on the same figure Start-Batch will, re-download bytes included
+# (Get-BatchSpaceNeeded already subtracts a cached copy, so "the cache spares it" comes free).
+function Get-PfCommitItems {
+    $items = @($script:PfItems)
+    if ($script:PfAction -ne 'install') { return $items }
+    if (-not $script:PfDep) { return (Sort-ByRequires $items) }
+    $un = @(); $re = @()
+    if ($script:PfDep.Reinstall) {
+        foreach ($o in @($script:PfDep.Orphans)) {
+            if (-not $o.Un) { continue }
+            if ($items -notcontains $o.Base -or $items -contains $o.Addon) { continue }
+            $un += (New-DepUnRow $o.Addon $o.Un $o.Base)
+            $re += $o.Addon
+        }
+    }
+    $ordered = @(Sort-ByRequires @($items + $re))
+    # chain flags: a base whose way was cleared is skipped if the removal failed; the add-on's
+    # reinstall deliberately is NOT chained - see the failure matrix in the plan: restoring it
+    # after a failed base install returns the machine closest to how it was found.
+    foreach ($it in $ordered) { $it.Chain = $false; $it.After = $null }
+    foreach ($u in $un) {
+        foreach ($it in $ordered) {
+            if ([string]$it.Id -eq [string]$u.DepBaseId) { $it.Chain = $true }
+            # the reinstall names the removal it depends on: the worker skips it if THAT step
+            # failed, and only that one - a failed base install must not stop the restore
+            if ([string]$it.Id -eq [string]$u.DepAddonId) { $it.After = @([string]$u.Id) }
+        }
+    }
+    return @($un + $ordered)
+}
+
+# The belt behind the disabled button: IsEnabled is UI state and UI state can go stale, but a
+# commit through this function cannot.
+function Test-PfDepBlocked {
+    if (-not $script:PfDep) { return $false }
+    $items = @($script:PfItems)
+    foreach ($m in @($script:PfDep.Missing)) {
+        if ($items -contains $m.Addon -and $items -notcontains $m.Base -and
+            -not $script:PfDep.Installed[[string]$m.Base.Id]) { return $true }
+    }
+    return $false
+}
+
+function Get-DiskFacts([string]$Path) {
+    try {
+        $full = [IO.Path]::GetFullPath($Path)
+        $d = New-Object IO.DriveInfo ([IO.Path]::GetPathRoot($full))
+        if (-not $d.IsReady) { return $null }
+        return [pscustomobject]@{ Name  = $d.Name.TrimEnd([char]92)
+                                  Free  = [long]$d.AvailableFreeSpace
+                                  Total = [long]$d.TotalSize }
+    } catch { return $null }
+}
+
+function Hide-Preflight {
+    $PreflightOverlay.Visibility = 'Collapsed'
+    $script:PfItems  = @()
+    $script:PfAction = ''
+    $script:PfDep    = $null
+    $BtnPfGo.IsEnabled = $true
+}
+
+# Redrawn rather than mutated, so taking a row out re-runs the disk sum without it - the whole
+# point of the remove button is watching the number come back under the line.
+function Sync-Preflight {
+    $items = @($script:PfItems)
+    if ($items.Count -eq 0) { Hide-Preflight; return }
+    $install = ($script:PfAction -eq 'install')
+    $bytes = [long]0
+    foreach ($i in $items) { $bytes += [long]$i.SizeBytes }
+
+    $ListPf.ItemsSource = @($items | ForEach-Object {
+        [pscustomobject]@{
+            Item     = $_
+            Name     = [string]$_.Name
+            IconText = [string]$_.IconText
+            IconBg   = [string]$_.IconBg
+            SizeText = $(if ([long]$_.SizeBytes -gt 0) { Format-Size ([long]$_.SizeBytes) } else { 'size unknown' })
+        } })
+
+    $n = $items.Count
+    $word = $(if ($n -eq 1) { 'application' } else { 'applications' })
+    if ($install) {
+        $TxtPfTitle.Text = "Install $n $word"
+        $TxtPfSub.Text   = 'Nothing has been downloaded yet. Take out anything you did not mean to pick.'
+        $BtnPfGo.Content = "Install $n"
+        $TxtPfFoot.Text  = 'Downloads to %LOCALAPPDATA%\PC2GoDeploy'
+    } else {
+        $TxtPfTitle.Text = "Uninstall $n $word"
+        $TxtPfSub.Text   = 'The vendor uninstaller runs for each of these. Take out anything you did not mean to pick.'
+        $BtnPfGo.Content = "Uninstall $n"
+        $TxtPfFoot.Text  = 'Each one runs in turn; the batch reports as it goes.'
+    }
+
+    # ---- dependencies. State was computed once in Show-Preflight; this only filters it
+    # against what is still on the sheet, so removing a row re-runs the verdict instantly.
+    # Everything is guarded on $PfDep existing: a harness that binds the sheet's controls
+    # from its own (older) name list gets a working sheet with no dependency panel, never
+    # a throw inside a click handler - which takes the whole window with it.
+    if ($PfDep) {
+        $PfDep.Visibility = 'Collapsed'
+        $BtnPfAddDep.Visibility = 'Collapsed'
+        $ChkPfReinstall.Visibility = 'Collapsed'
+    }
+    $BtnPfGo.IsEnabled = $true
+    if ($install -and $script:PfDep -and $PfDep) {
+        $missing = @(@($script:PfDep.Missing) | Where-Object {
+            $items -contains $_.Addon -and $items -notcontains $_.Base -and
+            -not $script:PfDep.Installed[[string]$_.Base.Id] })
+        $orphans = @(@($script:PfDep.Orphans) | Where-Object {
+            $items -contains $_.Base -and $items -notcontains $_.Addon })
+        if ($missing.Count) {
+            # case 3: refuse, and offer the one-click fix. The first conflict is enough to
+            # name - fixing it re-runs this and surfaces the next.
+            $m = $missing[0]
+            $PfDep.Visibility = 'Visible'
+            $TxtPfDepNote.Foreground = $window.FindResource('Bad')
+            $TxtPfDepNote.Text = "$($m.Addon.Name) needs $($m.Base.Name), which is not on this machine and not in this batch. Add it, or take $($m.Addon.Name) out."
+            if ($m.Base.Url) {
+                $BtnPfAddDep.Visibility = 'Visible'
+                $BtnPfAddDep.Content = "Add $($m.Base.Name)   ($($m.Base.Size))"
+                $BtnPfAddDep.Tag = $m.Base
+            }
+            $BtnPfGo.IsEnabled = $false
+        } elseif ($orphans.Count) {
+            # case 4: the clean sequence, ticked by default; unticking keeps today's behaviour
+            $withUn = @($orphans | Where-Object { $_.Un })
+            $noUn   = @($orphans | Where-Object { -not $_.Un })
+            $PfDep.Visibility = 'Visible'
+            $TxtPfDepNote.Foreground = $window.FindResource('Warn')
+            if ($withUn.Count) {
+                $names = (@($withUn | ForEach-Object { $_.Addon.Name }) -join ', ')
+                $bases = (@($withUn | ForEach-Object { $_.Base.Name } | Select-Object -Unique) -join ', ')
+                $TxtPfDepNote.Text = "$names is installed on this machine and plugs into $bases. " +
+                    'Ticked below: it is removed first, the base installs, then it is downloaded again and put back - ' +
+                    'one batch, one approval, and its settings are kept. Untick to install the base as-is and leave it alone.'
+                $ChkPfReinstall.Visibility = 'Visible'
+                # only assign on a real change: assignment raises Checked/Unchecked, whose
+                # handlers call this very function
+                if ($ChkPfReinstall.IsChecked -ne [bool]$script:PfDep.Reinstall) {
+                    $ChkPfReinstall.IsChecked = [bool]$script:PfDep.Reinstall
+                }
+            } else {
+                $names = (@($noUn | ForEach-Object { $_.Addon.Name }) -join ', ')
+                $TxtPfDepNote.Text = "$names is installed and plugs into what you are installing, but no uninstall " +
+                    'command is known for it, so it will be left alone. Reinstall it from the catalog if it misbehaves afterwards.'
+            }
+        }
+    }
+
+    $disk = Get-DiskFacts $script:CacheDir
+    if (-not $disk) { $PfDisk.Visibility = 'Collapsed'; return }
+    $PfDisk.Visibility = 'Visible'
+    $used = [long]$disk.Total - [long]$disk.Free
+
+    if (-not $install) {
+        $TxtPfDiskWhere.Text = 'Reclaimed'
+        $TxtPfDiskFacts.Text = $(if ($bytes -gt 0) { "up to $(Format-Size $bytes)" } else { 'size not reported' })
+        $TxtPfDiskFacts.Foreground = $window.FindResource('Muted')
+        $PfBarUsed.Width = 0
+        $PfBarNeed.Width = 0
+        $TxtPfDiskNote.Foreground = $window.FindResource('Dim')
+        $TxtPfDiskNote.Text = 'Windows reports these sizes itself and they are often estimates - some programs report none at all.'
+        return
+    }
+
+    $TxtPfDiskWhere.Text = "Disk $($disk.Name)"
+    # The VERDICT below uses the same figure Start-Batch will gate on - download plus room to
+    # unpack, less whatever is already cached - not the raw download size. They disagreed, so
+    # this sheet could say "room for the download" in green and the press behind it be refused
+    # for not enough space. The one question this screen exists to answer must be answered the
+    # same way as the gate it stands in front of.
+    # The EFFECTIVE batch, not the raw selection: an orchestrated sequence re-downloads the
+    # add-on, and those bytes belong in the number this sheet gates on.
+    $need = Get-BatchSpaceNeeded (Get-PfCommitItems)
+    $TxtPfDiskFacts.Text = "$(Format-Size $bytes) to download   -   $(Format-Size $disk.Free) free"
+    $w = 460.0
+    # NOT [Math]::Max(1, $disk.Total): the literal 1 is an Int32, so PowerShell picks the
+    # Max(int,int) overload and a 1 TB drive - 1,023,085,113,344 bytes - fails to convert.
+    $total = [double]$disk.Total
+    if ($total -lt 1) { $total = 1 }
+    $usedW = [Math]::Max(0, [Math]::Min($w, $w * $used / $total))
+    $needW = [Math]::Max(0, [Math]::Min(($w - $usedW), $w * $need / $total))
+    $PfBarUsed.Width = $usedW
+    $PfBarNeed.Width = $needW
+
+    if ($need -gt $disk.Free) {
+        $PfBarNeed.Background      = $window.FindResource('Bad')
+        $TxtPfDiskFacts.Foreground = $window.FindResource('Bad')
+        $TxtPfDiskNote.Foreground  = $window.FindResource('Bad')
+        $TxtPfDiskNote.Text = "This will not fit - it needs $(Format-Size $need) with room to unpack, which is $(Format-Size ($need - $disk.Free)) short, and installers need room beyond that again. Take something out, or free up space."
+    } elseif ($need -gt ($disk.Free / 2)) {
+        $PfBarNeed.Background      = $window.FindResource('Warn')
+        $TxtPfDiskFacts.Foreground = $window.FindResource('Warn')
+        $TxtPfDiskNote.Foreground  = $window.FindResource('Muted')
+        $TxtPfDiskNote.Text = "That is over half the free space on this drive. $(Format-Size $need) covers the download and room to unpack it - each installer then writes its own files on top of that."
+    } else {
+        $PfBarNeed.Background      = $window.FindResource('Accent')
+        $TxtPfDiskFacts.Foreground = $window.FindResource('Muted')
+        $TxtPfDiskNote.Foreground  = $window.FindResource('Dim')
+        $TxtPfDiskNote.Text = "Room for the download and for unpacking it ($(Format-Size $need)). What each installer then writes is its own, and is not counted here."
+    }
+}
+
+function Show-Preflight([object[]]$Items, [string]$Action) {
+    $script:PfItems  = @($Items)
+    $script:PfAction = $Action
+    # The dependency picture is computed here, ONCE - the installed-map is a handful of
+    # Test-Paths and the uninstall resolution can cost a registry pass, neither of which
+    # belongs in Sync-Preflight's per-click path. Machine state cannot change while the
+    # sheet is open, so caching it is honest.
+    $script:PfDep = $null
+    if ($Action -eq 'install') {
+        try {
+            $inst = @{}
+            foreach ($c in @($script:Items)) { if ($c -and $c.Id) { $inst[[string]$c.Id] = (Test-CatalogInstalled $c) } }
+            $dep = Get-PfDepState $script:PfItems $inst
+            $orph = @()
+            foreach ($o in @($dep.Orphans)) {
+                $orph += @{ Base = $o.Base; Addon = $o.Addon; Un = (Resolve-DependentUninstall $o.Addon) }
+            }
+            if (@($dep.Missing).Count -or $orph.Count) {
+                $script:PfDep = @{ Missing = @($dep.Missing); Orphans = @($orph)
+                                   Installed = $inst; Reinstall = $true }
+            }
+        } catch {
+            # the sheet must open whatever this found - a dependency hint is a convenience,
+            # never the reason a technician cannot install anything
+            Add-Log "Dependency check failed: $($_.Exception.Message) - continuing without it."
+            $script:PfDep = $null
+        }
+    }
+    Sync-Preflight
+    if (@($script:PfItems).Count -eq 0) { return }
+    $PreflightOverlay.Opacity = 0
+    $PreflightOverlay.Visibility = 'Visible'
+    $a = New-Object Windows.Media.Animation.DoubleAnimation 0, 1, (New-Object Windows.Duration ([TimeSpan]::FromMilliseconds(180)))
+    $PreflightOverlay.BeginAnimation([Windows.UIElement]::OpacityProperty, $a)
+}
+
+# ============================================================ run records
+#
+# A finished batch used to leave nothing behind. The per-app outcomes lived in $script:BatchRows,
+# which is cleared the moment the next batch starts, and the only durable trace was the log -
+# a RichTextBox of interleaved lines. After twenty applications "which two failed?" meant
+# reading all of it.
+#
+# So every batch writes one small file here. Twenty are kept; the oldest goes when a twenty-first
+# arrives. Nothing else in the tool reads them - they exist to be read by a person, on the
+# Activity tab, whenever they get round to looking.
+# Derived when asked, NOT cached in a variable at load time. A harness redirects $script:CacheDir
+# into a sandbox AFTER this file is loaded, and a precomputed path would have gone on pointing at
+# the real profile - so a test batch would have written run records into somebody's actual
+# %LOCALAPPDATA%.
+function Get-RunsDir { return (Join-Path $script:CacheDir 'runs') }
+$script:RunStarted = $null
+$script:RunView = $null      # the record on screen
+$script:RunFilter = 'all'
+
+# The status TEXT is the only per-app outcome this tool has ever kept, so the record is built
+# from it with the same patterns Finish-Batch counts with. Kept in one place, because a summary
+# that disagrees with the list under it is worse than either alone.
+function Get-RunOutcome([string]$Status) {
+    $t = '' + $Status
+    if ($t -match '^(Installed|Uninstalled|Cleaned|Applied|Reverted)') { return 'ok' }
+    if ($t -like 'Failed*')                                            { return 'failed' }
+    if ($t -match '^Skipped')                                          { return 'warned' }
+    if ($t -match '^Removed')                                          { return 'removed' }
+    if ($t -match '^Cancelled')                                        { return 'cancelled' }
+    return 'other'
+}
+
+function Write-RunRecord([object[]]$Items, [string]$Kind) {
+    if (-not $Items -or $Items.Count -eq 0) { return }
+    try {
+        $now = Get-Date
+        $started = $(if ($script:RunStarted) { $script:RunStarted } else { $now })
+        $rows = @($Items | ForEach-Object {
+            [pscustomobject]@{
+                id      = [string]$_.Id
+                name    = [string]$_.Name
+                outcome = Get-RunOutcome $_.Status
+                detail  = [string]$_.Status
+                bytes   = [long]$_.SizeBytes
+            } })
+        $rec = [pscustomobject]@{
+            kind     = $Kind
+            started  = $started.ToString('s')
+            finished = $now.ToString('s')
+            seconds  = [int]($now - $started).TotalSeconds
+            counts   = [pscustomobject]@{
+                total     = $rows.Count
+                ok        = @($rows | Where-Object { $_.outcome -eq 'ok' }).Count
+                failed    = @($rows | Where-Object { $_.outcome -eq 'failed' }).Count
+                warned    = @($rows | Where-Object { $_.outcome -eq 'warned' }).Count
+                removed   = @($rows | Where-Object { $_.outcome -eq 'removed' }).Count
+                cancelled = @($rows | Where-Object { $_.outcome -eq 'cancelled' }).Count
+            }
+            items    = $rows
+        }
+        New-Item -ItemType Directory -Force -Path (Get-RunsDir) | Out-Null
+        $file = Join-Path (Get-RunsDir) ("run-" + $now.ToString('yyyyMMdd-HHmmss') + ".json")
+        # No BOM: these are read back with ConvertFrom-Json, which chokes on one.
+        [IO.File]::WriteAllText($file, ($rec | ConvertTo-Json -Depth 6), (New-Object Text.UTF8Encoding $false))
+        # keep the last twenty, oldest out first
+        $old = @(Get-ChildItem -LiteralPath (Get-RunsDir) -Filter 'run-*.json' -ErrorAction SilentlyContinue |
+                 Sort-Object Name -Descending | Select-Object -Skip 20)
+        foreach ($o in $old) { Remove-Item -LiteralPath $o.FullName -Force -ErrorAction SilentlyContinue }
+        Set-ActivityBadge $rec.counts.failed
+    } catch {
+        # A report is a convenience. It must never be the reason a finished batch reports badly.
+        Add-Log "Could not write the run record: $($_.Exception.Message)"
+    }
+}
+
+# The tab says how many failed, and keeps saying it until you go and look. This is the whole of
+# "it waits in Activity" - no window opens by itself, but nothing is silent either.
+function Set-ActivityBadge([int]$Failed) {
+    if ($Failed -le 0) { $BtnTabLog.Content = 'Activity'; return }
+    $sp = New-Object Windows.Controls.StackPanel
+    $sp.Orientation = 'Horizontal'
+    $t = New-Object Windows.Controls.TextBlock
+    $t.Text = 'Activity'
+    [void]$sp.Children.Add($t)
+    $b = New-Object Windows.Controls.Border
+    $b.CornerRadius = New-Object Windows.CornerRadius 7
+    $b.Background = $window.FindResource('Bad')
+    $b.Padding = New-Object Windows.Thickness 6, 0, 6, 1
+    $b.Margin = New-Object Windows.Thickness 7, 0, 0, 0
+    $b.VerticalAlignment = 'Center'
+    $n = New-Object Windows.Controls.TextBlock
+    $n.Text = "$Failed"
+    $n.FontSize = 10.5
+    $n.FontWeight = 'Bold'
+    $n.Foreground = New-Object Windows.Media.SolidColorBrush ([Windows.Media.Colors]::White)
+    $b.Child = $n
+    [void]$sp.Children.Add($b)
+    $BtnTabLog.Content = $sp
+}
+
+function Get-RunFiles {
+    if (-not (Test-Path -LiteralPath (Get-RunsDir))) { return @() }
+    return @(Get-ChildItem -LiteralPath (Get-RunsDir) -Filter 'run-*.json' -ErrorAction SilentlyContinue |
+             Sort-Object Name -Descending)
+}
+
+function Read-RunRecord([string]$Path) {
+    try { return (Get-Content -LiteralPath $Path -Raw | ConvertFrom-Json) } catch { return $null }
+}
+
+# The live log is the first row, so the tab still opens on what it always showed.
+function Sync-RunList {
+    $rows = New-Object Collections.ArrayList
+    [void]$rows.Add([pscustomobject]@{ Head = 'Live log'; Sub = 'this session'
+                                       SubColour = $window.FindResource('Dim'); Path = '' })
+    foreach ($f in Get-RunFiles) {
+        $r = Read-RunRecord $f.FullName
+        if (-not $r) { continue }
+        $when = $f.BaseName -replace '^run-', ''
+        try { $when = ([datetime]::ParseExact($when, 'yyyyMMdd-HHmmss', $null)).ToString('d MMM  HH:mm') } catch { }
+        $bits = @()
+        if ($r.counts.ok)        { $bits += "$($r.counts.ok) ok" }
+        if ($r.counts.failed)    { $bits += "$($r.counts.failed) failed" }
+        if ($r.counts.warned)    { $bits += "$($r.counts.warned) warned" }
+        if ($r.counts.cancelled) { $bits += "$($r.counts.cancelled) cancelled" }
+        $col = $(if ($r.counts.failed) { $window.FindResource('Bad') }
+                 elseif ($r.counts.warned -or $r.counts.cancelled) { $window.FindResource('Warn') }
+                 else { $window.FindResource('Good') })
+        [void]$rows.Add([pscustomobject]@{
+            Head = "$($r.kind) - $($r.counts.total) item(s)"
+            Sub  = "$when   $($bits -join ', ')"
+            SubColour = $col; Path = $f.FullName })
+    }
+    $ListRuns.ItemsSource = $rows
+    if ($ListRuns.SelectedIndex -lt 0) { $ListRuns.SelectedIndex = 0 }
+}
+
+function Get-OutcomeLook([string]$Outcome) {
+    switch ($Outcome) {
+        'ok'        { return @{ Text = 'Installed'; Ink = $window.FindResource('Good'); Edge = '#FF2C4A34'; Fill = '#142C4A34' } }
+        'failed'    { return @{ Text = 'Failed';    Ink = $window.FindResource('Bad');  Edge = '#FF4A2B30'; Fill = '#14F87171' } }
+        'warned'    { return @{ Text = 'Warning';   Ink = $window.FindResource('Warn'); Edge = '#FF4A422A'; Fill = '#14FBBF24' } }
+        'removed'   { return @{ Text = 'Removed';   Ink = $window.FindResource('Dim');  Edge = '#FF3C3C45'; Fill = '#00000000' } }
+        'cancelled' { return @{ Text = 'Cancelled'; Ink = $window.FindResource('Dim');  Edge = '#FF3C3C45'; Fill = '#00000000' } }
+        default     { return @{ Text = 'Done';      Ink = $window.FindResource('Muted');Edge = '#FF3C3C45'; Fill = '#00000000' } }
+    }
+}
+
+function Sync-RunReport {
+    $r = $script:RunView
+    if (-not $r) { $RunReport.Visibility = 'Collapsed'; $TxtLog.Visibility = 'Visible'; return }
+    $TxtLog.Visibility = 'Collapsed'
+    $RunReport.Visibility = 'Visible'
+
+    $TxtRunTitle.Text = "$($r.kind) run finished"
+    $mins = [int]($r.seconds / 60); $secs = [int]($r.seconds % 60)
+    $took = $(if ($mins -gt 0) { "{0}m {1:00}s" -f $mins, $secs } else { "{0}s" -f $secs })
+    $bytes = [long]0
+    foreach ($i in $r.items) { if ($i.outcome -eq 'ok') { $bytes += [long]$i.bytes } }
+    $when = [string]$r.finished
+    try { $when = ([datetime]$r.finished).ToString('d MMM yyyy, HH:mm') } catch { }
+    $TxtRunSub.Text = "$when   -   took $took" + $(if ($bytes -gt 0) { "   -   $(Format-Size $bytes)" } else { '' })
+
+    $c = $r.counts
+    $chips = New-Object Collections.ArrayList
+    $add = {
+        param($key, $count, $label, $inkKey, $edge)
+        if ($count -le 0 -and $key -ne 'all') { return }
+        $on = ($script:RunFilter -eq $key)
+        [void]$chips.Add([pscustomobject]@{
+            Key = $key; Count = $count; Label = $label
+            Ink = $window.FindResource($inkKey)
+            Edge = $(if ($on) { $window.FindResource('Lift') } else { $edge })
+            Fill = $(if ($on) { '#241B2233' } else { '#00000000' }) })
+    }
+    & $add 'all'       $c.total     'in this run'   'Ink'   '#FF3C3C45'
+    & $add 'ok'        $c.ok        'succeeded'     'Good'  '#FF2C4A34'
+    & $add 'failed'    $c.failed    'failed'        'Bad'   '#FF4A2B30'
+    & $add 'warned'    $c.warned    'with warnings' 'Warn'  '#FF4A422A'
+    & $add 'removed'   $c.removed   'removed'       'Muted' '#FF3C3C45'
+    & $add 'cancelled' $c.cancelled 'cancelled'     'Muted' '#FF3C3C45'
+    $ListRunCounts.ItemsSource = $chips
+
+    $items = @($r.items)
+    if ($script:RunFilter -ne 'all') { $items = @($items | Where-Object { $_.outcome -eq $script:RunFilter }) }
+    # failures first: the reason anyone opens this
+    $order = @{ 'failed' = 0; 'warned' = 1; 'cancelled' = 2; 'removed' = 3; 'ok' = 4; 'other' = 5 }
+    $items = @($items | Sort-Object @{ Expression = { $order[[string]$_.outcome] } }, @{ Expression = { [string]$_.name } })
+
+    $ListRunItems.ItemsSource = @($items | ForEach-Object {
+        $look = Get-OutcomeLook ([string]$_.outcome)
+        [pscustomobject]@{
+            Name = [string]$_.name
+            Detail = [string]$_.detail
+            DetailInk = $(if ($_.outcome -eq 'failed') { $window.FindResource('Bad') } else { $window.FindResource('Dim') })
+            Outcome = $look.Text; Ink = $look.Ink; Edge = $look.Edge; Fill = $look.Fill
+            SizeText = $(if ([long]$_.bytes -gt 0) { Format-Size ([long]$_.bytes) } else { '' })
+        } })
+
+    $failed = @($r.items | Where-Object { $_.outcome -eq 'failed' })
+    $BtnRunRetry.Visibility = $(if ($failed.Count -gt 0 -and $r.kind -eq 'Install') { 'Visible' } else { 'Collapsed' })
+    $BtnRunRetry.Content = "Retry $($failed.Count) failed"
+    $TxtRunFoot.Text = "Kept for the last 20 runs - $(Get-RunsDir)"
+}
+
+function Get-RunReportText {
+    $r = $script:RunView
+    if (-not $r) { return '' }
+    $sb = New-Object Text.StringBuilder
+    [void]$sb.AppendLine("$($r.kind) run - $($r.finished)")
+    [void]$sb.AppendLine("$($r.counts.total) item(s): $($r.counts.ok) ok, $($r.counts.failed) failed, $($r.counts.warned) with warnings")
+    [void]$sb.AppendLine('')
+    foreach ($i in $r.items) {
+        [void]$sb.AppendLine(("{0,-10} {1}" -f (Get-OutcomeLook ([string]$i.outcome)).Text, $i.name))
+        if ($i.detail) { [void]$sb.AppendLine("           $($i.detail)") }
+    }
+    return $sb.ToString()
+}
+
+$ListRuns.Add_SelectionChanged({
+    $row = $ListRuns.SelectedItem
+    $script:RunFilter = 'all'
+    if (-not $row -or -not $row.Path) { $script:RunView = $null; Sync-RunReport; return }
+    $script:RunView = Read-RunRecord $row.Path
+    Sync-RunReport
+    # looked at, so the tab stops shouting
+    Set-ActivityBadge 0
+})
+
+$ListRunCounts.AddHandler([Windows.Controls.Primitives.ButtonBase]::ClickEvent, [Windows.RoutedEventHandler] {
+    param($sender, $e)
+    $btn = $e.OriginalSource -as [Windows.Controls.Button]
+    if (-not $btn) { $btn = $e.Source -as [Windows.Controls.Button] }
+    if (-not $btn -or -not $btn.Tag) { return }
+    $script:RunFilter = [string]$btn.Tag
+    Sync-RunReport
+})
+
+$BtnRunCopy.Add_Click({
+    $t = Get-RunReportText
+    if ($t) { [Windows.Clipboard]::SetText($t); $TxtStatus.Text = 'Report copied.' }
+})
+
+$BtnRunSave.Add_Click({
+    $t = Get-RunReportText
+    if (-not $t) { return }
+    $d = New-Object Microsoft.Win32.SaveFileDialog
+    $d.Filter = 'Text file|*.txt'
+    $d.FileName = "pc2go-run-$((Get-Date).ToString('yyyyMMdd-HHmmss')).txt"
+    if ($d.ShowDialog()) {
+        [IO.File]::WriteAllText($d.FileName, $t, (New-Object Text.UTF8Encoding $false))
+        $TxtStatus.Text = "Report saved to $($d.FileName)"
+    }
+})
+
+# Retry means "put the failures back in front of me", not "start them behind my back" - so it
+# ticks them and opens the same pre-flight sheet any other install goes through.
+$BtnRunRetry.Add_Click({
+    $r = $script:RunView
+    if (-not $r) { return }
+    $ids = @(@($r.items) | Where-Object { $_.outcome -eq 'failed' } | ForEach-Object { [string]$_.id })
+    if ($ids.Count -eq 0) { return }
+    $again = @($script:Items | Where-Object { $ids -contains [string]$_.Id })
+    if ($again.Count -eq 0) {
+        Show-Overlay 'Not in this catalog' 'None of the failed applications are in the catalog now - it may have changed since that run.'
+        return
+    }
+    foreach ($i in $script:Items) { $i.IsSelected = $false }
+    foreach ($i in $again) { $i.IsSelected = $true }
+    Show-Preflight $again 'install'
+})
+
+# ============================================================ uninstall: the table
+#
+# Sorting, filtering, and the numbers the table shows. The lists stay GROUPED - the group
+# description is what puts Desktop programs under one header - so sorting is applied within the
+# group rather than replacing it. Refresh() re-runs filter and sort together, and it keeps the
+# ticks: selection lives on the item, not on the container.
+function Set-UnSort([string]$How) {
+    # pressing the lit column again turns the sort round, the way a table is expected to behave
+    if ($script:UnSort -eq $How) { $script:UnSortDesc = -not $script:UnSortDesc }
+    else {
+        $script:UnSort = $How
+        # size and date read biggest/newest first; names read A to Z
+        $script:UnSortDesc = ($How -in 'size', 'date')
+    }
+    $dir = $(if ($script:UnSortDesc) { 'Descending' } else { 'Ascending' })
+    foreach ($v in @($script:UnView, $script:StoreView)) {
+        if (-not $v) { continue }
+        $v.SortDescriptions.Clear()
+        switch ($script:UnSort) {
+            'size' { $v.SortDescriptions.Add((New-Object ComponentModel.SortDescription 'SizeBytes', $dir)) }
+            'date' { $v.SortDescriptions.Add((New-Object ComponentModel.SortDescription 'Installed', $dir)) }
+            'pub'  { $v.SortDescriptions.Add((New-Object ComponentModel.SortDescription 'Publisher', $dir)) }
+            default { $v.SortDescriptions.Add((New-Object ComponentModel.SortDescription 'Name', $dir)) }
+        }
+    }
+    Sync-UnChrome
+    Update-UnViews
+}
+
+function Sync-UnChrome {
+    $hOn  = $window.FindResource('ColHeadOn')
+    $hOff = $window.FindResource('ColHead')
+    $arrow = $(if ($script:UnSortDesc) { ' v' } else { ' ^' })
+
+    $BtnColName.Style = $(if ($script:UnSort -eq 'name') { $hOn } else { $hOff })
+    $BtnColPub.Style  = $(if ($script:UnSort -eq 'pub')  { $hOn } else { $hOff })
+    $BtnColDate.Style = $(if ($script:UnSort -eq 'date') { $hOn } else { $hOff })
+    $BtnColSize.Style = $(if ($script:UnSort -eq 'size') { $hOn } else { $hOff })
+    $BtnColName.Content = 'PROGRAM'   + $(if ($script:UnSort -eq 'name') { $arrow } else { '' })
+    $BtnColPub.Content  = 'PUBLISHER' + $(if ($script:UnSort -eq 'pub')  { $arrow } else { '' })
+    $BtnColDate.Content = 'INSTALLED' + $(if ($script:UnSort -eq 'date') { $arrow } else { '' })
+    $BtnColSize.Content = 'SIZE'      + $(if ($script:UnSort -eq 'size') { $arrow } else { '' })
+}
+
+function Update-UnViews {
+    foreach ($v in @($script:UnView, $script:StoreView)) { if ($v) { $v.Refresh() } }
+    Update-Dash
+}
+
+# The cells the table draws, and the counts on the pills. Run after a scan, and again after
+# anything that could change what is on screen - a count is only worth having if it is the count
+# of the list underneath it.
+function Sync-UnCells {
+    $rows = @($script:UnItems) + @($script:UnStore)
+    if ($rows.Count -eq 0) { return }
+    $max = 0
+    foreach ($r in $rows) { if ([long]$r.SizeBytes -gt $max) { $max = [long]$r.SizeBytes } }
+    foreach ($r in $rows) {
+        $bytes = [long]$r.SizeBytes
+        $r.ColSize = $(if ($bytes -gt 0) { Format-Size $bytes } else { 'no size' })
+        # A share of the biggest thing on the machine. Absolute bytes are already in the column
+        # beside it; the bar is for telling a 40 GB repack from a 90 MB utility at a glance.
+        $r.SizePercent = $(if ($max -gt 0 -and $bytes -gt 0) { 100.0 * $bytes / $max } else { 0 })
+        # A row Windows could not size is dimmed rather than hidden: it is still removable, and
+        # pretending it weighs nothing would be a lie.
+        $r.RowOpacity = $(if ($bytes -gt 0) { 1.0 } else { 0.55 })
+        $r.ColInstalled = $(if ($r.Installed) { ([datetime]$r.Installed).ToString('dd MMM yyyy') } else { '-' })
+        $r.TagText = ''
+        $r.TagVis = 'Collapsed'
+        if ($bytes -gt 0 -and $bytes -eq $max) { $r.TagText = 'largest'; $r.TagVis = 'Visible' }
+    }
+}
+
+$BtnColName.Add_Click({ Set-UnSort 'name' })
+$BtnColPub.Add_Click({  Set-UnSort 'pub'  })
+$BtnColDate.Add_Click({ Set-UnSort 'date' })
+$BtnColSize.Add_Click({ Set-UnSort 'size' })
+
+$BtnPfCancel.Add_Click({ Hide-Preflight })
+
+# Taking one out here also unticks it in the catalog, because this sheet is a view OF the
+# selection - leaving the tick behind would put it straight back on the next press.
+$ListPf.AddHandler([Windows.Controls.Primitives.ButtonBase]::ClickEvent, [Windows.RoutedEventHandler] {
+    param($sender, $e)
+    $btn = $e.OriginalSource -as [Windows.Controls.Button]
+    if (-not $btn) { $btn = $e.Source -as [Windows.Controls.Button] }
+    if (-not $btn -or -not $btn.Tag) { return }
+    $btn.Tag.IsSelected = $false
+    $script:PfItems = @(@($script:PfItems) | Where-Object { $_ -ne $btn.Tag })
+    Sync-Preflight
+})
+
+$BtnPfGo.Add_Click({
+    $action = $script:PfAction
+    # the belt behind the disabled button: IsEnabled is UI state, and stale UI state must
+    # never commit a batch whose base is missing
+    if ($action -eq 'install' -and (Test-PfDepBlocked)) { return }
+    # the EFFECTIVE batch: remove-first steps, bases ahead of their add-ons, reinstalls last
+    $items = Get-PfCommitItems
+    Hide-Preflight
+    if ($items.Count -eq 0) { return }
+    if ($action -eq 'install') { Start-Batch $items } else { Start-Uninstall $items $false }
+})
+
+$BtnPfAddDep.Add_Click({
+    $base = $BtnPfAddDep.Tag
+    if (-not $base) { return }
+    $base.IsSelected = $true
+    # ahead of everything that requires it - the sheet mirrors the order the batch will run
+    $script:PfItems = @(@($base) + @(@($script:PfItems) | Where-Object { $_ -ne $base }))
+    Sync-Preflight
+})
+$ChkPfReinstall.Add_Checked({   if ($script:PfDep) { $script:PfDep.Reinstall = $true };  Sync-Preflight })
+$ChkPfReinstall.Add_Unchecked({ if ($script:PfDep) { $script:PfDep.Reinstall = $false }; Sync-Preflight })
+
 $BtnOverlayOk.Add_Click({
     $Overlay.Visibility = 'Collapsed'
     $act = $script:ConfirmAction
@@ -7961,11 +13725,72 @@ $BtnOverlayOk.Add_Click({
 })
 $BtnOverlayCancel.Add_Click({ $Overlay.Visibility = 'Collapsed'; $script:ConfirmAction = $null })
 
+# Dismissing is the only thing that closes the strip. It is deliberately NOT closed when the
+# batch completes: that is the moment the results want reading.
+# One toggle, in one place, on a header that is always there while a batch exists. The whole
+# header is the target as well as the chevron - a 26px hit box is not what you aim at while
+# watching a download.
+function Switch-BatchFold {
+    $script:BatchFolded = -not $script:BatchFolded
+    Sync-BatchStrip
+}
+$BtnBatchFold.Add_Click({ Switch-BatchFold })
+$BatchHead.Add_MouseLeftButtonDown({
+    param($src, $e)
+    # not when the click was really aimed at one of the buttons docked in this header
+    if ($e.OriginalSource -isnot [Windows.Controls.DockPanel] -and
+        $e.OriginalSource -isnot [Windows.Controls.TextBlock]) { return }
+    Switch-BatchFold
+})
+
+# Only reachable once the batch has ended - see Sync-BatchStrip
+$BtnBatchClose.Add_Click({
+    $BatchStrip.Visibility = 'Collapsed'
+    $script:BatchRows.Clear()
+})
+
+# One handler on the list rather than one per row: the rows come from a DataTemplate, so
+# their buttons do not exist until WPF makes them. Click bubbles up to here, and each button
+# carries its own row in Tag.
+$ListBatch.AddHandler([Windows.Controls.Primitives.ButtonBase]::ClickEvent, [Windows.RoutedEventHandler] {
+    param($sender, $e)
+    $btn = $e.OriginalSource -as [Windows.Controls.Button]
+    if (-not $btn) { $btn = $e.Source -as [Windows.Controls.Button] }
+    if (-not $btn -or -not $btn.Tag) { return }
+    Remove-FromBatch $btn.Tag
+})
+
+# Bulk tick, with the two exceptions that are each somebody's disaster story. Suite-shared
+# components stay unticked - "select all" must never be the click that breaks Revit because
+# AutoCAD was removed. And rows hidden behind the possible-matches toggle stay unticked too:
+# nothing may be marked for deletion while it is not on screen. Del has no change notification,
+# so the view is refreshed to rebuild the checkboxes.
+$BtnWipeAll.Add_Click({
+    foreach ($f in @($script:WipeFindings)) {
+        if ($f.Shared) { continue }
+        if ($f.Weak -and -not $script:WipeShowWeak) { continue }
+        $f.Del = $true
+    }
+    try { $script:WipeView.Refresh() } catch { }
+})
+$BtnWipeNone.Add_Click({
+    foreach ($f in @($script:WipeFindings)) { $f.Del = $false }
+    try { $script:WipeView.Refresh() } catch { }
+})
+
+$BtnWipeWeak.Add_Click({
+    $script:WipeShowWeak = -not $script:WipeShowWeak
+    $n = @($script:WipeFindings | Where-Object { $_.Weak }).Count
+    $BtnWipeWeak.Content = $(if ($script:WipeShowWeak) { "Hide $n possible match(es)" } else { "Show $n possible match(es)" })
+    try { $script:WipeView.Refresh() } catch { }
+})
+
 $BtnWipeSkip.Add_Click({
     $WipeOverlay.Visibility = 'Collapsed'
     Add-Log 'Leftover cleanup skipped by technician - nothing was deleted.'
     $script:WipeFindings.Clear()
-    if ($script:ForceMode) { Finish-Batch } else { Complete-Worker }
+    Set-ForceRemoveOutcome 'cleanup was skipped, and force remove runs no uninstaller'
+    Release-Worker
 })
 
 $BtnWipeGo.Add_Click({
@@ -7974,7 +13799,37 @@ $BtnWipeGo.Add_Click({
     if ($chosen.Count -eq 0) {
         Add-Log 'No leftover items were checked - nothing deleted.'
         $script:WipeFindings.Clear()
-        if ($script:ForceMode) { Finish-Batch } else { Complete-Worker }
+        Set-ForceRemoveOutcome 'nothing was ticked for removal, and force remove runs no uninstaller'
+        Release-Worker
+        return
+    }
+    # A url-form remover is fetched NOW, by the GUI, and handed to the worker as a local file
+    # with its expected hash - the same contract post-install files use: nothing reaches the
+    # elevated side without a pin it can verify. file:/// is for local catalogs and harnesses.
+    foreach ($c in @($chosen | Where-Object { $_.Type -eq 'run' -and $_.Path -match '^(?i)(https?|file)://' })) {
+        $fn = ''
+        try { $fn = [IO.Path]::GetFileName(([Uri]$c.Path).LocalPath) } catch { $fn = '' }
+        if (-not $fn) { $fn = "remover-$([Guid]::NewGuid().ToString('N').Substring(0, 8)).exe" }
+        $rdir = Join-Path $script:CacheDir 'removers'
+        if (-not (Test-Path -LiteralPath $rdir)) { New-Item -ItemType Directory -Force -Path $rdir | Out-Null }
+        $local = Join-Path $rdir $fn
+        try {
+            Add-Log "Fetching removal tool $fn..."
+            if ($c.Path -match '^(?i)file://') {
+                Copy-Item -LiteralPath ([Uri]$c.Path).LocalPath -Destination $local -Force -ErrorAction Stop
+            } else {
+                Invoke-WebRequest -Uri $c.Path -OutFile $local -UseBasicParsing -TimeoutSec 120
+            }
+            $c | Add-Member -NotePropertyName LocalFile -NotePropertyValue $local -Force
+        } catch {
+            Add-Log "Could not fetch removal tool $fn - $($_.Exception.Message). It was skipped; everything else still runs."
+            $chosen = @($chosen | Where-Object { $_ -ne $c })
+        }
+    }
+    if ($chosen.Count -eq 0) {
+        Add-Log 'Nothing runnable was left after fetching - no cleanup was performed.'
+        $script:WipeFindings.Clear()
+        Release-Worker
         return
     }
     # group by owning app so each row reports its own cleanup result
@@ -7983,7 +13838,16 @@ $BtnWipeGo.Add_Click({
         if ($item) { Set-Status $item 'Cleaning leftovers' 'active'; Set-Ring $item 'busy' }
         $entry = @{
             id = $grp.Name; action = 'wipe'
-            targets = @($grp.Group | ForEach-Object { @{ type = $_.Type; path = $_.Path; name = $_.Name } })
+            targets = @($grp.Group | ForEach-Object {
+                $t = @{ type = $_.Type; path = $_.Path; name = $_.Name }
+                if ($_.Type -eq 'run') {
+                    $t['args'] = ('' + $_.Args)
+                    if ($_.PSObject.Properties['LocalFile']) {
+                        $t['file'] = [string]$_.LocalFile
+                        $t['sha256'] = ('' + $_.Sha256)
+                    }
+                }
+                $t })
         } | ConvertTo-Json -Compress -Depth 4
         Add-Content -Path $script:QueuePath -Value $entry -Encoding UTF8
     }
@@ -8221,8 +14085,16 @@ $BtnNewUserOk.Add_Click({
                                              'and must be 20 characters or fewer.')
         return
     }
-    if (@($script:DstUsers | Where-Object { $_.Name -eq $name }).Count) {
-        Show-Overlay 'Account exists' "There is already a local account called `"$name`". Pick it in the Copy TO column instead."
+    # AccountItems, not DstUsers. DstUsers is the migration destination list and holds only
+    # ENABLED accounts, so a name matching a DISABLED account sailed through this check and
+    # then failed in the elevated worker with 'could not create the account' and no reason -
+    # for a name that is plainly visible in the list right above.
+    $clash = @($script:AccountItems | Where-Object { $_.Name -eq $name })[0]
+    if ($clash) {
+        Show-Overlay 'Account exists' (
+            "There is already a local account called `"$name`" on this machine" +
+            $(if (@($script:DstUsers | Where-Object { $_.Name -eq $name }).Count) { '.' }
+              else { ', and it is currently DISABLED. Enable it from the Accounts tab rather than creating a second one.' }))
         return
     }
     # Blank display name means "same as the sign-in name" rather than no display name at
@@ -8438,15 +14310,1035 @@ function Invoke-ReplaceWithLocal([object]$Acct) {
     Show-Confirm 'Replace with a local admin?' $msg ({ Start-UserChain $steps }.GetNewClosure())
 }
 
+# ---------- finding the other PC ----------
+#
+# Explorer's Network view cannot be used for this. `net view` returns *system error 6118* on a
+# current Windows - measured on this machine - because the Computer Browser service is gone and
+# SMB1, which the browse list depended on, is off by default. There is no in-box replacement that
+# enumerates a workgroup.
+#
+# So it is a scan: walk the local /24, ask each address whether it will talk SMB, and put a name to
+# the ones that will. That is broadly what Explorer does now too, via WSD, only slower.
+#
+# Everything here degrades to nothing gracefully. On the network this was written on, eight hosts
+# answered ARP and NOT ONE answered 445 - they were phones and IoT. Discovery finding nothing is a
+# normal outcome, and the UI must always let a name be typed by hand.
+
+# The /24s this machine is actually on. Loopback and APIPA are skipped, and so is anything with a
+# prefix shorter than /22 - scanning a /16 would be 65,000 probes and the technician would
+# reasonably conclude the tool had hung.
+function Get-LocalSubnets {
+    $out = @()
+    try {
+        # Only adapters that are actually UP, and actually LOCAL.
+        #
+        # MEASURED on the machine this was written on: it has SIX IPv4 addresses and exactly ONE of
+        # them is a network another PC could be sitting on. Wi-Fi and Bluetooth were Disconnected,
+        # two were ghost "Local Area Connection*" entries with no adapter behind them at all, and
+        # Tailscale - InterfaceType 53, and a /32 - contributed a whole 254-address sweep of a
+        # network that by definition holds nobody but this machine. That was HALF the scan, and all
+        # of it wasted: "asked 508 addresses" where 254 was the honest number.
+        $up = $null
+        try {
+            $up = @{}
+            foreach ($a in @(Get-NetAdapter -ErrorAction Stop)) {
+                if ($a.Status -ne 'Up') { continue }
+                # 6 = Ethernet, 71 = Wi-Fi. Everything else on that list is a tunnel, a VPN, PPP or
+                # loopback, and none of those has a neighbour you can hand a file to.
+                $ty = [int]$a.InterfaceType
+                if ($ty -ne 6 -and $ty -ne 71) { continue }
+                $up[[int]$a.InterfaceIndex] = $true
+            }
+        } catch {
+            # No NetAdapter module: fall back to filtering on the address alone rather than
+            # refusing to scan anything at all. Worse, but not nothing.
+            $up = $null
+        }
+        foreach ($a in @(Get-NetIPAddress -AddressFamily IPv4 -ErrorAction Stop)) {
+            $ip = [string]$a.IPAddress
+            if ($ip -like '127.*' -or $ip -like '169.254.*') { continue }
+            if ($null -ne $up -and -not $up.ContainsKey([int]$a.InterfaceIndex)) { continue }
+            # /22 is the widest worth sweeping - a /16 is 65,000 probes and reads as a hang. A /31
+            # or /32 is a point-to-point link with no room for a neighbour, so it is not a network
+            # to scan either; that is the test the Tailscale address slipped straight through.
+            $len = [int]$a.PrefixLength
+            if ($len -lt 22 -or $len -gt 30) { continue }
+            $parts = $ip -split '\.'
+            if ($parts.Count -ne 4) { continue }
+            $net = "$($parts[0]).$($parts[1]).$($parts[2])"
+            if ($out -notcontains $net) { $out += $net }
+        }
+    } catch { }
+    return ,$out
+}
+
+
+# A name a human recognises, or the address if nothing will give one up. Reverse DNS first because
+# it is instant when it works; NetBIOS second because on a workgroup it is usually the only thing
+# that answers at all.
+function Resolve-HostLabel([string]$Ip) {
+    # Windows PowerShell 5.1, and this bit a real assertion: when $ErrorActionPreference is 'Stop',
+    # anything a NATIVE command writes to stderr is turned into a TERMINATING error before the
+    # 2>$null redirection gets a look in. net.exe writes "System error 53" there for a host that
+    # does not exist, so under 'Stop' the exit-code check below was never reached at all - the
+    # catch swallowed it and an unreachable PC came back as "shares nothing". This file runs under
+    # 'Stop' for its first 6,600 lines, so the behaviour of these two depended on WHERE they were
+    # called from. Pinned locally instead, so it depends on nothing.
+    $ErrorActionPreference = 'Continue'
+    try {
+        $h = ([Net.Dns]::GetHostEntry($Ip)).HostName
+        if ($h -and $h -ne $Ip) { return ($h -split '\.')[0] }
+    } catch { }
+    try {
+        $out = & "$env:SystemRoot\System32\nbtstat.exe" -A $Ip 2>$null
+        foreach ($line in @($out)) {
+            # the <20> record is the file-server name, which is precisely the one that matters here
+            if ($line -match '^\s*(\S+)\s*<20>') { return $Matches[1].Trim() }
+        }
+    } catch { }
+    return $Ip
+}
+
+# What is shared on it. `net view \\HOST` still works against a SPECIFIC machine even though the
+# browse list does not - it asks that host directly rather than a browser master that no longer
+# exists. Administrative shares (C$, ADMIN$, IPC$) are filtered out: they need admin credentials,
+# and offering them beside ordinary shares invites picking one by accident.
+function Get-HostShares([string]$Machine) {
+    $out = @()
+    # Windows PowerShell 5.1, and this bit a real assertion: when $ErrorActionPreference is 'Stop',
+    # anything a NATIVE command writes to stderr is turned into a TERMINATING error before the
+    # 2>$null redirection gets a look in. net.exe writes "System error 53" there for a host that
+    # does not exist, so under 'Stop' the exit-code check below was never reached at all - the
+    # catch swallowed it and an unreachable PC came back as "shares nothing". This file runs under
+    # 'Stop' for its first 6,600 lines, so the behaviour of these two depended on WHERE they were
+    # called from. Pinned locally instead, so it depends on nothing.
+    $ErrorActionPreference = 'Continue'
+    try {
+        $lines = & "$env:SystemRoot\System32\net.exe" view "\\$Machine" 2>$null
+        # MEASURED, against a real PC on this network: one that wants a sign-in it has not been
+        # given answers "System error 5 has occurred" and exits 2. Parsed for share rows, that
+        # yields an empty list - identical to a machine genuinely sharing nothing, and those are
+        # completely different problems to be holding.
+        #
+        # $null therefore means "could not ask", the same sentinel Get-RobocopyListing uses for an
+        # enumeration that failed. Callers must test for it BEFORE testing .Count, and must not
+        # wrap the call in @() - that would flatten the sentinel back into "nothing there".
+        if ($LASTEXITCODE -ne 0) { return $null }
+        $seen = $false
+        foreach ($line in @($lines)) {
+            if ($line -match '^-{3,}') { $seen = $true; continue }
+            if (-not $seen) { continue }
+            if ($line -match '^The command completed') { continue }
+            $t = ('' + $line).Trim()
+            if (-not $t) { continue }
+            # "ShareName   Disk   optional comment"
+            $name = ($t -split '\s{2,}')[0].Trim()
+            if (-not $name -or $name.EndsWith('$')) { continue }
+            if ($t -notmatch '(?i)\bdisk\b') { continue }    # printers and IPC are not backup targets
+            $out += $name
+        }
+    } catch { }
+    # ,$out and not $out. PowerShell UNROLLS a returned array, so a bare `return $out` hands
+    # an empty list back to the caller as $null - which would make "shares nothing" and the
+    # $null above ("would not say") the same value, and the whole distinction pointless. The
+    # leading comma wraps it so an empty array survives as an empty array.
+    return ,$out
+}
+
+# The sweep. $Tick is called with (scanned, total, foundSoFar) so a caller on the UI thread can
+# keep the window breathing - 254 probes at 300ms each is over a minute in the worst case, and a
+# frozen window during it would look exactly like a hang.
+function Find-NetworkHosts([scriptblock]$Tick, [int]$TimeoutMs = 600, [scriptblock]$OnFound) {
+    $found = @()
+    $nets = @(Get-LocalSubnets)
+    if (-not $nets.Count) { return $found }
+    $mine = @()
+    try { $mine = @(Get-NetIPAddress -AddressFamily IPv4 -ErrorAction Stop | ForEach-Object { [string]$_.IPAddress }) } catch { }
+
+    # Probed in PARALLEL, a chunk at a time.
+    #
+    # This used to ask one address, wait up to its timeout, then ask the next - 254 waits in a row,
+    # measured at 65 seconds for a single subnet. ConnectAsync hands the waiting to the OS, so a
+    # whole chunk costs ONE timeout instead of sixty-four of them and the sweep drops to seconds.
+    # There is no thread per socket here: these are IO completion ports, not threads.
+    #
+    # The chunk also ends the moment every probe in it has answered, which on a real LAN is almost
+    # at once - a closed port refuses immediately, and only silent or firewalled addresses sit out
+    # the full timeout.
+    $total = $nets.Count * 254
+    $done  = 0
+    $stop  = $false
+    $CHUNK = 64
+    foreach ($net in $nets) {
+        for ($base = 1; $base -le 254 -and -not $stop; $base += $CHUNK) {
+            $last = [Math]::Min($base + $CHUNK - 1, 254)
+            $probes = @()
+            for ($i = $base; $i -le $last; $i++) {
+                $ip = "$net.$i"
+                if ($mine -contains $ip) { continue }        # this machine is not the other PC
+                $c = $null
+                try {
+                    $c = New-Object Net.Sockets.TcpClient
+                    # TCP 445, not ping: a machine can answer ICMP and share nothing, and plenty
+                    # drop ping while sharing perfectly well. The port IS the question being asked.
+                    $probes += [pscustomobject]@{ Ip = $ip; Client = $c; Task = $c.ConnectAsync($ip, 445) }
+                } catch { if ($c) { try { $c.Close() } catch { } } }
+            }
+            $sw = [Diagnostics.Stopwatch]::StartNew()
+            while (-not $stop) {
+                $pending = @($probes | Where-Object { -not $_.Task.IsCompleted }).Count
+                if (-not $pending -or $sw.ElapsedMilliseconds -ge $TimeoutMs) { break }
+                if ($Tick) {
+                    # Ticked from INSIDE the wait, not only between chunks, so the window keeps
+                    # breathing and Stop is answered within a frame rather than at the end of a
+                    # chunk. A tick that comes back $false is a Stop press - the same idiom the
+                    # download pump uses for pause. Type-guarded, because a scriptblock that emits
+                    # anything else at all would otherwise read as a stop.
+                    $go = $true
+                    try { $go = & $Tick ($done + $probes.Count - $pending) $total $found.Count } catch { }
+                    if ($go -is [bool] -and -not $go) { $stop = $true }
+                }
+                Start-Sleep -Milliseconds 40
+            }
+            foreach ($p in $probes) {
+                $ok = $false
+                try { $ok = $p.Task.IsCompleted -and -not $p.Task.IsFaulted -and $p.Client.Connected } catch { }
+                # closed either way: an abandoned ConnectAsync would otherwise hold its socket open
+                # long past the point anybody cares what it was going to say
+                try { $p.Client.Close() } catch { }
+                if (-not $ok -or $stop) { continue }
+                $hit = [pscustomobject]@{ Ip = $p.Ip; Name = (Resolve-HostLabel $p.Ip) }
+                $found += $hit
+                # Handed over the MOMENT it answers. Holding back a PC found in the first second
+                # until the whole sweep finishes is making somebody wait for news you already have.
+                # $null =, not a bare call. A scriptblock invoked with & puts whatever it emits
+                # into THIS function output stream, so a chatty callback gets collected by the
+                # caller @() alongside the hosts. It is the same trap Update-UI documents at
+                # its own [void], and it was not theoretical: see the final tick below.
+                if ($OnFound) { try { $null = & $OnFound $hit } catch { } }
+            }
+            $done += ($last - $base + 1)
+            if ($Tick -and -not $stop) {
+                $go = $true
+                try { $go = & $Tick $done $total $found.Count } catch { }
+                if ($go -is [bool] -and -not $go) { $stop = $true }
+            }
+        }
+        if ($stop) { break }
+    }
+    # MEASURED: this was a bare call while every other tick site assigned to $go, so the tick
+    # return - $true, in the GUI, meaning "not stopped" - was emitted straight into the result
+    # and counted as a discovered PC. One machine on the network, "2 PC(s) found".
+    if ($Tick -and -not $stop) { try { $null = & $Tick $total $total $found.Count } catch { } }
+    return $found
+}
+
+# ---------- Data Backup: which of the three jobs is this? ----------
+#
+# One engine, three destinations, and the only thing that really differs is where the copy is
+# going and what has to be true about it. The mode lives in one variable rather than being
+# inferred from which controls happen to be filled in, because "work out the intent from the UI
+# state" is how a backup ends up pointed somewhere nobody chose.
+#
+#   profile  - another account on this machine        (srcKind profile -> dstKind profile)
+#   folder   - a drive, a USB stick, a share          (srcKind profile -> dstKind folder)
+#   restore  - a backup put back into an account      (srcKind folder  -> dstKind profile)
+$script:BackupMode = 'profile'
+$script:FolderPath = ''
+# Filled in by Load-Users; Sync-UserHint can be called before it has ever run.
+$script:MsaNames   = @()
+
+function Sync-BackupMode {
+    $on  = $window.FindResource('TabActive')
+    $off = $window.FindResource('TabIdle')
+    $BtnModeProfile.Style = $(if ($script:BackupMode -eq 'profile') { $on } else { $off })
+    $BtnModeFolder.Style  = $(if ($script:BackupMode -eq 'folder')  { $on } else { $off })
+    $BtnModeRestore.Style = $(if ($script:BackupMode -eq 'restore') { $on } else { $off })
+
+    # The account list and the folder picker share the right-hand column, so the layout does not
+    # jump as the mode changes. Exactly one of them is ever visible.
+    $PanelFolderPick.Visibility = $(if ($script:BackupMode -eq 'profile') { 'Collapsed' } else { 'Visible' })
+
+    switch ($script:BackupMode) {
+        'folder' {
+            $TxtFolderWhat.Text = 'Back up to this folder:'
+            $TxtFolderNote.Text = 'A drive, a USB stick or a network share. It must be outside the profile being ' +
+                                  'copied - a folder inside it would be copied into itself and fill the disk. ' +
+                                  'Running this again later copies only what has changed.'
+            $TxtFolderNote.Foreground = $window.FindResource('Dim')
+            $BtnMigrate.Content = 'Back Up Data'
+        }
+        'restore' {
+            $TxtFolderWhat.Text = 'Restore from this backup folder:'
+            $TxtFolderNote.Text = 'Pick the folder a previous backup was written to. It has to contain the ' +
+                                  'pc2go-backup.json this tool writes, so an ordinary folder cannot be poured ' +
+                                  'over a profile by mistake.'
+            $TxtFolderNote.Foreground = $window.FindResource('Dim')
+            $BtnMigrate.Content = 'Restore Data'
+        }
+        default {
+            $BtnMigrate.Content = 'Back Up Data'
+        }
+    }
+    # The column headings are part of the instruction, not decoration. Left at 'the new
+    # profile', they describe a USB stick as an account and a restore backwards.
+    switch ($script:BackupMode) {
+        'folder' {
+            $TxtFromTitle.Text = 'Back up FROM'; $TxtFromWhat.Text = 'this account'
+            $TxtToTitle.Text   = 'Back up TO';   $TxtToWhat.Text   = 'a drive, USB or another PC'
+        }
+        'restore' {
+            $TxtFromTitle.Text = 'Restore FROM'; $TxtFromWhat.Text = 'a backup folder'
+            $TxtToTitle.Text   = 'Restore INTO'; $TxtToWhat.Text   = 'this account'
+        }
+        default {
+            $TxtFromTitle.Text = 'Copy FROM'; $TxtFromWhat.Text = 'the broken profile'
+            $TxtToTitle.Text   = 'Copy TO';   $TxtToWhat.Text   = 'the new profile'
+        }
+    }
+    # The picker MOVES between the columns rather than being duplicated in both.
+    #
+    # For a drive backup the folder is the destination, so it belongs on the right. For a
+    # RESTORE it is the source and belongs on the left - and the account list has to stay
+    # visible on the right, because a restore still needs an account to restore INTO. Hiding
+    # the list for restore left nowhere to choose one at all.
+    $wantParent = $(if ($script:BackupMode -eq 'restore') { $SrcColumn } else { $DstColumn })
+    if ($PanelFolderPick.Parent -ne $wantParent) {
+        try { $PanelFolderPick.Parent.Children.Remove($PanelFolderPick) } catch { }
+        try { [void]$wantParent.Children.Add($PanelFolderPick) } catch { }
+    }
+    # Whichever column the picker took over, that column's list steps aside.
+    $ListSrcUsers.Visibility = $(if ($script:BackupMode -eq 'restore') { 'Collapsed' } else { 'Visible' })
+    $ListDstUsers.Visibility = $(if ($script:BackupMode -eq 'folder')  { 'Collapsed' } else { 'Visible' })
+    Sync-UserHint
+    Update-UserEmptyStates
+    Update-Dash
+}
+
+function Select-BackupMode([string]$Which) {
+    if (Test-BatchBusy) { return }
+    if ($script:BackupMode -eq $Which) { return }
+    $script:BackupMode = $Which
+    # A sign-in belongs to the folder it was typed for. Carrying it into a different mode would
+    # mean a USB backup still quietly trying to authenticate to someone else machine.
+    $script:NetUser = ''; $script:NetPassword = ''
+    # The item list is built from whatever the SOURCE is, and restore reads its list out of the
+    # backup rather than off a profile, so ticks carried over from the previous mode mean nothing.
+    Sync-BackupMode
+    Build-MigrateList
+}
+
+$BtnModeProfile.Add_Click({ Select-BackupMode 'profile' })
+$BtnModeFolder.Add_Click({  Select-BackupMode 'folder'  })
+$BtnModeRestore.Add_Click({ Select-BackupMode 'restore' })
+
+# The folder picker.
+#
+# FolderBrowserDialog, not the modern one: this is Windows PowerShell 5.1 with no WinRT
+# projection, and System.Windows.Forms is in-box. It is dated and it works on every machine this
+# will ever run on, which for a tool pasted into somebody else's PC is the right trade.
+$BtnFolderPick.Add_Click({
+    if (Test-BatchBusy) { return }
+    $picked = ''
+    try {
+        Add-Type -AssemblyName System.Windows.Forms -ErrorAction Stop
+        $dlg = New-Object Windows.Forms.FolderBrowserDialog
+        $dlg.Description = $(if ($script:BackupMode -eq 'restore') { 'Pick the backup folder to restore from' }
+                            else { 'Pick where the backup should be written' })
+        $dlg.ShowNewFolderButton = ($script:BackupMode -ne 'restore')
+        # a stick is what this is usually for, so start where the drives are
+        $dlg.RootFolder = 'MyComputer'
+        if ($dlg.ShowDialog() -eq 'OK') { $picked = $dlg.SelectedPath }
+        $dlg.Dispose()
+    } catch {
+        Show-Overlay 'Could not open the folder picker' $_.Exception.Message
+        return
+    }
+    if (-not $picked) { return }
+    # A locally picked folder carries no sign-in, and any left over from a network pick has to
+    # go with it - otherwise a later USB backup would still be trying to sign into someone PC.
+    Set-BackupFolder $picked '' ''
+})
+
+
+# ---------- reaching a share from the GUI ----------
+#
+# The same three functions the worker has, in the GUI process as well. Two copies on purpose, for
+# the same reason ConvertTo-PSRegPath has two: the worker's entire source is a string inside this
+# file, the two halves are separate processes, and there is no module for them to share.
+#
+# The GUI needs them because both questions it has to answer - "what does that PC share" and "is
+# this sign-in any good" - have to be answered BEFORE the job is queued. Finding out the password
+# was wrong three gigabytes into a copy, from an elevated process the technician cannot see, is
+# precisely the outcome this exists to prevent.
+if (-not ('Native.Share' -as [type])) {
+    Add-Type -Namespace Native -Name Share -MemberDefinition @'
+[System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential, CharSet = System.Runtime.InteropServices.CharSet.Unicode)]
+public struct NETRESOURCE {
+    public int dwScope; public int dwType; public int dwDisplayType; public int dwUsage;
+    public string lpLocalName; public string lpRemoteName; public string lpComment; public string lpProvider;
+}
+[System.Runtime.InteropServices.DllImport("mpr.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode)]
+public static extern int WNetAddConnection2(ref NETRESOURCE r, string password, string username, int flags);
+[System.Runtime.InteropServices.DllImport("mpr.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode)]
+public static extern int WNetCancelConnection2(string name, int flags, bool force);
+'@ -ErrorAction SilentlyContinue
+}
+
+function Get-ShareRoot([string]$Path) {
+    if (-not $Path) { return '' }
+    $bs = [string][char]92
+    $p = $Path.Trim()
+    if (-not $p.StartsWith($bs + $bs)) { return '' }
+    $parts = @($p.TrimStart([char]92) -split '\\+' | Where-Object { $_ })
+    if ($parts.Count -lt 2) { return '' }
+    return ($bs + $bs + $parts[0] + $bs + $parts[1])
+}
+
+function Connect-Share([string]$Path, [string]$User, [string]$Password) {
+    # Reset FIRST, before any early return. Callers read $script:LastShareRc to tell "it refused
+    # you" - worth raising a credential prompt for - from "it is not there", which never is. An
+    # early return that left the PREVIOUS call code sitting there made the answer depend on
+    # whatever was asked last: measured, C:\Windows reported rc=5, "refused the connection".
+    $script:LastShareRc = -1
+    $root = Get-ShareRoot $Path
+    # Not a share at all: nothing to connect, and that is a success, not a refusal.
+    if (-not $root) { $script:LastShareRc = 0; return '' }
+    if (-not ('Native.Share' -as [type])) { return 'the network connection API is unavailable' }
+    $nr = New-Object Native.Share+NETRESOURCE
+    $nr.dwType = 1                                     # RESOURCETYPE_DISK
+    $nr.lpRemoteName = $root
+    $rc = 0
+    try { $rc = [Native.Share]::WNetAddConnection2([ref]$nr, $Password, $User, 0) }
+    catch { return "could not reach $root - $($_.Exception.Message)" }
+    $script:LastShareRc = $rc
+    if ($rc -eq 0) { return '' }
+    if ($rc -eq 1219) {
+        return "$root is already connected as a different user. Windows allows one identity per " +
+               'server at a time, so the existing connection has to be dropped before a different ' +
+               'sign-in can be offered.'
+    }
+    # MEASURED against the real network stack: a host that does not exist returns 64
+    # (ERROR_NETNAME_DELETED) or 67 (ERROR_BAD_NET_NAME), depending on how far the connection got
+    # before giving up. 53/55 are the older pair, 1231/1232 an unreachable network or host.
+    # Leaving 64 unmapped printed a bare "(error 64)" for the commonest failure there is.
+    if ($rc -eq 53 -or $rc -eq 55 -or $rc -eq 64 -or $rc -eq 67 -or $rc -eq 1231 -or $rc -eq 1232) {
+        return "$root could not be reached - check that PC is on, awake, and on this network"
+    }
+    # mpr returns 5 BOTH for "you may not use this share" and for "there is no such share", with
+    # no way at all to tell them apart, so this must not claim to know which one it was.
+    if ($rc -eq 5) {
+        return "$root refused the connection. Either that folder is not shared, or the sign-in given is not allowed to use it."
+    }
+    if ($rc -eq 1326) { return "the username or password for $root was not accepted" }
+    return "could not connect to $root (error $rc)"
+}
+
+function Disconnect-Share([string]$Path) {
+    $root = Get-ShareRoot $Path
+    if (-not $root) { return }
+    if (-not ('Native.Share' -as [type])) { return }
+    try { [void][Native.Share]::WNetCancelConnection2($root, 0, $false) } catch { }
+}
+
+# ---------- asking for a sign-in, the way Windows asks ----------
+#
+# CredUIPromptForWindowsCredentials is the prompt Explorer itself raises when a share turns you
+# away: the real system dialog, the real look, the real show-password toggle, and the real "The
+# user name or password is incorrect" line on a bad retry. Two boxes drawn inside this tool would
+# be an imitation of it - and an imitation asking for somebody password is precisely the thing
+# people are taught never to type into.
+#
+# It is also raised ONLY after the machine has been reached and has refused. That is the useful
+# part: the prompt appearing is proof the PC was found, is awake and is talking, which is the one
+# thing a folder path cannot tell you.
+if (-not ('Native.CredUi' -as [type])) {
+    Add-Type -Namespace Native -Name CredUi -MemberDefinition @'
+[System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential, CharSet = System.Runtime.InteropServices.CharSet.Unicode)]
+public struct CREDUI_INFO {
+    public int cbSize; public System.IntPtr hwndParent;
+    public string pszMessageText; public string pszCaptionText; public System.IntPtr hbmBanner;
+}
+[System.Runtime.InteropServices.DllImport("credui.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode)]
+public static extern int CredUIPromptForWindowsCredentials(ref CREDUI_INFO pUiInfo, int dwAuthError,
+    ref uint pulAuthPackage, System.IntPtr pvInAuthBuffer, uint ulInAuthBufferSize,
+    out System.IntPtr ppvOutAuthBuffer, out uint pulOutAuthBufferSize, ref bool pfSave, int dwFlags);
+[System.Runtime.InteropServices.DllImport("credui.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode, SetLastError = true)]
+public static extern bool CredPackAuthenticationBuffer(int dwFlags, string pszUserName, string pszPassword,
+    System.IntPtr pPackedCredentials, ref int pcbPackedCredentials);
+[System.Runtime.InteropServices.DllImport("credui.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode, SetLastError = true)]
+public static extern bool CredUnPackAuthenticationBuffer(int dwFlags, System.IntPtr pAuthBuffer, uint cbAuthBuffer,
+    System.Text.StringBuilder pszUserName, ref int pcchMaxUserName,
+    System.Text.StringBuilder pszDomainName, ref int pcchMaxDomainName,
+    System.Text.StringBuilder pszPassword, ref int pcchMaxPassword);
+[System.Runtime.InteropServices.DllImport("ole32.dll")]
+public static extern void CoTaskMemFree(System.IntPtr ptr);
+'@ -ErrorAction SilentlyContinue
+}
+
+# A bare username means an account ON THE OTHER PC.
+#
+# The prompt used to open with "MACHINE\" already typed into it, which was meant to make that
+# obvious and instead made it worse: a half-written username sitting in a box, and if only a
+# password was entered Windows submitted "MACHINE\" as the whole account name. The box is empty
+# now, exactly like the one Explorer raises, and the rule lives here where it can be relied on.
+#
+# Anything already qualified is left completely alone - a backslash means a domain or a machine was
+# named on purpose, an @ means a UPN. Only a bare name is ambiguous, and for a share the
+# unambiguous reading is "on that machine".
+function Resolve-ShareUser([string]$User, [string]$Machine) {
+    $u = ([string]$User).Trim()
+    if (-not $u) { return '' }
+    if ($u.Contains([string][char]92) -or $u.Contains('@')) { return $u }
+    if (-not $Machine) { return $u }
+    return ($Machine + [string][char]92 + $u)
+}
+
+# $AuthError is handed straight to Windows so that on a retry the dialog says "The user name or
+# password is incorrect" in its own words, rather than this tool inventing a second phrasing for
+# something the OS already has a sentence for.
+function Request-ShareCredential([string]$Target, [int]$AuthError = 0) {
+    $out = @{ Ok = $false; User = ''; Password = '' }
+    if (-not ('Native.CredUi' -as [type])) { return $out }
+    $machine = ([string]$Target).Trim([char]92)
+    $cut = $machine.IndexOf([char]92)
+    if ($cut -gt 0) { $machine = $machine.Substring(0, $cut) }
+
+    $info = New-Object Native.CredUi+CREDUI_INFO
+    $info.cbSize = [Runtime.InteropServices.Marshal]::SizeOf([type]'Native.CredUi+CREDUI_INFO')
+    $info.hwndParent = [IntPtr]::Zero
+    # Parented to the window, so it is modal to this tool rather than a stray box behind it.
+    try { $info.hwndParent = (New-Object Windows.Interop.WindowInteropHelper($window)).Handle } catch { }
+    $info.pszCaptionText = "Sign in to $machine"
+    $info.pszMessageText = "$machine answered, but it will not show what it shares without a sign-in." +
+                           "`n`nUse an account that exists ON THAT PC."
+
+    $pkg = [uint32]0
+    $outBuf = [IntPtr]::Zero
+    $outSize = [uint32]0
+    $save = $false
+    $rc = 1223
+    try {
+        # CREDUIWIN_GENERIC (1): the credential is used here, now, for one connection. It is not
+        # handed to LSA and nothing is written into the Windows credential manager behind the
+        # technician back - on a client machine that would quietly outlive the job.
+        # No input buffer: the box opens empty, the way Explorer opens it.
+        $rc = [Native.CredUi]::CredUIPromptForWindowsCredentials([ref]$info, $AuthError, [ref]$pkg,
+                  [IntPtr]::Zero, 0, [ref]$outBuf, [ref]$outSize, [ref]$save, 1)
+    } catch { $rc = 1223 }
+
+    if ($rc -ne 0) { return $out }        # 1223 = ERROR_CANCELLED: Cancel was pressed
+    try {
+        $uLen = 513; $dLen = 513; $pLen = 513
+        $u = New-Object Text.StringBuilder $uLen
+        $d = New-Object Text.StringBuilder $dLen
+        $p = New-Object Text.StringBuilder $pLen
+        if ([Native.CredUi]::CredUnPackAuthenticationBuffer(0, $outBuf, $outSize, $u, [ref]$uLen, $d, [ref]$dLen, $p, [ref]$pLen)) {
+            $out.User = $u.ToString()
+            $out.Password = $p.ToString()
+            $out.Ok = $true
+        }
+    } catch { }
+    finally {
+        if ($outBuf -ne [IntPtr]::Zero) {
+            # Zeroed before it is released: that buffer holds the password in clear, and
+            # CoTaskMemFree does not scrub what it hands back to the heap.
+            try { for ($i = 0; $i -lt [int]$outSize; $i++) { [Runtime.InteropServices.Marshal]::WriteByte($outBuf, $i, 0) } } catch { }
+            try { [Native.CredUi]::CoTaskMemFree($outBuf) } catch { }
+        }
+    }
+    return $out
+}
+
+# Connect, and ask for a sign-in only if the far end actually demands one.
+#
+# The order is the whole feature. An open share, or one this machine already holds a session to,
+# connects with nothing and must never be made to ask. A machine that is switched off will not be
+# reached by typing a better password, so it is told plainly instead - raising a credential box at
+# somebody whose PC is asleep sends them hunting for entirely the wrong problem.
+function Connect-ShareInteractive([string]$Path) {
+    $res = @{ Ok = $false; Why = ''; User = ''; Password = ''; Prompted = $false }
+    $root = Get-ShareRoot $Path
+    if (-not $root) { $res.Ok = $true; return $res }      # a local path: nothing to connect
+    $machine = $root.Trim([char]92)
+    $cut = $machine.IndexOf([char]92)
+    if ($cut -gt 0) { $machine = $machine.Substring(0, $cut) }
+
+    $why = Connect-Share $Path '' ''
+    if (-not $why) { $res.Ok = $true; return $res }
+
+    # 1219: Windows allows one identity per server, so an existing session as somebody else has to
+    # go before a different sign-in can even be offered.
+    if ($script:LastShareRc -eq 1219) {
+        Disconnect-Share $Path
+        $why = Connect-Share $Path '' ''
+        if (-not $why) { $res.Ok = $true; return $res }
+    }
+
+    # 5 = it refused you. 1326 = it rejected the credential. Those two, and only those two, mean
+    # the machine is there and a sign-in is the missing piece.
+    if ($script:LastShareRc -ne 5 -and $script:LastShareRc -ne 1326) {
+        $res.Why = $why
+        return $res
+    }
+
+    $authErr = 0
+    for ($attempt = 1; $attempt -le 3; $attempt++) {
+        $cred = Request-ShareCredential $root $authErr
+        $res.Prompted = $true
+        if (-not $cred.Ok) { $res.Why = ''; return $res }   # cancelled: not an error, just a no
+        # "ad" means "ad on THAT PC", not "ad on this one" - see Resolve-ShareUser.
+        $who = Resolve-ShareUser $cred.User $machine
+        $why = Connect-Share $Path $who $cred.Password
+        if (-not $why) {
+            $res.Ok = $true
+            $res.User = $who
+            $res.Password = $cred.Password
+            return $res
+        }
+        $res.Why = $why
+        if ($script:LastShareRc -ne 5 -and $script:LastShareRc -ne 1326) { return $res }
+        $authErr = 1326
+    }
+    return $res
+}
+
+# ---------- the Find a PC dialog ----------
+#
+# The scan runs on the UI thread, with Update-UI pumping between probes, rather than in a
+# background runspace. That is the pattern this file already uses for the profile measurement in
+# the BtnMigrate handler, and the same reasoning holds: the work is a long sequence of short
+# blocking calls with a natural callback between them. Update-UI invokes at Background priority,
+# which is BELOW Input, so every queued click is delivered first - Stop is genuinely clickable
+# while the scan runs, and so is everything else, which is why the reentrancy guard below is not
+# optional.
+$script:NetScanning = $false
+$script:NetStop     = $false
+$script:NetHost     = ''
+$script:NetPickedPath = ''
+$script:NetUser     = ''
+$script:NetPassword = ''
+# Set while the code, rather than the technician, is moving the selection - see Clear-NetHostPick.
+$script:NetSelBusy  = $false
+
+function Show-NetNote([string]$Text, [string]$Brush) {
+    $TxtNetNote.Text = $Text
+    $TxtNetNote.Foreground = $window.FindResource($Brush)
+}
+
+function Reset-NetLists {
+    $ListNetHosts.Items.Clear()
+    $TreeNetShares.Items.Clear()
+    $script:NetHost = ''
+    $script:NetPickedPath = ''
+}
+
+# One row of the tree: an icon, a name, and - for a share - the UNC it stands for.
+#
+# Built in code rather than by a HierarchicalDataTemplate because the children load lazily and a
+# template would need a converter class to pick the glyph per row. Same trade already made for the
+# two flat lists.
+function New-NetNode([string]$Glyph, [string]$Brush, [string]$Name, [string]$Sub, [string]$Path, [bool]$MayHaveChildren) {
+    $sp = New-Object Windows.Controls.StackPanel
+    $sp.Orientation = 'Horizontal'
+    $ico = New-Object Windows.Controls.TextBlock
+    $ico.Text = $Glyph
+    $ico.FontFamily = New-Object Windows.Media.FontFamily 'Segoe MDL2 Assets'
+    $ico.FontSize = 16
+    $ico.Foreground = $Brush
+    $ico.Margin = '0,0,8,0'
+    $ico.VerticalAlignment = 'Center'
+    [void]$sp.Children.Add($ico)
+    $tb = New-Object Windows.Controls.TextBlock
+    $tb.Text = $Name
+    $tb.FontSize = 12
+    $tb.VerticalAlignment = 'Center'
+    [void]$sp.Children.Add($tb)
+    if ($Sub) {
+        $sb = New-Object Windows.Controls.TextBlock
+        $sb.Text = $Sub
+        $sb.FontSize = 10.5
+        $sb.Foreground = $window.FindResource('Dim')
+        $sb.Margin = '9,0,0,0'
+        $sb.VerticalAlignment = 'Center'
+        [void]$sp.Children.Add($sb)
+    }
+    $node = New-Object Windows.Controls.TreeViewItem
+    $node.Header = $sp
+    $node.Tag = $Path
+    # A placeholder string child gives the node its expander arrow before anything has been read.
+    # It is also the marker meaning "not filled in yet" - see Expand-NetNode.
+    if ($MayHaveChildren) { [void]$node.Items.Add('...') }
+    return $node
+}
+
+# Fills a node in the first time it is opened.
+#
+# Expanded is a ROUTED event, so an ancestor sees its descendants opening too. The placeholder
+# check is the guard as much as the work: a node already filled has no placeholder left, so the
+# bubbled call does nothing.
+function Expand-NetNode($Node) {
+    if (-not $Node) { return }
+    if ($Node.Items.Count -ne 1 -or -not ($Node.Items[0] -is [string])) { return }
+    $path = [string]$Node.Tag
+    $Node.Items.Clear()
+    if (-not $path) { return }
+    $kids = $null
+    try { $kids = @(Get-ChildItem -LiteralPath $path -Directory -ErrorAction Stop | Sort-Object Name) }
+    catch {
+        # A folder that will not open earns a row of its own. Showing nothing would read as "this
+        # folder is empty", which is a different thing entirely.
+        [void]$Node.Items.Add((New-NetNode ([string][char]0xE72E) ($window.FindResource('Dim')) `
+                               'cannot open this folder' '' '' $false))
+        return
+    }
+    # A shared drive root can hold thousands of directories, and every one becomes a WPF visual.
+    # Whatever is dropped is SAID, never quietly trimmed.
+    $cap = 400
+    foreach ($k in @($kids | Select-Object -First $cap)) {
+        [void]$Node.Items.Add((New-NetNode ([string][char]0xE8B7) '#FFE3B341' $k.Name '' $k.FullName $true))
+    }
+    if ($kids.Count -gt $cap) {
+        [void]$Node.Items.Add((New-NetNode ([string][char]0xE712) ($window.FindResource('Dim')) `
+                               "$($kids.Count - $cap) more folder(s) not listed" '' '' $false))
+    }
+}
+
+# Everything the technician chooses - by picker, by scan or by typing - lands here, in the same
+# two places a USB stick would leave it. Nothing downstream knows or cares that the folder happens
+# to be on another machine; a share is just a directory to robocopy.
+function Set-BackupFolder([string]$Path, [string]$User, [string]$Password) {
+    $script:FolderPath  = ([string]$Path).TrimEnd([char]92)
+    $script:NetUser     = [string]$User
+    $script:NetPassword = [string]$Password
+    $TxtFolderPath.Text = $script:FolderPath
+
+    # Say what is actually there, NOW, rather than letting the technician find out after the
+    # confirm. A restore especially: a folder without a manifest is refused by the worker anyway,
+    # and finding that out here costs nothing and saves a wasted press.
+    if ($script:BackupMode -eq 'restore') {
+        $mfPath = Join-Path $script:FolderPath 'pc2go-backup.json'
+        if (-not (Test-Path -LiteralPath $mfPath)) {
+            $TxtFolderNote.Text = 'This folder has no pc2go-backup.json, so it is not a backup this tool wrote. ' +
+                                  'Restoring from it will be refused.'
+            $TxtFolderNote.Foreground = $window.FindResource('Bad')
+        } else {
+            $mf = $null
+            try { $mf = (Get-Content -LiteralPath $mfPath -Raw).TrimStart([char]0xFEFF) | ConvertFrom-Json } catch { }
+            if ($mf) {
+                $when = [string]$mf.finishedUtc
+                try { $when = ([datetime]$mf.finishedUtc).ToLocalTime().ToString('d MMM yyyy, HH:mm') } catch { }
+                $TxtFolderNote.Text = "A backup of $($mf.sourceProfile) from $($mf.sourceMachine), taken $when, " +
+                                      "holding $(@($mf.items).Count) folder(s)."
+                $TxtFolderNote.Foreground = $window.FindResource('Muted')
+            } else {
+                $TxtFolderNote.Text = 'There is a pc2go-backup.json here but it could not be read. Restoring will be refused.'
+                $TxtFolderNote.Foreground = $window.FindResource('Bad')
+            }
+        }
+    } else {
+        $facts = Get-DiskFacts $script:FolderPath
+        if ($facts) {
+            $TxtFolderNote.Text = "Disk $($facts.Name) - $(Format-Size $facts.Free) free of $(Format-Size $facts.Total)."
+            $TxtFolderNote.Foreground = $window.FindResource('Muted')
+        } elseif ($script:FolderPath.StartsWith('\\')) {
+            # IO.DriveInfo has no answer for a UNC path, so the free space genuinely cannot be
+            # measured from here. Saying so is the honest reading; the space check in BtnMigrate
+            # skips a destination it cannot measure rather than refusing on a made-up zero.
+            $TxtFolderNote.Text = "A shared folder on $(Get-ShareRoot $script:FolderPath). How much room is left " +
+                                  'on the other PC cannot be measured from here, so check it has space before starting.'
+            $TxtFolderNote.Foreground = $window.FindResource('Muted')
+        }
+    }
+    Build-MigrateList
+    Update-Dash
+}
+
+$BtnNetFind.Add_Click({
+    if (Test-BatchBusy) { return }
+    $TxtNetManual.Text = ''
+    $NetOverlay.Visibility = 'Visible'
+    # Painted BEFORE the scan starts, or the dialog arrives with a progress figure already on it
+    # and no sign of where that came from.
+    Update-UI
+    # Straight into it. Opening this dialog has exactly one purpose, and making somebody press a
+    # button to begin the thing they just asked for is a step that carries no information. It costs
+    # about two seconds now, so there is nothing left to protect them from.
+    Start-NetScan
+})
+
+$BtnNetCancel.Add_Click({
+    # A scan in flight has to be told to stop BEFORE the dialog goes, or it carries on ticking
+    # into controls nobody is looking at for another minute.
+    $script:NetStop = $true
+    $NetOverlay.Visibility = 'Collapsed'
+})
+
+$BtnNetStop.Add_Click({
+    $script:NetStop = $true
+    $TxtNetStatus.Text = 'Stopping...'
+})
+
+# Retry, not Start: the scan has already run by the time this button can be reached.
+$BtnNetScan.Add_Click({ Start-NetScan })
+
+function Start-NetScan {
+    if ($script:NetScanning) { return }        # Update-UI lets a second click straight through
+    $script:NetScanning = $true
+    $script:NetStop     = $false
+    Reset-NetLists
+    $BtnNetScan.IsEnabled  = $false
+    $BtnNetStop.Visibility = 'Visible'
+    Show-NetNote '' 'Dim'
+    $found = @()
+    try {
+        # A percentage, not a raw address count. "Asked 312 of 508 addresses" answers a question
+        # nobody asked and invites the obvious follow-up - what 508? - which had a bad answer:
+        # half of them were a VPN tunnel that cannot hold a second PC.
+        #
+        # OnFound puts each machine on the list the INSTANT it answers, rather than banking them
+        # all up until the sweep ends. Finding a PC in the first second and showing it forty
+        # seconds later is the worst of both.
+        $found = @(Find-NetworkHosts -Tick {
+            param($done, $total, $hits)
+            $pct = 0
+            if ($total -gt 0) { $pct = [int](100 * $done / $total) }
+            $TxtNetStatus.Text = "Checking your network - $pct%" +
+                                 $(if ($hits) { "   ($hits found so far)" } else { '' })
+            Update-UI
+            return (-not $script:NetStop)
+        } -OnFound {
+            param($h)
+            # The template stays dumb: which of the two lines carries the name is decided here,
+            # once, instead of by a converter that would have to be a compiled class.
+            $named = ($h.Name -and $h.Name -ne $h.Ip)
+            [void]$ListNetHosts.Items.Add([pscustomobject]@{
+                Title = $(if ($named) { [string]$h.Name } else { [string]$h.Ip })
+                Sub   = $(if ($named) { [string]$h.Ip } else { 'no name - this PC did not give one' })
+                Name  = [string]$h.Name
+                Ip    = [string]$h.Ip })
+            Update-UI
+        })
+    } catch {
+        Show-NetNote "The scan could not run: $($_.Exception.Message)" 'Bad'
+    } finally {
+        $script:NetScanning    = $false
+        $BtnNetScan.IsEnabled  = $true
+        $BtnNetStop.Visibility = 'Collapsed'
+    }
+    if ($script:NetStop) {
+        $TxtNetStatus.Text = "Stopped - $($ListNetHosts.Items.Count) PC(s) found so far"
+    } elseif (-not $found.Count) {
+        $TxtNetStatus.Text = 'No PCs answered'
+        # Not a failure, and it must not read like one. On the network this was written on, eight
+        # machines answered ARP and not one answered 445 - they were phones and printers.
+        Show-NetNote ('Nothing on this network accepted a file-sharing connection. That is normal if the other PC ' +
+                      'is asleep, is on a different network, or has not shared a folder yet. You can still type ' +
+                      'its name in below.') 'Muted'
+    } else {
+        $TxtNetStatus.Text = "$($found.Count) PC(s) found"
+        Show-NetNote 'Pick a PC to see the folders it shares.' 'Dim'
+    }
+    # The scan only ever looks at THIS machine networks. A PC on a different one - a guest Wi-Fi,
+    # the other side of a router - will never turn up here however long it runs, and the technician
+    # needs to know that rather than concluding the other machine is broken.
+    if (-not $script:NetStop -and $ListNetHosts.Items.Count -lt 2) {
+        $TxtNetStatus.Text += '   (only this network was checked)'
+    }
+}
+
+# A ListBox raises SelectionChanged only when the selection CHANGES. A row that is already
+# highlighted can be clicked all afternoon and nothing happens - so after a cancelled sign-in, or
+# any other failure, the one thing a technician naturally does next was silently dead, and the note
+# telling them to "pick it again" was advice the control could not honour.
+#
+# Dropping the highlight is what makes the next click a change again. It re-enters the handler
+# below, hence the flag.
+function Clear-NetHostPick {
+    $script:NetSelBusy = $true
+    try { $ListNetHosts.SelectedIndex = -1 } catch { }
+    $script:NetSelBusy = $false
+}
+
+$ListNetHosts.Add_SelectionChanged({
+    if ($script:NetSelBusy) { return }        # the re-entry from Clear-NetHostPick
+    $TreeNetShares.Items.Clear()
+    $script:NetPickedPath = ''
+    $sel = $ListNetHosts.SelectedItem
+    if (-not $sel) { return }
+    # The name where there is one, the address otherwise. A UNC built on the name survives the
+    # other PC picking up a different address off DHCP tomorrow; one built on the address does not.
+    $script:NetHost = [string]$sel.Name
+    if (-not $script:NetHost) { $script:NetHost = [string]$sel.Ip }
+    $TxtNetStatus.Text = "Connecting to $script:NetHost..."
+    Show-NetNote '' 'Dim'
+    Update-UI
+
+    # Connect for real before asking what it shares. IPC$ is the named-pipe share every Windows
+    # machine has, and connecting to it is what establishes the session the enumeration then runs
+    # under - a PC that wants a sign-in lists nothing without one, and an empty list reads exactly
+    # like "it shares nothing".
+    #
+    # If it refuses, Windows own credential prompt comes up right here. That is deliberate, and it
+    # is the signal: by the time that box appears the machine has been found, is awake, and has
+    # answered. A PC that is switched off never gets that far and is told plainly instead.
+    $conn = Connect-ShareInteractive ('\\' + $script:NetHost + '\IPC$')
+    if (-not $conn.Ok) {
+        $TxtNetStatus.Text = ''
+        # The highlight goes before the message that invites another go, or the invitation is a lie.
+        Clear-NetHostPick
+        if ($conn.Prompted -and -not $conn.Why) {
+            Show-NetNote ("$script:NetHost is there and asked for a sign-in, which was cancelled. " +
+                          'Click it again to have another go.') 'Muted'
+        } else {
+            Show-NetNote ([string]$conn.Why + '  Click it again to retry.') 'Bad'
+        }
+        return
+    }
+    # Kept for the job itself: the worker runs elevated, as a different account, and holds none of
+    # this session connections - it has to sign in again on its own behalf.
+    $script:NetUser     = [string]$conn.User
+    $script:NetPassword = [string]$conn.Password
+
+    $TxtNetStatus.Text = "Asking $script:NetHost what it shares..."
+    Update-UI
+    # Deliberately not @(): that would flatten the "could not ask" sentinel into "nothing there".
+    $shares = Get-HostShares $script:NetHost
+    $TxtNetStatus.Text = ''
+    if ($null -eq $shares) {
+        # Same reasoning: this is a dead end unless the row can be clicked again.
+        Clear-NetHostPick
+        Show-NetNote ("$script:NetHost is connected, but would not say what it shares. The sign-in used may not " +
+                      'be allowed to list them. Click it again to retry, or type the folder path in below if ' +
+                      'you know its name.') 'Bad'
+        return
+    }
+    # The PC itself is the root, the way Explorer puts the machine above what is on it.
+    $root = New-NetNode ([string][char]0xE977) ($window.FindResource('Lift')) $script:NetHost '' '' $false
+    foreach ($s in $shares) {
+        # A share whose name is a single letter is almost always a whole drive somebody shared -
+        # C, D, E - and a folder icon on it would be a small lie about what sits behind it.
+        #
+        # This is a GUESS from the name, and it has to be: SMB deliberately never tells a client
+        # where a share lives on the server. Only an administrator ON that machine can ask, through
+        # a different door entirely (Win32_Share, or NetShareGetInfo level 2).
+        $isDrive = (([string]$s).Length -le 2 -and ([string]$s) -match '^[A-Za-z]')
+        $unc = '\\' + $script:NetHost + '\' + $s
+        $node = New-NetNode ([string][char]$(if ($isDrive) { 0xEDA2 } else { 0xE8B7 })) '#FFE3B341' `
+                            ([string]$s) $unc $unc $true
+        $node.Add_Expanded({ Expand-NetNode $this })
+        [void]$root.Items.Add($node)
+    }
+    $root.IsExpanded = $true
+    [void]$TreeNetShares.Items.Add($root)
+    if (-not $shares.Count) {
+        Clear-NetHostPick
+        Show-NetNote ("$script:NetHost answered, and is genuinely not sharing a folder. Share one on that PC, " +
+                      'or back up to a USB stick instead.') 'Muted'
+    } else {
+        # Whether a sign-in was needed is worth saying out loud: it is the difference between an
+        # open share and one that will want the same credential again when the worker runs.
+        # Windows can hand back a bare machine prefix, or nothing at all, depending on what was
+        # typed and where the credential came from. "Signed in as ." would just look broken.
+        $who = ([string]$conn.User).Trim().Trim([char]92)
+        $signed = $(if ($conn.Prompted -and $who) { "Signed in as $who.  " }
+                    elseif ($conn.Prompted)       { 'Signed in.  ' }
+                    else                          { 'Connected, no sign-in needed.  ' })
+        Show-NetNote ($signed + "$($shares.Count) share(s). Open one to pick a folder inside it - a share is " +
+                      'often a whole drive, and the root of somebody drive is rarely where a backup belongs.') 'Dim'
+    }
+})
+
+# Any node with a path behind it is a destination. The machine at the root is not: you cannot
+# copy files to a PC, only into something on it.
+$TreeNetShares.Add_SelectedItemChanged({
+    $n = $TreeNetShares.SelectedItem
+    $script:NetPickedPath = $(if ($n -and $n.Tag) { [string]$n.Tag } else { '' })
+})
+
+$BtnNetUse.Add_Click({
+    if ($script:NetScanning) { return }
+    # Typed beats picked. If somebody has gone to the trouble of writing a path out, that is the
+    # one they mean, even with a row still highlighted in the list behind it.
+    $path = $TxtNetManual.Text.Trim()
+    if (-not $path) {
+        # The node already knows its own full path - a share root, or any folder inside it.
+        # Rebuilding it here would be a second place for the two to disagree.
+        $path = [string]$script:NetPickedPath
+    }
+    if (-not $path) {
+        Show-NetNote ('Pick a PC, then a share or a folder inside it. Or type a path like ' +
+                      '\\PC-NAME\SharedFolder below.') 'Bad'
+        return
+    }
+    if (-not $path.StartsWith('\\')) {
+        Show-NetNote 'A folder on another PC starts with two backslashes, like \\PC-NAME\SharedFolder.' 'Bad'
+        return
+    }
+    if (-not (Get-ShareRoot $path)) {
+        Show-NetNote 'That path names a PC but no folder on it. It needs both, like \\PC-NAME\SharedFolder.' 'Bad'
+        return
+    }
+    # Prove it works NOW. The worker will connect again itself - it runs as a different account and
+    # holds none of this session connections - but a wrong password caught here costs a retype, and
+    # caught there costs a failed batch three gigabytes in.
+    Show-NetNote 'Checking...' 'Dim'
+    Update-UI
+    $conn = Connect-ShareInteractive $path
+    if (-not $conn.Ok) {
+        if ($conn.Prompted -and -not $conn.Why) {
+            Show-NetNote "$(Get-ShareRoot $path) asked for a sign-in, which was cancelled." 'Muted'
+        } else {
+            Show-NetNote $conn.Why 'Bad'
+        }
+        return
+    }
+    if (-not (Test-Path -LiteralPath $path)) {
+        Show-NetNote "$(Get-ShareRoot $path) answered, but $path is not there. Check the spelling." 'Bad'
+        return
+    }
+    # A sign-in given for THIS path wins over one captured when a host was picked earlier - that
+    # may well have been a different machine entirely.
+    $user = $(if ($conn.Prompted) { [string]$conn.User } else { [string]$script:NetUser })
+    $pw   = $(if ($conn.Prompted) { [string]$conn.Password } else { [string]$script:NetPassword })
+    Set-BackupFolder $path $user $pw
+    $NetOverlay.Visibility = 'Collapsed'
+})
+
 $BtnMigrate.Add_Click({
     if (Test-BatchBusy) { return }
     $src = Get-SelectedUser $script:SrcUsers
-    $dst = Get-SelectedUser $script:DstUsers
     if (-not $src) { Show-Overlay 'No source' 'Pick the profile to copy FROM in the left column.'; return }
-    if (-not $dst) { Show-Overlay 'No destination' 'Pick the account to copy TO in the middle column.'; return }
-    if ($src.DetectPath -eq $dst.DetectPath -or $src.Name -eq $dst.Name) {
-        Show-Overlay 'Same account' 'The source and destination are the same profile. Pick two different accounts.'
-        return
+
+    # Which of the three jobs, and what each needs before it can be promised. The worker checks
+    # all of this again - the queue file is writable by anything running as this user - but a
+    # refusal a technician can see BEFORE the confirm is worth far more than one after it.
+    $dst = $null
+    $srcKind = 'profile'; $dstKind = 'profile'; $dstPath = ''; $dstUser = ''
+    switch ($script:BackupMode) {
+        'folder' {
+            if (-not $script:FolderPath) { Show-Overlay 'No folder chosen' 'Choose the folder to back up to.'; return }
+            # What was picked is the PARENT. The backup lands in its own folder inside it.
+            $dstKind = 'folder'
+            $dstPath = Join-Path $script:FolderPath (Get-BackupFolderName ([string]$src.Name))
+        }
+        'restore' {
+            if (-not $script:FolderPath) { Show-Overlay 'No backup chosen' 'Choose the backup folder to restore from.'; return }
+            # roots swapped: the backup is the source, the picked account is the destination
+            $srcKind = 'folder'
+            $dst = Get-SelectedUser $script:DstUsers
+            if (-not $dst) { Show-Overlay 'No destination' 'Pick the account to restore INTO in the middle column.'; return }
+            $dstKind = 'profile'; $dstPath = [string]$dst.UnArgs; $dstUser = [string]$dst.DetectPath
+        }
+        default {
+            $dst = Get-SelectedUser $script:DstUsers
+            if (-not $dst) { Show-Overlay 'No destination' 'Pick the account to copy TO in the middle column.'; return }
+            if ($src.DetectPath -eq $dst.DetectPath -or $src.Name -eq $dst.Name) {
+                Show-Overlay 'Same account' 'The source and destination are the same profile. Pick two different accounts.'
+                return
+            }
+            $dstPath = [string]$dst.UnArgs; $dstUser = [string]$dst.DetectPath
+        }
     }
     $sel = @($script:MigrateItems | Where-Object { $_.IsSelected })
     if ($sel.Count -eq 0) { Show-Overlay 'Nothing selected' 'Tick at least one folder to copy.'; return }
@@ -8458,30 +15350,72 @@ $BtnMigrate.Add_Click({
     $RowNow.Visibility = 'Visible'
     Update-UI
     $total = [long]0
+    $done  = 0
     foreach ($m in $sel) {
         $p = Join-Path ([string]$src.UnArgs) ([string]$m.UnArgs)
-        $sz = Get-FolderSize $p
+        $done++
+        # Measuring a profile walks every file in it, and on a real one that is minutes. It
+        # used to happen with the dispatcher blocked: the window printed 'Measuring...' and
+        # then froze solid - no repaint, no progress, no way to tell it from a hang. The
+        # callback below is the only thing keeping the UI breathing while this runs.
+        $label = [string]$m.Name
+        $running = $total
+        $sz = Get-FolderSize $p {
+            param($sofar)
+            $TxtNow.Text = "Measuring $label  ($done of $($sel.Count))  -  $(Format-Size ($running + $sofar)) so far"
+            Update-UI
+        }.GetNewClosure()
         $m.Size = Format-Size $sz
         $total += $sz
+        $TxtNow.Text = "Measured $done of $($sel.Count)  -  $(Format-Size $total) so far"
+        Update-UI
     }
     $RowNow.Visibility = 'Collapsed'
+    # The DESTINATION drive, not the system drive. A profile can live anywhere - redirected,
+    # or on a second disk - and checking C: while copying onto D: answers a question nobody
+    # asked. For an account with no profile yet, Windows will build it beside the others.
+    # For a drive/USB backup the free space that matters is the STICK's, not an account's.
+    $dstRoot = $dstPath
+    if (-not $dstRoot -and $dst) { $dstRoot = [string]$dst.UnArgs }
+    if (-not $dstRoot) { $dstRoot = Split-Path $env:UserProfile }
     $free = 0
-    try { $free = (Get-PSDrive -Name ($env:SystemDrive.Substring(0, 1))).Free } catch {}
+    try { $free = [long](New-Object IO.DriveInfo ([IO.Path]::GetPathRoot([IO.Path]::GetFullPath($dstRoot)))).AvailableFreeSpace } catch { $free = 0 }
     if ($free -gt 0 -and $free -lt ($total * 1.1)) {
         Show-Overlay 'Not enough disk space' ("This copy needs $(Format-Size $total) plus headroom, but only $(Format-Size $free) is free.`n`n" +
                                               'Nothing is moved or deleted by this tool, so both copies have to fit.')
         return
     }
     $risky = @($sel | Where-Object { -not $_.IsSilent })
-    $msg = "Copy $($sel.Count) item(s), $(Format-Size $total), from`n  $($src.UnArgs)`nto the profile of `"$($dst.Name)`".`n`n" +
-           "The source profile is left completely untouched - this copies, it never moves.`n"
+    # Three jobs, three honest descriptions. "to the profile of" was the only wording, and it
+    # would have described a USB stick as an account.
+    $fromTxt = $(if ($script:BackupMode -eq 'restore') { $script:FolderPath } else { [string]$src.UnArgs })
+    $toTxt   = $(switch ($script:BackupMode) {
+                    'folder'  { $script:FolderPath }
+                    'restore' { "the profile of `"$($dst.Name)`"" }
+                    default   { "the profile of `"$($dst.Name)`"" } })
+    $verb = $(if ($script:BackupMode -eq 'restore') { 'Restore' } else { 'Copy' })
+    $msg = "$verb $($sel.Count) item(s), $(Format-Size $total), from`n  $fromTxt`nto`n  $toTxt.`n`n" +
+           $(if ($script:BackupMode -eq 'restore') {
+                 "The backup is left completely untouched - this copies out of it, it never moves.`n" +
+                 "Files already in the account with the same size and date are left alone.`n" }
+             else {
+                 "The source profile is left completely untouched - this copies, it never moves.`n" })
     if ($risky.Count) {
         $msg += "`n$($risky.Count) of these come from AppData. If the old profile is corrupt, the fault often lives there and can travel with them."
     }
-    Show-Confirm 'Copy profile data?' $msg ({
-        Start-UserBatch 'migrate' @{ src = [string]$src.UnArgs; dstUser = [string]$dst.DetectPath
-                                     dstPath = [string]$dst.UnArgs
-                                     items = @($sel | ForEach-Object { [string]$_.UnArgs }) }
+    Show-Confirm 'Back up this data?' $msg ({
+        Start-UserBatch 'migrate' @{
+            src     = $(if ($script:BackupMode -eq 'restore') { $script:FolderPath } else { [string]$src.UnArgs })
+            srcKind = $srcKind
+            dstUser = $dstUser
+            dstPath = $dstPath
+            dstKind = $dstKind
+            # Empty for a local folder or another profile. Protect-QueueEntry wraps netPassword
+            # with DPAPI on the way out - it is named in $script:SecretFields - so it never sits
+            # in the queue file in clear.
+            netUser     = $script:NetUser
+            netPassword = $script:NetPassword
+            items   = @($sel | ForEach-Object { [string]$_.UnArgs }) }
     }.GetNewClosure())
 })
 $BtnSubDesktop.Add_Click({ Select-UnTab 'Desktop' })
@@ -8502,16 +15436,19 @@ $BtnRescan.Add_Click({
 $BtnTabLog.Add_Click({ Select-Tab 'Log' })
 
 $BtnPause.Add_Click({
-    if ($script:Phase -ne 'Download' -or $null -eq $script:CurJob) { return }
+    # NOT gated on a BITS job. A large package downloads over several connections instead,
+    # with no job to suspend - and that test made the button silently do nothing on exactly
+    # the downloads long enough to want pausing. The flag is what both paths now read.
+    if ($script:Phase -ne 'Download') { return }
     if (-not $script:Paused) {
-        Suspend-BitsTransfer -BitsJob $script:CurJob -ErrorAction SilentlyContinue
+        if ($script:CurJob) { Suspend-BitsTransfer -BitsJob $script:CurJob -ErrorAction SilentlyContinue }
         $script:Paused = $true
         $BtnPause.Content = 'Resume'
         $TxtNow.Text = 'Paused - download suspended (any running install continues)'
         $DotNow.Fill = '#FFFBBF24'
         Add-Log 'Download paused.'
     } else {
-        Resume-BitsTransfer -BitsJob $script:CurJob -Asynchronous -ErrorAction SilentlyContinue | Out-Null
+        if ($script:CurJob) { Resume-BitsTransfer -BitsJob $script:CurJob -Asynchronous -ErrorAction SilentlyContinue | Out-Null }
         $script:Paused = $false
         $BtnPause.Content = 'Pause'
         $DotNow.Fill = '#FF4C8DFF'
@@ -8521,13 +15458,22 @@ $BtnPause.Add_Click({
 
 $BtnCancel.Add_Click({
     if ($script:Phase -notin 'Download', 'Install') { return }
+    # A running leftover scan is the one thing here that can be stopped without leaving anything
+    # half-done: it only READS. Stop it and show what it found so far - the batch itself is
+    # untouched, and the technician still decides what goes.
+    if ($script:ScanJob -and $script:ScanCtl -and -not $script:ScanCtl.Cancel) {
+        $script:ScanCtl.Cancel = $true
+        $TxtNow.Text = 'Stopping the leftover scan - showing what was found so far...'
+        Add-Log 'Leftover scan stopped by technician - the preview shows what was found up to that point.'
+        return
+    }
     New-Item -ItemType File -Path $script:CancelPath -Force | Out-Null
     if ($script:CurJob) { Remove-BitsTransfer -BitsJob $script:CurJob -ErrorAction SilentlyContinue; $script:CurJob = $null }
     $script:Paused = $false
     $BtnPause.Visibility = 'Collapsed'
     $script:DlIndex = $script:Pending.Count
     foreach ($p2 in $script:Pending) {
-        if ($p2.Status -notmatch '^(Installed|Uninstalled|Failed|Installing|Uninstalling|Verifying)') {
+        if ($p2.Status -notmatch '^(Installed|Uninstalled|Failed|Removed|Installing|Uninstalling|Verifying)') {
             Set-Status $p2 'Cancelled' 'warn'
             Set-Ring $p2 'warn'
             $p2.ProgressVis = 'Collapsed'
@@ -8563,20 +15509,77 @@ $BtnForce.Add_Click({
         "You still review the full list before anything is deleted.") ({ Start-Uninstall $sel $true }.GetNewClosure())
 })
 
-# Presets, Clear and Detect only tick boxes or read the machine - never blocked by a
-# running batch. Queueing up the next job while a download finishes is the whole point.
-$BtnPreStandard.Add_Click({ if (-not (Test-TweakListBusy)) { Select-TweakPreset 'Standard' } })
-$BtnPreMinimal.Add_Click({  if (-not (Test-TweakListBusy)) { Select-TweakPreset 'Minimal' } })
-$BtnPreAdvanced.Add_Click({ if (-not (Test-TweakListBusy)) { Select-TweakPreset 'Advanced' } })
+# Sub-tab switches, Reset and Detect only tick boxes or read the machine - never blocked
+# by a running batch. Queueing the next job while a download finishes is the whole point.
+$BtnSubTweaks.Add_Click({ Select-OptTab 'Tweaks' })
+$BtnSubClean.Add_Click({  Select-OptTab 'Clean' })
+$BtnSubPrefs.Add_Click({  Select-OptTab 'Prefs' })
+# Select All / Clear All act on the sub-tab on screen only. Select All ticks CAUTION too -
+# that is a deliberate technician act, and the Apply confirm still names every CAUTION row.
+function Set-OptSelection([bool]$On) {
+    if (Test-TweakListBusy) { return }
+    if ($script:OptSubTab -eq 'Prefs') { return }
+    $items = Get-OptItems
+    $script:SuspendDash = $true
+    try { foreach ($t in $items) { $t.IsSelected = $On } } finally { $script:SuspendDash = $false }
+    Update-Dash
+}
+# The ticked-list collection behind the active sub-tab. Valid ONLY for the three ticked
+# lists - there is deliberately no 'Prefs' case, and the default falls through to TweakItems,
+# so a caller that reaches this while Preferences is on screen would silently operate on 44
+# tweak rows. Every Prefs special-case must happen BEFORE calling this (see Invoke-TweakDetect
+# and BtnPreClear, which both early-return into Sync-Prefs).
+function Get-OptItems {
+    switch ($script:OptSubTab) {
+        'Clean' { return $script:CleanItems }
+        'Game'  { return $script:GameItems }
+        default { return $script:TweakItems }
+    }
+}
+$BtnSelAll.Add_Click({  Set-OptSelection $true })
+$BtnSelNone.Add_Click({ Set-OptSelection $false })
+$BtnSubGame.Add_Click({ Select-OptTab 'Game' })
+# On-demand probe - e.g. after the HAGS reboot, or to show a client where the machine
+# stands before anything is touched. Read-only.
+$BtnMeasure.Add_Click({
+    if (Test-TweakListBusy) { return }
+    $BtnMeasure.IsEnabled = $false
+    $window.Cursor = [Windows.Input.Cursors]::Wait
+    try {
+        $p = Measure-GamingLatency
+        $script:GameLastProbe = $p
+        $TxtTweakHint.Text = 'now: ' + (Format-GamingProbe $p)
+        Add-Log ('Gaming probe - ' + (Format-GamingProbe $p) + '  (p50 is the PowerShell floor; read p99/max)')
+    } catch {
+        $TxtTweakHint.Text = "measurement failed: $($_.Exception.Message)"
+    } finally {
+        $window.Cursor = $null
+        $BtnMeasure.IsEnabled = $true
+    }
+})
 $BtnPreClear.Add_Click({
     if (Test-TweakListBusy) { return }
+    # The ACTIVE sub-tab only - same rule as Select All/Clear All and Apply: nothing global.
+    # A reset pressed while experimenting on Gaming must not un-curate ticks on Tweaks or
+    # silently drop Preference edits staged on another sub-tab.
+    if ($script:OptSubTab -eq 'Prefs') {
+        # preferences are toggles, so reset means drop pending edits and show the machine's
+        # real state again - unticking them all would read as "turn everything off"
+        Sync-Prefs
+        $TxtTweakHint.Text = ''
+        Update-Dash
+        return
+    }
+    # Reset returns to the DEFAULT state (ticked except CAUTION), not to all-unticked -
+    # with no presets to restore a selection, all-unticked would strand the user with no
+    # way back except reloading the app
     $script:SuspendDash = $true
     try {
-        foreach ($t in $script:TweakItems) { $t.IsSelected = $false; Set-Status $t '' 'neutral'; Set-Ring $t 'none' }
+        foreach ($t in @(Get-OptItems)) {
+            $t.IsSelected = [bool]$t.IsSilent
+            Set-Status $t '' 'neutral'; Set-Ring $t 'none'
+        }
     } finally { $script:SuspendDash = $false }
-    # preferences are toggles, so "clear" means drop pending edits and show the machine's
-    # real state again - unticking them all would read as "turn all 25 off"
-    Sync-Prefs
     $TxtTweakHint.Text = ''
     Update-Dash
 })
@@ -8584,45 +15587,122 @@ $BtnDetect.Add_Click({ if (-not (Test-TweakListBusy)) { Invoke-TweakDetect } })
 
 $BtnTweakUndo.Add_Click({
     if (Test-BatchBusy) { return }
-    $sel = @($script:TweakItems | Where-Object { $_.IsSelected })
+    # Tweaks or Gaming sub-tab - the button is hidden on Cleanup (one-time actions) and
+    # Preferences (a toggle has no undo). Acts on the list on screen.
+    $sel = @(Get-OptItems | Where-Object { $_.IsSelected })
     if ($sel.Count -eq 0) {
         Show-Overlay 'Nothing selected' 'Select at least one tweak to undo. Tip: "Detect Applied" ticks everything currently applied on this machine.'
         return
     }
     # Undo restores the documented Windows default. Some tweaks delete or run something
     # and simply cannot be put back - say which, up front, instead of silently no-opping.
-    $oneWay = @($sel | Where-Object { $_.UnArgs -in 'diskcleanup', 'tempfiles', 'restorepoint', 'edgeremove', 'onedriveremove', 'widgets', 'windowsai' })
+    $oneWay = @($sel | Where-Object { $_.UnArgs -in 'restorepoint', 'onedriveremove', 'widgets', 'windowsai',
+                                      'debloatweb', 'debloatdev', 'debloatxbox', 'debloatmsapps', 'debloatmobile', 'debloatutil',
+                                      'taskbarclean', 'explorerprivacy' })
     $msg = "$($sel.Count) tweak(s) will be reset to their Windows default."
     if ($oneWay.Count) {
-        $names = ($oneWay | ForEach-Object { "  - $($_.Name)" }) -join "`n"
-        $msg += "`n`n$($oneWay.Count) of them cannot be fully undone - the policy is reverted but deleted files and removed apps are NOT restored:`n$names"
+        # capped the way the Apply dialog caps its list - 12 names overflow the dialog
+        $names = ($oneWay | Select-Object -First 8 | ForEach-Object { "  - $($_.Name)" }) -join "`n"
+        if ($oneWay.Count -gt 8) { $names += "`n  - ...and $($oneWay.Count - 8) more" }
+        $msg += "`n`n$($oneWay.Count) of them cannot be fully undone - the policy is reverted but deleted files, cleared history and removed apps are NOT restored:`n$names"
     }
     Show-Confirm 'Undo selected tweaks?' $msg ({ Start-TweakUndo $sel }.GetNewClosure())
 })
 
 $BtnTweakApply.Add_Click({
     if (Test-BatchBusy) { return }
-    # a batch is the ticked tweaks plus any preference whose toggle no longer matches the
-    # machine - preferences you did not touch are never rewritten
-    $sel = @($script:TweakItems | Where-Object { $_.IsSelected }) + @(Get-PendingPrefs)
-    if ($sel.Count -eq 0) {
-        Show-Overlay 'Nothing to do' 'Tick a tweak to apply, or change a preference toggle. Preferences already matching this machine are left alone.'
-        return
+    # Apply acts on the sub-tab on screen - nothing you cannot see gets run
+    switch ($script:OptSubTab) {
+        'Clean' {
+            $sel = @($script:CleanItems | Where-Object { $_.IsSelected })
+            if ($sel.Count -eq 0) {
+                Show-Overlay 'Nothing to do' 'Tick at least one cleanup task.'
+                return
+            }
+            $risky = @($sel | Where-Object { -not $_.IsSilent })
+            if ($risky.Count -eq 0) { Start-Tweaks $sel; return }
+            $warn = "Windows.old and Update Cache - Remove is ticked.`n`nRemoving Windows.old permanently removes the ability " +
+                    "to roll back the Windows version. It is also the biggest disk win available - typically 20-30 GB after a feature update."
+            Show-Confirm 'Remove Windows.old?' $warn ({ Start-Tweaks $sel }.GetNewClosure())
+        }
+        'Game' {
+            $sel = @($script:GameItems | Where-Object { $_.IsSelected })
+            if ($sel.Count -eq 0) {
+                Show-Overlay 'Nothing to do' 'Tick at least one gaming tweak.'
+                return
+            }
+            # THE PERSONA COLLISION: the business default that is wrong on a gaming machine
+            # is Xbox-APP removal (gamers want Game Pass / the Xbox app). Game DVR being
+            # OFF is the OPPOSITE - it is a real FPS win, so a gaming machine WANTS the
+            # business gamedvr row, and it is deliberately left ticked. Pressing Apply here
+            # is the moment the technician declares "this is a gaming machine", so only the
+            # Xbox-removal row is un-ticked, and the dialog says so.
+            $conflict = @($script:TweakItems | Where-Object { $_.UnArgs -eq 'debloatxbox' -and $_.IsSelected })
+            $notes = @()
+            if ($conflict.Count) {
+                $script:SuspendDash = $true
+                try { foreach ($c in $conflict) { $c.IsSelected = $false } } finally { $script:SuspendDash = $false }
+                $notes += 'Un-ticked "Xbox and Gaming - Remove" on the Tweaks sub-tab - a gaming machine keeps Game Pass and the Xbox app.'
+            }
+            $xtest = $script:TweakTests['debloatxbox']; $xr = $null
+            if ($xtest) { try { $xr = & $xtest } catch { $xr = $null } }
+            if ($xr -eq $true) { $notes += 'The Xbox and Gaming apps have ALREADY been removed from this machine - reinstall them from the Microsoft Store (search "Xbox").' }
+            # each ticked CAUTION row names its OWN specific cost
+            $costs = @{
+                hags         = 'Hardware-Accelerated GPU Scheduling regresses on some GPU/driver combinations and needs a reboot.'
+                gamenic      = 'Network Adapter - Gaming Profile briefly DROPS the network link (~2 s per adapter) - never run it during a remote session.'
+                interrupts   = 'GPU and NIC Interrupts (MSI + high priority) needs a reboot.'
+                memintegrity = 'Memory Integrity (VBS) - Disable trades away kernel-exploit protection for FPS and needs a reboot. Keep it ON if this machine runs WSL2, Docker, Hyper-V or Credential Guard.'
+            }
+            $risky = @($sel | Where-Object { -not $_.IsSilent })
+            $warn = "$($sel.Count) gaming tweak(s) will be applied."
+            if ($risky.Count) {
+                $lines = foreach ($r in $risky) { '  - ' + $costs[[string]$r.UnArgs] }
+                $warn += "`n`nCAUTION:`n" + ($lines -join "`n")
+            }
+            if ($notes.Count) { $warn += "`n`n" + ($notes -join "`n") }
+            $warn += "`n`nA 4-second latency probe runs before and after, so the result is a measured number."
+            Show-Confirm 'Apply gaming tweaks?' $warn ({
+                # baseline FIRST, then the batch; Finish-Batch measures again and compares
+                $script:GameBaseline = Measure-GamingLatency
+                $TxtTweakHint.Text = 'baseline: ' + (Format-GamingProbe $script:GameBaseline)
+                Add-Log ('Gaming baseline - ' + (Format-GamingProbe $script:GameBaseline))
+                Start-Tweaks $sel
+            }.GetNewClosure())
+        }
+        'Prefs' {
+            # a preference batch is only the toggles that no longer match the machine -
+            # preferences you did not touch are never rewritten
+            $sel = @(Get-PendingPrefs)
+            if ($sel.Count -eq 0) {
+                Show-Overlay 'Nothing to do' 'Flip a preference toggle first. Toggles already matching this machine are left alone.'
+                return
+            }
+            Start-Tweaks $sel
+        }
+        default {
+            $sel = @($script:TweakItems | Where-Object { $_.IsSelected })
+            if ($sel.Count -eq 0) {
+                Show-Overlay 'Nothing to do' 'Tick a tweak to apply. The default selection covers every machine; the CAUTION group is per-machine.'
+                return
+            }
+            $risky = @($sel | Where-Object { -not $_.IsSilent })
+            $hasRestore = @($sel | Where-Object { $_.UnArgs -eq 'restorepoint' }).Count -gt 0
+            if ($risky.Count -eq 0) {
+                # the default selection - no CAUTION rows - applies without a dialog
+                Start-Tweaks $sel
+                return
+            }
+            # CAUTION tweaks remove software or change security/network posture - name
+            # them explicitly rather than hiding the damage behind a count.
+            $names = ($risky | Select-Object -First 8 | ForEach-Object { "  - $($_.Name)" }) -join "`n"
+            if ($risky.Count -gt 8) { $names += "`n  - ...and $($risky.Count - 8) more" }
+            $warn = "$($risky.Count) of the $($sel.Count) selected tweak(s) are in the CAUTION group:`n`n$names`n`n"
+            $warn += $(if ($hasRestore) { 'A restore point is selected and will be created first.' }
+                       else { 'No restore point is selected. Tick "Restore Point - Create" first if you want an undo.' })
+            Show-Confirm 'Apply CAUTION tweaks?' $warn ({ Start-Tweaks $sel }.GetNewClosure())
+        }
     }
-    $risky = @($sel | Where-Object { -not $_.IsSilent })
-    $hasRestore = @($sel | Where-Object { $_.UnArgs -eq 'restorepoint' }).Count -gt 0
-    if ($risky.Count -eq 0) {
-        Start-Tweaks $sel
-        return
-    }
-    # Advanced tweaks remove software or change network/OS behaviour - name them
-    # explicitly rather than hiding the damage behind a count.
-    $names = ($risky | Select-Object -First 8 | ForEach-Object { "  - $($_.Name)" }) -join "`n"
-    if ($risky.Count -gt 8) { $names += "`n  - ...and $($risky.Count - 8) more" }
-    $warn = "$($risky.Count) of the $($sel.Count) selected tweak(s) are in the CAUTION group:`n`n$names`n`n"
-    $warn += $(if ($hasRestore) { 'A restore point is selected and will be created first.' }
-               else { 'No restore point is selected. Tick "Restore Point - Create" first if you want an undo.' })
-    Show-Confirm 'Apply advanced tweaks?' $warn ({ Start-Tweaks $sel }.GetNewClosure())
 })
 
 $BtnUninstall.Add_Click({
@@ -8633,18 +15713,28 @@ $BtnUninstall.Add_Click({
         Show-Overlay 'Nothing selected' 'Select at least one application to uninstall.'
         return
     }
-    Start-Uninstall $sel $false
+    # Force Remove keeps its own wording - it is a different, and worse, thing to agree to.
+    Show-Preflight $sel 'uninstall'
 })
 
 function Start-Uninstall([object[]]$sel, [bool]$Force) {
     foreach ($s in $sel) { Set-Status $s 'Queued' 'neutral'; Set-Ring $s 'none' }
-    $script:Pending = $sel
+    $script:Pending = @($sel)
     $script:BatchTab = 'Un'
     $script:HadFailures = $false
     $script:WorkerStarted = $false
     $script:EndQueued = $false
     $script:Paused = $false
-    Remove-Item -LiteralPath $script:QueuePath, $script:StatusPath, $script:CancelPath -ErrorAction SilentlyContinue
+    $script:AwaitingScan = $false
+    $script:CurJob = $null
+    $script:DlIndex = 0
+    # when this batch began, so the run record can say how long it took. Start-Batch stamps
+    # this and this path did not, so an Uninstall record carried the previous install's clock.
+    $script:RunStarted = Get-Date
+    # a verdict or folder list from an earlier batch must not ride into this one's leftover scan
+    foreach ($s in $script:Pending) { $s.Dirty = $false; $s.CreatedPaths = @() }
+    Remove-Item -LiteralPath $script:QueuePath, $script:StatusPath, $script:CancelPath, $script:SkipPath -ErrorAction SilentlyContinue
+    Show-BatchStrip
     if (-not (Start-Worker)) {
         Abort-Batch 'elevation declined'
         return
@@ -8668,8 +15758,12 @@ function Start-Uninstall([object[]]$sel, [bool]$Force) {
         return
     }
     foreach ($s in $sel) {
+        # `silent` travels with the entry because the worker cannot work it out for itself:
+        # it decides whether a window that stays up is a fault to stop or a wizard the
+        # technician is standing in front of. Parse-UninstallString already knows.
         $entry = @{ id = $s.Id; action = 'uninstall'; command = $s.UnCommand; args = $s.UnArgs
-                    detect = $s.DetectPath; location = @($s.CleanPaths)[0] } | ConvertTo-Json -Compress
+                    detect = $s.DetectPath; location = @($s.CleanPaths)[0]
+                    silent = [bool]$s.IsSilent } | ConvertTo-Json -Compress
         Add-Content -Path $script:QueuePath -Value $entry -Encoding UTF8
     }
     if ($script:DeepClean) {
@@ -8751,10 +15845,18 @@ $window.Add_Loaded({
 })
 
 $window.Add_Closed({
+    # Whatever else this session did, the access code does not stay behind. Belt to
+    # Load-Catalog's braces: a session that never fetched a catalog still leaves nothing.
+    Clear-AccessFile
     # No-trace cleanup: remove everything on clean success or an untouched session.
     # Keep the cache only when there are partial downloads or failures worth resuming.
     # same list as the batch-end sweep: a leftover package is a reason to keep the cache too
-    $partials = @(Get-ChildItem $script:CacheDir -Include *.exe, *.msi, *.zip, *.part -Recurse -ErrorAction SilentlyContinue)
+    # .rar and .iso belong here for exactly the reason the batch-end sweep gives: the package
+    # IS the installer. Left out, a cancelled 1.1 GB .rar or a multi-GB .iso did not count as a
+    # partial, the session read as "untouched", and the whole cache was deleted underneath a
+    # download that was minutes from finishing. Keep this list identical to the one in
+    # Finish-Batch - they answer the same question about the same folder.
+    $partials = @(Get-ChildItem $script:CacheDir -Include *.exe, *.msi, *.zip, *.rar, *.iso, *.part -Recurse -ErrorAction SilentlyContinue)
     $ourJobs = @(Get-BitsTransfer -ErrorAction SilentlyContinue | Where-Object { $_.DisplayName -like 'PC2GoDeploy:*' })
     # A job only earns the right to keep the cache if it actually holds bytes worth
     # resuming. One that never connected - 0 bytes against an unreachable host - is
@@ -8784,8 +15886,18 @@ function Get-SessionHeader {
         $id = [Security.Principal.WindowsIdentity]::GetCurrent()
         if ((New-Object Security.Principal.WindowsPrincipal $id).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) { $elev = 'yes' }
     } catch {}
+    # The registry, not WMI. Get-CimInstance Win32_OperatingSystem costs ~370 ms on a healthy
+    # machine and routinely seconds on a client whose WMI repository is busy or damaged - and
+    # it was being paid before the window was allowed to appear, for one line of a log header.
+    # The same facts are 20 ms away in the registry.
     $os = ''
-    try { $os = (Get-CimInstance Win32_OperatingSystem -ErrorAction Stop).Caption } catch { $os = 'unknown' }
+    try {
+        $k = Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion' -ErrorAction Stop
+        $os = [string]$k.ProductName
+        # ProductName still reads "Windows 10" on Windows 11; build 22000 is the boundary.
+        if ([int]$k.CurrentBuild -ge 22000) { $os = $os -replace 'Windows 10', 'Windows 11' }
+        if ($k.DisplayVersion) { $os = "$os $($k.DisplayVersion)" }
+    } catch { $os = 'unknown' }
     return @(
         "PC2Go App Installer - $BuildTag",
         "Machine   : $env:COMPUTERNAME",
@@ -8797,17 +15909,24 @@ function Get-SessionHeader {
         ('-' * 60)
     )
 }
-foreach ($line in (Get-SessionHeader)) { Add-Log $line }
-
 Load-Tweaks      # built-in list, no network - available before the catalog arrives
-Load-Prefs       # toggles, pre-set from this machine's current state
+
+# Nothing below is needed to DRAW the window, so none of it runs before the window is on screen.
+# Load-Catalog was already deferred this way; the session header and the preference toggles are
+# now too. Both read machine state - the registry, service states - and on a slow or heavily
+# managed client that is time the technician spends looking at nothing at all.
 $script:CatalogLoaded = $false
 $window.Add_ContentRendered({
     if ($script:CatalogLoaded) { return }
     $script:CatalogLoaded = $true
+    foreach ($line in (Get-SessionHeader)) { Add-Log $line }
+    Load-Prefs   # toggles, pre-set from this machine's current state
     Load-Catalog
 })
 $timer.Start()
+# The last thing measured: from here the window is on screen and the clock stops mattering.
+Add-Mark 'window shown'
+Write-Marks $(if ($script:Elevated) { 'elevated (the window you see)' } else { 'unelevated (no UAC needed)' })
 [void]$window.ShowDialog()
 $timer.Stop()
 # stop the icon pump so its runspace never outlives the window

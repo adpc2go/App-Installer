@@ -36,6 +36,19 @@ export default {
 
     try {
       if (path === "/go" || path === "/go.ps1") return await serveBootstrap(env, url);
+      // The access gate. /go stays open - the bootstrap is useless without what it fetches -
+      // but the tool and the catalog are refused without the code. The catalog matters most:
+      // it MINTS fresh signed /files URLs, so serving it to a stranger hands them every
+      // installer. A noted paste-line therefore gains nothing; rotation is one
+      // `wrangler secret put ACCESS_CODE` and every code ever handed out is dead.
+      if (path === "/AppDeploy.ps1" || path === "/apps.json") {
+        if (!accessOk(request, url, env)) {
+          return new Response("Access code required\n", {
+            status: 403,
+            headers: { "content-type": "text/plain; charset=utf-8", "x-pc2go-auth": "required" },
+          });
+        }
+      }
       if (path === "/AppDeploy.ps1") return await serveObject(request, env, "AppDeploy.ps1", { cache: "no-cache" });
       if (path === "/apps.json") return await serveCatalog(env, url);
       if (path.startsWith("/files/")) return await serveGated(request, env, url, path);
@@ -53,6 +66,26 @@ export default {
     }
   },
 };
+
+/* ---------------------------------------------------------------- access gate */
+
+/**
+ * True when no ACCESS_CODE secret is configured (open, backwards compatible - nothing breaks
+ * before the secret is set) or when the request carries the right code, as the
+ * `x-pc2go-code` header (the normal path) or `?code=` (for hand testing in a browser).
+ * Constant-time compare: a plain === leaks the match length through timing.
+ */
+function accessOk(request, url, env) {
+  const want = String(env.ACCESS_CODE || "");
+  if (!want) return true;
+  const got = String(request.headers.get("x-pc2go-code") || url.searchParams.get("code") || "");
+  const n = Math.max(want.length, got.length);
+  let diff = want.length === got.length ? 0 : 1;
+  for (let i = 0; i < n; i++) {
+    diff |= (want.charCodeAt(i % want.length) || 0) ^ (got.charCodeAt(i % got.length) || 0);
+  }
+  return diff === 0;
+}
 
 /* ------------------------------------------------------------------ bootstrap */
 
@@ -116,6 +149,32 @@ async function serveCatalog(env, url) {
 
   const origin = env.PUBLIC_BASE_URL || url.origin;
 
+  // Serve only the applications that can actually be installed.
+  //
+  // A catalog is half-finished for most of its life - entries are written by hand long before
+  // the installer is uploaded, and most entries still carry a placeholder hash at any given
+  // time. Such an entry is not merely incomplete, it is actively harmful: AppDeploy.ps1
+  // downloads the whole file and only THEN verifies the hash, so a technician waits out a
+  // multi-GB download to be told it is corrupt. Dropping it at the edge costs nothing, and is
+  // the difference between "not offered yet" and "offered, then failed after forty minutes".
+  //
+  // This is also what lets the catalog be published at any time. The stored apps.json keeps
+  // every entry, with all the uninstall and cleanup detail already written for it; each one
+  // starts being served the moment its installer is genuinely in the bucket.
+  // An uninstallOnly entry is the one legitimate exception: it exists to carry a vendor's
+  // REMOVAL knowledge (uninstall command, cleanup targets, removers) for a product we never
+  // install - Avast is the model. It has no installer, so no url and no install hash, and
+  // dropping it would strip the Uninstall tab of exactly the detail it was written to carry.
+  // It never becomes an Install row: AppDeploy's Load-Catalog skips uninstallOnly entries.
+  const total = (manifest.apps || []).length;
+  manifest.apps = (manifest.apps || []).filter(
+    (a) => a && (a.uninstallOnly === true ||
+                 (/^[0-9a-f]{64}$/i.test(String(a.sha256 || "")) && String(a.url || "").length > 0))
+  );
+  if (manifest.apps.length !== total) {
+    console.log(`catalog: serving ${manifest.apps.length} of ${total} apps (the rest have no real hash or url yet)`);
+  }
+
   if (env.GATE_FILES !== "false") {
     const ttl = Number(env.TOKEN_TTL_SECONDS || 172800);
     const exp = Math.floor(Date.now() / 1000) + ttl;
@@ -124,6 +183,12 @@ async function serveCatalog(env, url) {
       if (app.url) app.url = await signIfOurs(app.url, origin, exp, env);
       for (const step of app.postInstall || []) {
         if (step.url) step.url = await signIfOurs(step.url, origin, exp, env);
+      }
+      // removers download and EXECUTE on the client (hash-gated there) - an unsigned
+      // /files/ url here would simply 403 at wipe time, after the technician already
+      // approved the removal
+      for (const rm of (app.cleanup && app.cleanup.removers) || []) {
+        if (rm && rm.url) rm.url = await signIfOurs(rm.url, origin, exp, env);
       }
     }
   }
