@@ -2,8 +2,8 @@
 <#
   Connect to the lab with mstsc over the Hyper-V VMBus instead of vmconnect.
 
-    .\Connect-Lab.ps1                      # 1280x1024
-    .\Connect-Lab.ps1 -Width 1920 -Height 1080
+    .\Connect-Lab.ps1                      # 1920x1080 - same size as Home
+    .\Connect-Lab.ps1 -Width 1280 -Height 1024
     .\Connect-Lab.ps1 -FullScreen
 
   This IS Enhanced Session - vmconnect's enhanced mode is RDP on port 2179 with the VM's
@@ -13,8 +13,8 @@
 #>
 param(
     [string]$VMName = 'Pro',
-    [int]$Width     = 1280,
-    [int]$Height    = 1024,
+    [int]$Width     = 1920,
+    [int]$Height    = 1080,
     [switch]$FullScreen,
     [switch]$NoDrives
 )

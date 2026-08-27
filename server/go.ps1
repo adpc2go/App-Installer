@@ -321,6 +321,15 @@ function Invoke-WithAccess([scriptblock]$Try) {
             }
             $env:PC2GO_CODE = Read-AccessCode ($max - $tries) $max
             $tries++
+            # RE-ARMED. Stopping the timer above is what keeps a splash off the prompt - but it
+            # is a one-shot, so without this it never fires again and everything after the code
+            # is typed runs with nothing on screen at all. That is the whole fetch of
+            # AppDeploy.ps1: around 700 KB, and on a link to Kuwait long enough that a silent
+            # console reads as a dead one. Re-arming here brings the splash back 1.2s into the
+            # work, and the launch - or the finally on Ctrl+C - clears it again.
+            Write-Host '   Checking the code and getting this machine''s copy ready...' -ForegroundColor DarkGray
+            Write-Host ''
+            $script:SplashTimer.Start()
         }
     }
 }
