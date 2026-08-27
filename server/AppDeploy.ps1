@@ -4835,7 +4835,18 @@ function Refresh-UnList([object]$Manifest) {
         if ($cat) {
             $detect = [string]$(if ($cat.uninstall.detect) { $cat.uninstall.detect }
                                 elseif (@($cat.verifyPaths).Count) { @($cat.verifyPaths)[0] } else { '' })
-            if ($detect -and (Test-Path -LiteralPath ([Environment]::ExpandEnvironmentVariables($detect)))) {
+            # A registry-form detect ("HKLM\SOFTWARE\...") was handed to Test-Path as a
+            # file path, which is always false - so every catalog entry that detects by
+            # registry key silently kept the generic uninstall string and lost its vendor
+            # tool and curated cleanup. Same two branches Test-CatalogInstalled uses.
+            $present = $false
+            if ($detect) {
+                try {
+                    if ($detect -match '^HK(LM|CU|CR|EY)') { $present = Test-Path -LiteralPath (ConvertTo-PSRegPath $detect) }
+                    else { $present = Test-Path -LiteralPath ([Environment]::ExpandEnvironmentVariables($detect)) }
+                } catch { $present = $false }
+            }
+            if ($present) {
                 # __ODIS_MANIFEST__ in the catalog's args is resolved against this machine; if
                 # no manifest names this product, the command upgrade is declined and the
                 # registry uninstall string stays - the cleanup targets below still apply.
@@ -8665,7 +8676,12 @@ function Uninstall-One($app) {
     # directory, and every later delete would fail with "in use" for no visible reason.
     if ($app.location) {
         $loc = [Environment]::ExpandEnvironmentVariables($app.location).TrimEnd('\')
-        if ($loc -and $loc.Length -gt 12) {
+        # Length alone was the only guard, and "C:\Program Files" is sixteen characters.
+        # Installers do register that - or ProgramData, or the user's own profile - as their
+        # InstallLocation, and this loop force-kills EVERYTHING running under whatever it is
+        # given. The protected-root list Wipe-One refuses to delete is the list this must
+        # refuse to kill under; the same roots, for the same reason.
+        if ($loc -and $loc.Length -gt 12 -and (Test-WipeAllowed $loc)) {
             # The separator is not cosmetic. Matching the bare prefix means an install
             # location of "...\Program Files\Foo" ALSO matches "...\Program Files\FooBar\x.exe",
             # and this force-kills whatever it matches - so removing one product would take a
@@ -8708,6 +8724,13 @@ function Uninstall-One($app) {
     if (($exe -match '[\\/]') -and -not (Test-Path -LiteralPath $exe)) {
         Write-Status $app.id 'Failed' 'vendor uninstaller not found'
         return
+    }
+    # A bare name - "msiexec.exe", which is what every MSI uninstall string resolves to - is
+    # found through PATH, and this process is elevated. Pin it to System32 when it lives
+    # there; a bare name that does not is left to Start-Process, as before.
+    if ($exe -notmatch '[\\/]') {
+        $sys = Join-Path $env:SystemRoot ('System32\' + $exe)
+        if (Test-Path -LiteralPath $sys) { $exe = $sys }
     }
     # Time-boxed, for the same reason the INSTALL side is: Start-Process -Wait has no timeout,
     # this worker is elevated and hidden, and a vendor uninstaller that stops on a prompt would
@@ -8840,6 +8863,20 @@ function Wipe-One($app) {
                 }
                 'service' {
                     $svc = Get-Service -Name $t.path -ErrorAction SilentlyContinue
+                    # A service the token scan matched by NAME is still only a guess, and the
+                    # guess can land on Windows itself: an app called "Update Something" matches
+                    # every *Update* service. Anything whose binary lives under the Windows
+                    # folder is the operating system's and is refused here, whatever was ticked.
+                    if ($svc) {
+                        $bin = ''
+                        try { $bin = ('' + (Get-CimInstance Win32_Service -Filter "Name='$(('' + $t.path) -replace "'", "''")'" -ErrorAction Stop).PathName) } catch { $bin = '' }
+                        $winRoot = ($env:SystemRoot.TrimEnd('\') + '\')
+                        if ($bin -and ($bin.Trim('"') -replace '^"?([^"]+)"?.*$', '$1').StartsWith($winRoot, [StringComparison]::OrdinalIgnoreCase)) {
+                            $failed++
+                            Write-Activity $app.id 'wipe' 'Refused' "service $($t.path) runs from the Windows folder - not deleted"
+                            break
+                        }
+                    }
                     if ($svc) {
                         if ($svc.Status -ne 'Stopped') { Stop-Service -Name $t.path -Force -ErrorAction SilentlyContinue }
                         # sc.exe delete works on 5.1 where Remove-Service does not exist
@@ -8915,7 +8952,11 @@ function Wipe-One($app) {
             $hostsFile = Join-Path $env:SystemRoot 'System32\drivers\etc\hosts'
             $keep = @(Get-Content -LiteralPath $hostsFile -ErrorAction Stop |
                       Where-Object { $hostLines -notcontains $_.Trim() })
-            Set-Content -LiteralPath $hostsFile -Value $keep -Encoding ASCII -Force -ErrorAction Stop
+            # UTF-8 without a BOM, not ASCII: -Encoding ASCII turned every non-ASCII character
+            # in the lines being KEPT - a comment in French, a hostname with an accent - into
+            # "?", damaging a file this step promised to leave untouched apart from the exact
+            # lines approved. Windows reads hosts as UTF-8; a BOM would make it skip line one.
+            [IO.File]::WriteAllLines($hostsFile, [string[]]$keep, (New-Object Text.UTF8Encoding $false))
             $removed += $hostLines.Count
         } catch { $failed += $hostLines.Count }
     }
@@ -12439,8 +12480,15 @@ function Read-WorkerStatus {
     # twice - including "restore point created" twice when only one was ever made. Nothing ran
     # twice; only the log lied. A tool whose log cannot be trusted is worse than one that fails
     # loudly, because every other verdict in it becomes a question.
-    if ($lines.Count -le $script:StatusOffset) { return }
-    for ($i = $script:StatusOffset; $i -lt $lines.Count; $i++) {
+    # A flag, NOT an early return. The "everyone has reported - release the worker" check at
+    # the bottom used to sit behind `return`, so it ran only on a tick that brought NEW status
+    # lines. A worker that finished its last entry before the GUI's download loop had set
+    # AwaitingScan left nothing further to read - and the batch then sat in 'Install' for ever
+    # with an elevated worker polling a queue that would never get its end marker. Measured
+    # in Test-GuiBatch's failing-removal sequence: three rows settled, no end marker, 240 s
+    # timeout, "1 worker(s) still running at exit". The loop stays skipped; the check does not.
+    $fresh = ($lines.Count -gt $script:StatusOffset)
+    for ($i = $script:StatusOffset; $fresh -and $i -lt $lines.Count; $i++) {
         $s = $null
         try { $s = $lines[$i] | ConvertFrom-Json } catch { continue }
         if ($s.id -eq '_batch') {
@@ -12809,6 +12857,14 @@ function Finish-Batch {
         foreach ($p in $script:Pending) {
             # Skipped is this tool's "installed, with a caveat" - the product is on disk
             if ($p.IsSelected -and $p.Status -match '^(Installed|Skipped)') { $p.IsSelected = $false }
+        }
+    }
+    # The uninstall list is only rescanned on its next visit, so a row that is gone stays on
+    # screen until then - and it stayed TICKED, so the next press offered to remove it again.
+    # Same rule: what worked comes off, what failed stays ticked for the retry.
+    if ($script:BatchTab -eq 'Un') {
+        foreach ($p in $script:Pending) {
+            if ($p.IsSelected -and $p.Status -match '^(Uninstalled|Cleaned)') { $p.IsSelected = $false }
         }
     }
     $BarOverall.Value = 100
@@ -14340,6 +14396,24 @@ $BatchHead.Add_MouseLeftButtonDown({
 $BtnBatchClose.Add_Click({
     $BatchStrip.Visibility = 'Collapsed'
     $script:BatchRows.Clear()
+    # Dismissing the results is also the moment the cards let go of them. The "Installed" badge
+    # and verdict stayed on every card after the strip was gone - WinRAR read as freshly
+    # installed for the rest of the session - and for an uninstall the removed program sat in
+    # the list, badge and all, until somebody happened to rescan. The Activity tab and the run
+    # record keep the sentence; the card goes back to being a catalog row.
+    if ($script:Phase -in 'Done', 'Idle') {
+        foreach ($p in @($script:Pending)) {
+            if (-not $p) { continue }
+            Set-Status $p '' 'neutral'
+            Set-Ring $p 'none'
+            $p.ProgressVis = 'Collapsed'
+        }
+        # Finish-Batch already marked both inventories stale; a removal batch dismissed while
+        # its list is on screen rescans now, so what is gone is gone from the list too.
+        if ($script:BatchTab -eq 'Un' -and $PanelUn.Visibility -eq 'Visible') {
+            try { Select-UnTab $script:UnSubTab } catch { Add-Log "Rescan after dismiss failed: $($_.Exception.Message)" }
+        }
+    }
 })
 
 # One handler on the list rather than one per row: the rows come from a DataTemplate, so

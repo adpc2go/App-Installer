@@ -273,7 +273,15 @@ class R {
     Assert-True 'the window was built'          ($null -ne $window)
     Assert-True 'the Install button exists'     ($null -ne $BtnInstall)
     Assert-True 'the Uninstall button exists'   ($null -ne $BtnUninstall)
-    Assert-True 'and it did not elevate itself' (-not $script:Elevated)
+    # $script:Elevated reports the token this process was GIVEN. Launched from an elevated
+    # shell it is true by inheritance, which is not the tool elevating itself - so the claim
+    # is only checkable when the harness itself started unelevated.
+    $harnessElevated = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+    if ($harnessElevated) {
+        Assert-True 'and it inherited the elevated token it was launched with' ([bool]$script:Elevated)
+    } else {
+        Assert-True 'and it did not elevate itself' (-not $script:Elevated)
+    }
 
     # Resolve-OdisManifest is a pure lookup; prove it against a fixture tree. The per-product
     # manifest is minted at install time, so the catalog carries a token and this resolves it.

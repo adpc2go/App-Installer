@@ -747,21 +747,22 @@
                      "id":  "email-migration",
                      "name":  "Email migration",
                      "version":  "",
-                     "publisher":  "",
+                     "publisher":  "Advik Software",
                      "category":  "Apps",
                      "sizeBytes":  26224432,
                      "url":  "https://apps.pc2go.ca/files/email-migration/advik-rediffmail-backup.exe",
                      "sha256":  "6E5D453D28088B2D9F5A9A124BD173B2BC9B42143C7E427B140CFD7776341801",
                      "silentArgs":  "",
                      "verifyPaths":  [
-                                         "%ProgramFiles%\\Email migration\\Emailmigration.exe"
+                                         "%ProgramFiles(x86)%\\Advik Software"
                                      ],
                      "cleanup":  {
                                      "tokens":  [
-                                                    "Email migration"
+                                                    "Email migration",
+                                                    "Advik"
                                                 ],
                                      "paths":  [
-
+                                                   "%ProgramFiles(x86)%\\Advik Software"
                                                ],
                                      "registry":  [
 
