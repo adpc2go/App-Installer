@@ -5197,6 +5197,8 @@ $script:FixDefs = @(
        hint = 're-register App Installer, then fetch it if that fails' }
     @{ id = 'openssh';    name = 'OpenSSH Server - Enable';        group = 'Remote Access'
        hint = 'installs sshd, starts it, opens port 22 - a remote way in' }
+    @{ id = 'slowpc';     name = 'Slow PC - Diagnose';             group = 'Diagnostics'
+       hint = 'reads seven layers in order and says which one is the problem - changes nothing' }
 )
 
 # name -> what to launch, plus where its real Windows icon lives. Most .cpl applets carry
@@ -9840,10 +9842,248 @@ function Format-SizeW([long]$Bytes) {
 # Each returns a detail string, or throws. They are deliberately verbose about what they
 # actually did: "Windows Update - Reset" that silently does nothing is worse than useless
 # on a client machine, because you move on believing it is fixed.
+<#
+    Slow-PC triage: seven layers, read in order, each ending in one VERDICT line.
+
+    The order is the method. Every layer decides whether the next is worth reading, so a machine
+    on a spinning disk is answered at L0 and never gets a lecture about startup entries. All
+    seven still RUN - seeing "L0 clean, L1 clean, L2 FOUND" is worth more on screen than a single
+    line, and it costs seconds - but they are reported in order, so the first FOUND is the one to
+    act on.
+
+    Reads only. Nothing here changes the machine; the fixes it points at are separate rows the
+    technician chooses.
+
+    L1 is the layer that earns the tool: it ranks by CUMULATIVE CPU-SECONDS, not by percent. Task
+    Manager's percentage hides a scanner sitting at 8% for ever, where seconds-since-boot make it
+    obvious. That is how a second antivirus fighting Defender was found on a machine everyone had
+    already blamed on "it's just old".
+#>
+function Get-SlowPcReport {
+    $R = New-Object Collections.Generic.List[string]
+    $Verdict = [ordered]@{}
+    function Add-Line([string]$s) { $R.Add($s) }
+    $up = 0.0
+    try { $up = ((Get-Date) - (Get-CimInstance Win32_OperatingSystem -ErrorAction Stop).LastBootUpTime).TotalHours } catch { }
+
+    # ---------------- L0: is it hardware-doomed ----------------
+    Add-Line '== L0  hardware =='
+    $l0 = @()
+    try {
+        foreach ($d in @(Get-PhysicalDisk -ErrorAction Stop)) {
+            Add-Line ("   disk    {0}  {1}  {2:N0} GB" -f $d.MediaType, $d.BusType, ($d.Size / 1GB))
+            if ("$($d.MediaType)" -eq 'HDD') { $l0 += 'spinning disk - software cleanup buys very little' }
+            if ("$($d.BusType)" -match 'SD|MMC') { $l0 += "$($d.BusType) storage - same conversation as an HDD" }
+        }
+    } catch { Add-Line '   disk    (not readable)' }
+    try {
+        $ram = [math]::Round((Get-CimInstance Win32_ComputerSystem -ErrorAction Stop).TotalPhysicalMemory / 1GB, 1)
+        Add-Line ("   ram     {0} GB" -f $ram)
+        if ($ram -le 4) { $l0 += "$ram GB RAM - not enough for Windows 11" }
+    } catch { }
+    try {
+        $vol = Get-Volume -DriveLetter ($env:SystemDrive.TrimEnd(':')) -ErrorAction Stop
+        $pct = [math]::Round(100 * $vol.SizeRemaining / $vol.Size, 1)
+        Add-Line ("   free    {0:N1} GB of {1:N0} GB ({2}%)" -f ($vol.SizeRemaining/1GB), ($vol.Size/1GB), $pct)
+        if ($pct -lt 10 -or ($vol.SizeRemaining/1GB) -lt 15) { $l0 += "only $pct% free - Windows degrades hard below this" }
+    } catch { }
+    try {
+        foreach ($c in @(Get-PhysicalDisk -ErrorAction Stop | Get-StorageReliabilityCounter -ErrorAction Stop)) {
+            if ($c.Wear -gt 80)      { $l0 += "SSD wear $($c.Wear)% - the drive is near end of life" }
+            if ($c.ReadErrorsTotal)  { $l0 += "$($c.ReadErrorsTotal) read error(s) - back this machine up NOW" }
+        }
+    } catch { Add-Line '   smart   (needs admin, or unsupported)' }
+    try {
+        $cpu = (Get-CimInstance Win32_Processor -ErrorAction Stop | Select-Object -First 1).Name
+        Add-Line "   cpu     $cpu"
+        if ($cpu -match 'Celeron|Atom|Pentium Silver|Pentium Gold') { $l0 += 'entry-level CPU - this is an expectations conversation' }
+    } catch { }
+    $Verdict['L0'] = $(if ($l0.Count) { $l0 -join '; ' } else { 'OK' })
+
+    # ---------------- L1: is something eating it right now ----------------
+    Add-Line '== L1  what is running =='
+    $l1 = @()
+    try {
+        $procs = @(Get-Process -ErrorAction SilentlyContinue | Where-Object { $_.CPU -gt 0 } | Sort-Object CPU -Descending)
+        $shell = 0.0
+        foreach ($n in 'explorer', 'dwm') { $shell += [double](@($procs | Where-Object { $_.ProcessName -eq $n } | Measure-Object CPU -Sum).Sum) }
+        foreach ($p in @($procs | Select-Object -First 8)) {
+            Add-Line ("   {0,-26} {1,8:N0} cpu-s  {2,6:N0} MB" -f $p.ProcessName, $p.CPU, ($p.WorkingSet64/1MB))
+        }
+        # The shell comparison only means something once the shell has had time to accumulate.
+        # Ten minutes after boot explorer has almost no CPU-seconds and everything looks guilty.
+        if ($up -ge 1) {
+            foreach ($p in @($procs | Select-Object -First 10)) {
+                $exe = ''
+                try { $exe = [string]$p.Path } catch { }
+                if (-not $exe) { continue }
+                # Windows' own infrastructure - svchost, WmiPrvSE, services, the Defender engine -
+                # legitimately accumulates thousands of CPU-seconds on any machine that has been up
+                # a while. Flagging it made a healthy i9 workstation read as infected. What matters
+                # is THIRD-PARTY software outrunning the shell, which is what a rogue scanner is.
+                if ($exe -like "$env:SystemRoot\*") { continue }
+                if ($shell -gt 0 -and $p.CPU -gt $shell) {
+                    $l1 += "$($p.ProcessName) has used $([int]$p.CPU) CPU-seconds, more than explorer and dwm together ($([int]$shell))"
+                }
+            }
+            # Named even when no verdict fires. The bar - beating explorer and dwm combined - is
+            # deliberately conservative, because a triage tool that cries wolf stops being read.
+            # But the top third-party consumer is the candidate a technician wants to see anyway,
+            # so it goes in the evidence with the number it has to beat.
+            $out = @($procs | Where-Object { $_.Path -and ($_.Path -notlike "$env:SystemRoot\*") } | Select-Object -First 1)
+            if ($out.Count) { Add-Line ("   top third-party: {0} at {1:N0} cpu-s (shell total {2:N0})" -f $out[0].ProcessName, $out[0].CPU, $shell) }
+        } else {
+            Add-Line ("   (uptime {0:N1}h - too early to compare against the shell)" -f $up)
+        }
+    } catch { }
+    $Verdict['L1'] = $(if ($l1.Count) { $l1 -join '; ' } else { 'OK' })
+
+    # ---------------- L2: security software ----------------
+    Add-Line '== L2  security software =='
+    $l2 = @()
+    try {
+        $av = @(Get-CimInstance -Namespace 'root\SecurityCenter2' -ClassName AntiVirusProduct -ErrorAction Stop)
+        foreach ($a in $av) { Add-Line "   av      $($a.displayName)" }
+        if ($av.Count -ge 2) {
+            $l2 += "$($av.Count) antivirus products registered ($((@($av | ForEach-Object { $_.displayName })) -join ', ')) - two filter drivers scanning each other"
+        }
+    } catch { Add-Line '   av      (SecurityCenter2 not readable)' }
+    try {
+        $mp = Get-MpComputerStatus -ErrorAction Stop
+        Add-Line ("   defender  scan running: {0}" -f [bool]($mp.QuickScanInProgress -or $mp.FullScanInProgress))
+        if ($mp.QuickScanInProgress -or $mp.FullScanInProgress) { $l2 += 'a Defender scan is running right now - this is not a fault, wait or reschedule' }
+    } catch { }
+    $Verdict['L2'] = $(if ($l2.Count) { $l2 -join '; ' } else { 'OK' })
+
+    # ---------------- L3: memory pressure ----------------
+    Add-Line '== L3  memory =='
+    $l3 = @()
+    try {
+        $mc = @(Get-Process -Name 'Memory Compression' -ErrorAction SilentlyContinue | Select-Object -First 1)
+        if ($mc.Count) {
+            Add-Line ("   compression {0:N0} MB" -f ($mc[0].WorkingSet64/1MB))
+            $script:__mcBig = ($mc[0].WorkingSet64 -gt 1GB)
+        }
+        $avail = (Get-Counter '\Memory\Available MBytes' -ErrorAction Stop).CounterSamples[0].CookedValue
+        Add-Line ("   available   {0:N0} MB" -f $avail)
+        if ($avail -lt 1000) { $l3 += "only $([int]$avail) MB of memory free" }
+        # Compression is only evidence of pressure when memory is ALSO short. A large compressed
+        # store on a machine with gigabytes free is Windows working correctly, not thrashing.
+        if ($script:__mcBig -and $avail -lt 2000) { $l3 += 'over 1 GB compressed AND little memory free - the machine is paging' }
+    } catch { }
+    try {
+        $br = @(Get-Process -Name 'chrome', 'msedge', 'firefox' -ErrorAction SilentlyContinue).Count
+        Add-Line "   browser     $br process(es)"
+        if ($br -gt 40) { $l3 += "$br browser processes - this is tabs and extensions, not Windows" }
+    } catch { }
+    $Verdict['L3'] = $(if ($l3.Count) { $l3 -join '; ' } else { 'OK' })
+
+    # ---------------- L4: background churn ----------------
+    Add-Line '== L4  background work =='
+    $l4 = @()
+    Add-Line ("   uptime      {0:N1} hours" -f $up)
+    if ($up -gt 336) { $l4 += "up for $([int]($up/24)) days - Fast Startup means it may never have truly rebooted" }
+    foreach ($n in 'TiWorker', 'TrustedInstaller', 'MoUsoCoreWorker', 'SearchIndexer') {
+        $p = @(Get-Process -Name $n -ErrorAction SilentlyContinue | Select-Object -First 1)
+        if (-not $p.Count) { continue }
+        Add-Line ("   {0,-14} {1,7:N0} cpu-s" -f $n, $p[0].CPU)
+        if ($p[0].CPU -gt 300 -and $up -lt 24) { $l4 += "$n is busy on a machine up $([int]$up)h - post-setup servicing, let it finish" }
+        if ($n -eq 'SearchIndexer' -and $p[0].CPU -gt 900) { $l4 += 'the search indexer has burned a lot of CPU - consider rebuilding the index' }
+    }
+    foreach ($k in 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Component Based Servicing\RebootPending',
+                   'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\WindowsUpdate\Auto Update\RebootRequired') {
+        if (Test-Path -LiteralPath $k) { $l4 += 'a reboot is already pending - reboot before diagnosing anything else'; break }
+    }
+    $Verdict['L4'] = $(if ($l4.Count) { $l4 -join '; ' } else { 'OK' })
+
+    # ---------------- L5: startup and persistence ----------------
+    Add-Line '== L5  startup and persistence =='
+    $l5 = @()
+    # Deliberately NOT a bare 'update': Squirrel-packaged apps launch through Update.exe, so it
+    # matched Discord and every legitimate updater on a clean machine. These are named vendors
+    # and product categories that have no business auto-starting on a client machine.
+    $junk = 'support assistant|booster|optimizer|driver.?updater|pc ?cleaner|registry ?cleaner|mcafee|norton|avast|avg|reason ?(labs|core)|rav ?(antivirus|endpoint)|coupon|shopping|weatherbug|wildtangent'
+    $seen = @()
+    foreach ($k in 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run',
+                   'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run') {
+        if (-not (Test-Path -LiteralPath $k)) { continue }
+        $p = Get-ItemProperty -LiteralPath $k -ErrorAction SilentlyContinue
+        if (-not $p) { continue }
+        foreach ($n in ($p | Get-Member -MemberType NoteProperty -ErrorAction SilentlyContinue |
+                        Where-Object { $_.Name -notlike 'PS*' } | Select-Object -ExpandProperty Name)) {
+            Add-Line "   run     $n"
+            if ("$n $($p.$n)" -match $junk) { $seen += $n }
+        }
+    }
+    try {
+        foreach ($s in @(Get-CimInstance Win32_Service -ErrorAction Stop |
+                         Where-Object { $_.State -eq 'Running' -and $_.PathName -and $_.PathName -notmatch [regex]::Escape($env:SystemRoot) })) {
+            if ("$($s.Name) $($s.DisplayName) $($s.PathName)" -match $junk) { $seen += $s.DisplayName }
+        }
+    } catch { }
+    $seen = @($seen | Sort-Object -Unique)
+    if ($seen.Count) { $l5 += "$($seen.Count) startup item(s) worth reviewing: $($seen -join ', ')" }
+    $Verdict['L5'] = $(if ($l5.Count) { $l5 -join '; ' } else { 'OK' })
+
+    # ---------------- L6: faults and throttling ----------------
+    Add-Line '== L6  faults and throttling =='
+    $l6 = @()
+    try {
+        $ev = @(Get-WinEvent -FilterHashtable @{ LogName = 'System'; Level = 1, 2; StartTime = (Get-Date).AddDays(-3) } -ErrorAction Stop)
+        Add-Line "   errors  $($ev.Count) critical/error in 3 days"
+        $disk = @($ev | Where-Object { $_.Id -in 7, 51, 153 }).Count
+        $whea = @($ev | Where-Object { $_.ProviderName -match 'WHEA' }).Count
+        $kp   = @($ev | Where-Object { $_.Id -eq 41 }).Count
+        if ($disk) { $l6 += "$disk disk error event(s) - suspect the drive" }
+        if ($whea) { $l6 += "$whea hardware error event(s) (WHEA)" }
+        if ($kp)   { $l6 += "$kp unexpected shutdown(s) - Kernel-Power 41" }
+    } catch { Add-Line '   errors  (event log needs admin)' }
+    try {
+        $c = Get-CimInstance Win32_Processor -ErrorAction Stop | Select-Object -First 1
+        Add-Line ("   clock   {0} of {1} MHz" -f $c.CurrentClockSpeed, $c.MaxClockSpeed)
+        if ($c.MaxClockSpeed -and $c.CurrentClockSpeed -lt ($c.MaxClockSpeed * 0.5)) {
+            $l6 += "CPU pinned at $($c.CurrentClockSpeed) of $($c.MaxClockSpeed) MHz - throttling or a power plan"
+        }
+    } catch { }
+    try {
+        $scheme = (& "$env:SystemRoot\System32\powercfg.exe" /getactivescheme 2>&1) -join ' '
+        Add-Line "   power   $scheme"
+        if ($scheme -match 'a1841308-3541-4fab-bc81-f71556f20b4a') { $l6 += 'Power Saver is the active plan - use the Power Plan row' }
+    } catch { }
+    $Verdict['L6'] = $(if ($l6.Count) { $l6 -join '; ' } else { 'OK' })
+
+    return @{ Lines = $R; Verdicts = $Verdict }
+}
+
 function Invoke-Fix($app) {
     $id = [string]$app.fix
     Write-Status $app.id 'Applying' ''
     switch ($id) {
+
+        'slowpc' {
+            $r = Get-SlowPcReport
+            $hits = @()
+            foreach ($k in $r.Verdicts.Keys) {
+                $v = [string]$r.Verdicts[$k]
+                # One status per layer, so each lands as its own line in the Activity log and the
+                # order on screen is the order the layers are meant to be read in.
+                Write-Status $app.id 'Checking' "VERDICT ${k}: $v"
+                if ($v -ne 'OK') { $hits += "$k - $v" }
+            }
+            $path = Join-Path $script:CacheDir ("slowpc-" + (Get-Date -Format 'yyyyMMdd-HHmmss') + '.txt')
+            try {
+                $out = @("PC2Go slow-PC triage   $(Get-Date -Format 'yyyy-MM-dd HH:mm')   $env:COMPUTERNAME", '') +
+                       @($r.Verdicts.Keys | ForEach-Object { "VERDICT $($_): $($r.Verdicts[$_])" }) + @('') + @($r.Lines)
+                # Out-File with an explicit encoding: the redirection operator writes UTF-16 on
+                # 5.1, which turns a pasted report into mojibake for whoever receives it.
+                $out | Out-File -LiteralPath $path -Encoding utf8 -ErrorAction Stop
+            } catch { $path = '' }
+            $detail = $(if ($hits.Count) { "found at " + (($hits | Select-Object -First 2) -join ' | ') }
+                        else { 'all seven layers clean - nothing here explains it' })
+            if ($path) { $detail = "$detail   (report: $path)" }
+            Write-Status $app.id 'Applied' $detail
+            return
+        }
 
         'autologon' {
             $u = [string]$app.alUser
