@@ -154,6 +154,42 @@ function Hide-Splash {
     try { $sp.RS.Dispose() } catch { }
 }
 
+<#
+    Hold the splash until the tool's own window is up, then a moment longer.
+
+    Launching is not finishing. The bootstrap used to put the splash away and immediately exit,
+    but the tool still has to start PowerShell, parse 700 KB of script, build its window and
+    fetch the catalog - several seconds during which the technician has a splash vanish and then
+    nothing at all on screen, which is the one moment it is most needed.
+
+    MainWindowHandle is the signal, and it is exact: the tool is launched -WindowStyle Hidden, so
+    its console never counts, and the handle stays 0 until the WPF window is actually shown.
+    Measured against a stand-in that slept three seconds before showing its window - the handle
+    flipped at 3716ms, not before.
+
+    Bounded, and best-effort throughout. If the tool never opens a window this waits TimeoutSec
+    and gives up rather than holding a splash over a machine that is going nowhere; a splash is
+    a courtesy and must never become the reason the bootstrap does not end.
+#>
+function Wait-AppWindow($Proc, [int]$TimeoutSec = 45, [int]$LingerMs = 1200) {
+    if (-not $Proc) { return }
+    Show-Splash
+    $t0 = Get-Date
+    while (((Get-Date) - $t0).TotalSeconds -lt $TimeoutSec) {
+        try {
+            $Proc.Refresh()
+            if ($Proc.HasExited) { break }
+            if ($Proc.MainWindowHandle -ne [IntPtr]::Zero) {
+                # The window exists; give it long enough to paint before pulling the splash out
+                # from under it, or the two swap places with a visible gap between them.
+                Start-Sleep -Milliseconds $LingerMs
+                break
+            }
+        } catch { break }
+        Start-Sleep -Milliseconds 200
+    }
+}
+
 # Armed here, and fired by whatever is still running at 1.2 seconds.
 $script:SplashTimer = New-Object Timers.Timer
 $script:SplashTimer.Interval = 1200
@@ -478,20 +514,26 @@ if ($elevate) {
         Save-AccessCode
         # -NoSelfElevate because the decision is already made; without it the elevated copy
         # would run the same check again for nothing.
-        Start-Process -FilePath $winPS -Verb RunAs -WindowStyle Hidden -ArgumentList "$launch -NoSelfElevate"
+        $child = Start-Process -FilePath $winPS -Verb RunAs -WindowStyle Hidden -PassThru `
+                               -ArgumentList "$launch -NoSelfElevate"
         # The tool has it (through the hand-off file); this console has no further use for it,
         # and a code left in the environment is one a later command could read.
         $env:PC2GO_CODE = ''
+        # The splash was put away for the UAC prompt above - a modal dialog over a window still
+        # claiming to be "getting ready" reads as two things happening at once. The prompt has
+        # been answered by now, so it comes back for the wait that actually needs it.
+        Wait-AppWindow $child
         return
     } catch {
         # Declined, or elevation unavailable. Fall through and let the tool ask in its own way.
     }
 }
 
-Start-Process -FilePath $winPS -WindowStyle Hidden -ArgumentList $launch
+$child = Start-Process -FilePath $winPS -WindowStyle Hidden -PassThru -ArgumentList $launch
 # The launched tool inherited it a moment ago; leaving a copy behind in the technician's own
 # shell serves nothing, and the next go line asks again by design.
 $env:PC2GO_CODE = ''
+Wait-AppWindow $child
 
 } finally {
     # Reached on EVERY exit: the normal launch above, a throw, and - the case this exists for -
