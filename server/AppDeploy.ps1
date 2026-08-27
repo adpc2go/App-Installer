@@ -6605,7 +6605,11 @@ $script:TweakTests = @{
     # The child key being absent only means something if the PARENT exists - on Windows 10
     # and older Windows 11 builds NameSpace_36354489 is not there at all, and treating that
     # as "already applied" would tick a tweak that was never run.
-    explorerhome    = { $parent = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\Desktop\NameSpace_36354489'
+    # Asks about the pin first, because that is what 25H2 reads. The old check looked only at
+    # the HKLM namespace key, whose PARENT does not exist on 25H2 at all - so it answered "not
+    # applied" for ever and the row re-ran on every batch, achieving nothing each time.
+    explorerhome    = { if ((Get-RegVal 'HKCU\Software\Classes\CLSID\{f874310e-b6b7-47dc-bc84-b9e6b38f5903}' 'System.IsPinnedToNameSpaceTree') -eq 0) { return $true }
+                        $parent = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\Desktop\NameSpace_36354489'
                         if (-not (Test-Path -LiteralPath $parent)) { return $false }
                         return (-not (Test-Path -LiteralPath (Join-Path $parent '{f874310e-b6b7-47dc-bc84-b9e6b38f5903}'))) }
     # newest value: the Chrome background-mode policy added alongside the Edge RAM values
@@ -10657,6 +10661,13 @@ function Apply-Tweak($app) {
             # ORDER CHANGED DELIBERATELY. The policy and the package are what actually disable
             # Widgets; TaskbarDa only hides the button, and on 25H2 it is refused - which, as
             # the first line here, meant the two that matter never ran at all.
+            #
+            # Refused for everyone, not just for us: writing it fails with "unauthorized
+            # operation" from an ordinary NON-elevated session on the same machine, so this is
+            # not an elevation problem and running the worker differently would not help. The
+            # Settings app changes it through a privileged path nothing outside Windows has.
+            # Measured after briefly concluding the opposite from a Settings-driven registry
+            # diff - the UI moving the value does not mean a program can.
             Set-Reg 'HKLM\SOFTWARE\Policies\Microsoft\Dsh' 'AllowNewsAndInterests' 0
             $n = Remove-AppxByName 'MicrosoftWindows.Client.WebExperience'
             # Soft: nice to have, never worth losing the policy and the removal for.
@@ -10697,11 +10708,36 @@ function Apply-Tweak($app) {
             $detail = 'reserved storage disabled'
         }
         'explorerhome' {
+            # Home and Gallery are UNPINNED, not deleted.
+            #
+            # This row used to delete two subkeys of NameSpace_36354489 under HKLM and report how
+            # many it had removed. On 25H2 that parent key does not exist at all, so it removed
+            # nothing, reported "0 namespace entr(ies) removed" - and still called itself
+            # Applied, which is how a row can look like it worked for months while the sidebar
+            # never changed.
+            #
+            # What 25H2 actually reads is System.IsPinnedToNameSpaceTree on each shell folder's
+            # CLSID. The machine-wide copies under HKLM\SOFTWARE\Classes are TrustedInstaller's,
+            # but a per-user copy under HKCU\Software\Classes overrides them and needs no
+            # elevation - confirmed on a 25H2 machine, where HKCU=0 sits over HKLM=1.
+            $pins = @{ 'Home' = '{f874310e-b6b7-47dc-bc84-b9e6b38f5903}'
+                       'Gallery' = '{e88865ea-0e1c-4e20-9aa6-edcd0212c87c}' }
+            $un = @()
+            foreach ($name in @($pins.Keys)) {
+                if (Set-RegSoft "HKCU\Software\Classes\CLSID\$($pins[$name])" 'System.IsPinnedToNameSpaceTree' 0) {
+                    $un += $name
+                }
+            }
+            # Still attempted, for Windows 10 and pre-25H2 Windows 11 where the namespace keys
+            # are the mechanism and this is what actually hides the entries.
             $r = 0
             $r += [int](Remove-RegKey 'HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\Desktop\NameSpace_36354489\{f874310e-b6b7-47dc-bc84-b9e6b38f5903}')
             $r += [int](Remove-RegKey 'HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\Desktop\NameSpace_36354489\{e88865ea-0e1c-4e20-9aa6-edcd0212c87c}')
             Set-Reg 'HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced' 'LaunchTo' 1
-            $detail = "$r namespace entr(ies) removed; Explorer opens on This PC"
+            $detail = $(if ($un.Count) { "$($un -join ' and ') unpinned from the sidebar" }
+                        else { 'nothing to unpin' }) +
+                      "; Explorer opens on This PC" +
+                      $(if ($r) { "; $r legacy namespace entr(ies) removed" } else { '' })
         }
         'edgedebloat' {
             foreach ($kv in @(@('PersonalizationReportingEnabled', 0), @('ShowRecommendationsEnabled', 0),
@@ -10934,6 +10970,11 @@ function Apply-Tweak($app) {
             # from it on the next Explorer start.
             Set-Reg 'HKCU\Software\Microsoft\Windows\CurrentVersion\Start' 'ShowRecentList' 0
             Set-Reg 'HKCU\Software\Microsoft\Windows\CurrentVersion\Start' 'ShowFrequentList' 0
+            # All apps as a LIST rather than the 25H2 category grid. 2 is measured, not guessed:
+            # the value did not exist at all until the Category -> List switch was thrown in
+            # Settings, and appeared as 2 the moment it was. Soft, because a build without the
+            # categorised view has no such setting and must not fail the row over it.
+            [void](Set-RegSoft 'HKCU\Software\Microsoft\Windows\CurrentVersion\Start' 'AllAppsViewMode' 2)
             Set-Reg 'HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer' 'ShowRecommendations' 0
             # And the pre-25H2 copies, still read by Windows 10 and older Windows 11.
             Set-Reg 'HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced' 'MakeAllAppsDefault' 1
