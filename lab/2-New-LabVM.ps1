@@ -50,7 +50,7 @@ $dvd = Get-VMDvdDrive $VMName
 Set-VMFirmware  $VMName -FirstBootDevice $dvd
 
 Start-VM $VMName
-vmconnect.exe localhost $VMName
+Start-Process vmconnect.exe -ArgumentList 'localhost', $VMName
 
 Write-Host ''
 Write-Host "VM '$VMName' created and booting the installer." -ForegroundColor Green

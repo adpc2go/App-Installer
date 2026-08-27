@@ -6553,7 +6553,28 @@ $script:TweakTests = @{
     location        = { Test-RegVal 'HKLM\SYSTEM\CurrentControlSet\Services\lfsvc\Service\Configuration' 'Status' 0 }
     storesearch     = { Test-RegVal 'HKLM\SOFTWARE\Policies\Microsoft\Windows\Explorer' 'DisableSearchBoxSuggestions' 1 }
     devicecompanion = { Test-RegVal 'HKLM\SOFTWARE\Policies\Microsoft\Windows\Device Metadata' 'PreventDeviceMetadataFromNetwork' 1 }
-    restorepoint    = { $null }
+    # A restore point is an EVENT, not a state, so this answered $null - never applied - and a
+    # fresh one was created on every run. Run the tweaks three times in an afternoon and the
+    # machine carries three restore points from the same hour, all sharing one fixed
+    # shadow-copy budget, so each new one pushes out an older one somebody might actually want
+    # to go back to. "Applied" here therefore means "there is already a recent point to roll
+    # back to", which is the question the pre-apply check is really asking.
+    #
+    # 24 hours matches the throttle Windows applies itself, so this restores the behaviour
+    # Windows would have given us if the apply branch were not deliberately overriding it.
+    restorepoint    = { try {
+                            $pts = @(Get-ComputerRestorePoint -ErrorAction Stop)
+                            if (-not $pts.Count) { return $false }
+                            $newest = $null
+                            foreach ($p in $pts) {
+                                # WMI hands these back as 20260826223744.000000-000, not a DateTime.
+                                $when = $null
+                                try { $when = [Management.ManagementDateTimeConverter]::ToDateTime($p.CreationTime) } catch { }
+                                if ($when -and ((-not $newest) -or ($when -gt $newest))) { $newest = $when }
+                            }
+                            if (-not $newest) { return $false }
+                            return (((Get-Date) - $newest).TotalHours -lt 24)
+                        } catch { return $false } }
     # Only the services that ship as Automatic can prove the tweak ran - the rest are
     # Manual out of the box, so finding them Manual proves nothing.
     servicesmanual  = { $auto = @('DiagTrack', 'MapsBroker', 'PcaSvc', 'TrkWks', 'iphlpsvc')

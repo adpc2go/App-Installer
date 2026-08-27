@@ -9,7 +9,8 @@
 param(
     [string]$VMName     = 'AppLab',
     [string]$Checkpoint = 'CLEAN',
-    [string]$CredPath   = "$env:LOCALAPPDATA\AppLab\guest.cred.xml"
+    [string]$CredPath   = "$env:LOCALAPPDATA\$VMName\guest.cred.xml",
+    [switch]$NoCheckpoint
 )
 
 $ErrorActionPreference = 'Stop'
@@ -36,6 +37,20 @@ Invoke-Command -Session $s {
 
     # Baked into the baseline so every reverted run starts from the same footing.
     Set-MpPreference -SubmitSamplesConsent 2 -MAPSReporting 0 -ErrorAction SilentlyContinue
+
+    # Enhanced Session is RDP over the VMBus, carried by vmicrdv. Left on Manual it does not
+    # reliably come back after a guest reboot, and vmconnect reports that as a flat "could
+    # not connect" rather than retrying - so every restart looks like a broken VM.
+    Set-ItemProperty 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name fDenyTSConnections -Value 0
+    foreach ($svc in 'vmicrdv','TermService','UmRdpService','SessionEnv') {
+        $x = Get-Service $svc -ErrorAction SilentlyContinue
+        if ($x) {
+            Set-Service $svc -StartupType Automatic -ErrorAction SilentlyContinue
+            if ($x.Status -ne 'Running') { Start-Service $svc -ErrorAction SilentlyContinue }
+        }
+    }
+    'services now: ' + ((Get-Service vmicrdv,TermService,UmRdpService,SessionEnv -ErrorAction SilentlyContinue |
+        ForEach-Object { "$($_.Name)=$($_.Status)/$($_.StartType)" }) -join '  ')
 }
 
 # The installer ISO has done its job; leaving it attached means a stray boot can land back
@@ -46,6 +61,13 @@ Remove-PSSession $s
 New-Item -ItemType Directory -Force -Path (Split-Path $CredPath) | Out-Null
 $cred | Export-Clixml -Path $CredPath   # DPAPI: only this Windows account can read it back
 Write-Host "Credential saved to $CredPath"
+
+if ($NoCheckpoint) {
+    Write-Host ''
+    Write-Host 'Credential saved and guest prepped. No checkpoint taken (-NoCheckpoint).' -ForegroundColor Green
+    Write-Host 'Reboot the guest to confirm Enhanced Session survives, then re-run without -NoCheckpoint.'
+    return
+}
 
 Get-VMCheckpoint -VMName $VMName -Name $Checkpoint -ErrorAction SilentlyContinue |
     Remove-VMCheckpoint -Confirm:$false
