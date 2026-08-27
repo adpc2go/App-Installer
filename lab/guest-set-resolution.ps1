@@ -5,7 +5,7 @@
 # PowerShell Direct lands in session 0 - so the work is handed to a scheduled task running
 # in the signed-in session, the same way the GUI launch and the clipboard bridge are.
 $ErrorActionPreference = 'Stop'
-$W = 1920; $H = 1080
+$W = 1280; $H = 1024   # same as Pro's Enhanced Session size
 
 $helper = @"
 `$src = @'

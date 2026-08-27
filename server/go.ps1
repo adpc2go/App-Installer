@@ -321,15 +321,21 @@ function Invoke-WithAccess([scriptblock]$Try) {
             }
             $env:PC2GO_CODE = Read-AccessCode ($max - $tries) $max
             $tries++
-            # RE-ARMED. Stopping the timer above is what keeps a splash off the prompt - but it
-            # is a one-shot, so without this it never fires again and everything after the code
-            # is typed runs with nothing on screen at all. That is the whole fetch of
-            # AppDeploy.ps1: around 700 KB, and on a link to Kuwait long enough that a silent
-            # console reads as a dead one. Re-arming here brings the splash back 1.2s into the
-            # work, and the launch - or the finally on Ctrl+C - clears it again.
+            # Shown DIRECTLY, not by re-arming the timer, and this is the whole reason the
+            # splash was never visible while the tool was actually downloading.
+            #
+            # PowerShell dispatches event-action callbacks between pipeline statements. A
+            # blocking Invoke-WebRequest never yields, so a timer armed before it does not fire
+            # until it RETURNS. Measured: an 800ms one-shot against a 4052ms download fired at
+            # +4051ms - the instant the request finished, by which point the splash has nothing
+            # left to cover. The only moment it could ever appear was during Read-Host, which is
+            # exactly why it used to land on top of the passcode prompt.
+            #
+            # The code has just been typed and the next thing is the fetch, so there is no
+            # guessing left to do about whether work is coming - say so, and show it now.
             Write-Host '   Checking the code and getting this machine''s copy ready...' -ForegroundColor DarkGray
             Write-Host ''
-            $script:SplashTimer.Start()
+            Show-Splash
         }
     }
 }
