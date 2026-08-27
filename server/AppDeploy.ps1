@@ -6663,8 +6663,17 @@ $script:TweakTests = @{
     debloatmobile   = { Test-AppxAbsent $script:DebloatPacks['debloatmobile'] }
     debloatutil     = { Test-AppxAbsent $script:DebloatPacks['debloatutil'] }
     taskbarclean    = { Test-RegVal 'HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced' 'TaskbarMn' 0 }
-    startclean      = { Test-RegVal 'HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced' 'Start_AccountNotifications' 0 }
-    explorerprivacy = { Test-RegVal 'HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced' 'ShowCloudFilesInQuickAccess' 0 }
+    # Both of these detected against the pre-25H2 values, so on 25H2 they reported "already
+    # applied" off a value nothing reads - the detection agreeing with the apply about a setting
+    # neither of them was actually changing. They now ask about the location THIS build uses,
+    # and fall back to the old one only where the new key does not exist at all, so Windows 10
+    # still detects correctly instead of re-running the row for ever.
+    startclean      = { if (Test-Path -LiteralPath 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Start') {
+                            return (Test-RegVal 'HKCU\Software\Microsoft\Windows\CurrentVersion\Start' 'ShowRecentList' 0) }
+                        Test-RegVal 'HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced' 'Start_AccountNotifications' 0 }
+    explorerprivacy = { if ($null -ne (Get-RegVal 'HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer' 'ShowRecent')) {
+                            return (Test-RegVal 'HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer' 'ShowCloudFilesInQuickAccess' 0) }
+                        Test-RegVal 'HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced' 'ShowCloudFilesInQuickAccess' 0 }
     # value present AND 0 - on a fresh install neither value exists and both icons are
     # hidden, so absent is NOT the same as shown (Test-RegVal returns $false on missing)
     desktopicons    = { (Test-RegVal 'HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\HideDesktopIcons\NewStartPanel' '{20D04FE0-3AEA-1069-A2D8-08002B30309D}' 0) -and
@@ -10900,12 +10909,33 @@ function Apply-Tweak($app) {
             [void](Set-RegSoft 'HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced' 'TaskbarDa' 0)
             [void](Set-RegSoft 'HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced' 'TaskbarMn' 0)
             [void](Set-RegSoft 'HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced' 'ShowCopilotButton' 0)
-            # NOTE (do not guess): the Win11 24H2/25H2 taskbar "Resume" toggle's registry
-            # value is unverified - determine it by diffing Advanced + CrossDevice on a
-            # live machine before adding it here.
+            # The Win11 24H2/25H2 taskbar "Resume" badge. This was left out with a note saying
+            # not to guess it; it is no longer a guess. Determined by diffing Advanced,
+            # CrossDevice and CDP on a live 25H2 machine across a Resume-only toggle, twice:
+            # it appeared as 0 when Resume was switched off, and went 0 -> 1 when Resume alone
+            # was switched back on. Nothing else outside the noise keys moved either time.
+            #
+            # The name is unhelpfully generic for a value sitting directly under Advanced, which
+            # is presumably why nobody had pinned it down. Soft, like its neighbours: a build
+            # that has no Resume feature has no business failing the rest of this row.
+            [void](Set-RegSoft 'HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced' 'IsEnabled' 0)
             $detail = 'taskbar unpinned and cleaned - search box, Task View, widgets, chat and Copilot buttons off (Explorer restart applies it)'
         }
         'startclean' {
+            # The 25H2 Start menu was rebuilt and took its settings with it. Windows stamps
+            # Migrated=1 under ...\CurrentVersion\Start and reads from THERE; it still mirrors
+            # the old Advanced\Start_* values, which is exactly what made this row so convincing
+            # - every value verified, nothing changed on screen.
+            #
+            # Measured by toggling each control in Settings > Personalization > Start on 25H2 and
+            # diffing the registry. The Config blob that sits beside these is a derived cache
+            # (one toggle rewrites 1518 of its 1644 bytes) and must never be written; the plain
+            # values are authoritative, proven by setting one and watching Windows rebuild Config
+            # from it on the next Explorer start.
+            Set-Reg 'HKCU\Software\Microsoft\Windows\CurrentVersion\Start' 'ShowRecentList' 0
+            Set-Reg 'HKCU\Software\Microsoft\Windows\CurrentVersion\Start' 'ShowFrequentList' 0
+            Set-Reg 'HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer' 'ShowRecommendations' 0
+            # And the pre-25H2 copies, still read by Windows 10 and older Windows 11.
             Set-Reg 'HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced' 'MakeAllAppsDefault' 1
             Set-Reg 'HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced' 'Start_Layout' 1
             Set-Reg 'HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced' 'Start_TrackProgs' 0
@@ -10915,6 +10945,20 @@ function Apply-Tweak($app) {
             $detail = 'Start opens on All apps, more pins, no recents/recommendations/account nags'
         }
         'explorerprivacy' {
+            # TWO LOCATIONS, and the second one is why this row did nothing on 25H2.
+            #
+            # Windows 11 25H2 moved these three UP one level, out of ...\Explorer\Advanced and
+            # into ...\Explorer itself. Measured on a 25H2 machine: toggling the checkboxes in
+            # File Explorer > Options > Privacy writes Explorer\ShowRecent, Explorer\ShowFrequent
+            # and Explorer\ShowCloudFilesInQuickAccess, and never touches the Advanced copies.
+            # The old writes landed, read back as 0, verified as applied - and the checkboxes
+            # stayed ticked, because nothing reads them any more.
+            #
+            # The Advanced values are still written: Windows 10 and pre-25H2 Windows 11 read
+            # those, and this tool runs on all of them.
+            Set-Reg 'HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer' 'ShowRecent' 0
+            Set-Reg 'HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer' 'ShowFrequent' 0
+            Set-Reg 'HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer' 'ShowCloudFilesInQuickAccess' 0
             Set-Reg 'HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced' 'ShowRecent' 0
             Set-Reg 'HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced' 'ShowFrequent' 0
             Set-Reg 'HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced' 'ShowCloudFilesInQuickAccess' 0

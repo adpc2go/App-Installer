@@ -101,7 +101,11 @@ foreach ($clause in $sw.Clauses) {
     foreach ($cmd in $clause.Item2.FindAll({ param($n)
         $n -is [System.Management.Automation.Language.CommandAst] }, $true)) {
         $name = $cmd.GetCommandName()
-        if ($name -notin 'Set-Reg', 'Remove-RegVal') { continue }
+        # Set-RegSoft counts too. It is the same write with a different failure policy, and
+        # leaving it out quietly under-reported every row that uses it - taskbarclean showed two
+        # values instead of seven, which is exactly the kind of silent gap this harness exists
+        # to close.
+        if ($name -notin 'Set-Reg', 'Set-RegSoft', 'Remove-RegVal') { continue }
         $a = @($cmd.CommandElements | Select-Object -Skip 1)
         $path  = $(if ($a.Count -ge 1) { Get-Literal $a[0] } else { $null })
         $vname = $(if ($a.Count -ge 2) { Get-Literal $a[1] } else { $null })
