@@ -29,7 +29,7 @@ PUBLIC_BASE_URL = ""
 # This is a var and not a secret on purpose: the value is public the moment go.ps1 is
 # served, and keeping it in version control makes "which build is live?" answerable
 # from git rather than from the dashboard.
-APPDEPLOY_SHA256 = "894FFD1141297F1F4D871C5D191FEAB3C664EFCA95619170146DCC4CB8C533DF"
+APPDEPLOY_SHA256 = "28425CA64E3234B0BE69B4405428036A5B3CB43BAD1B804541A4DB522F095957"
 
 # SIGNING_KEY is a secret, never a var. Set it once with:
 #   wrangler secret put SIGNING_KEY
