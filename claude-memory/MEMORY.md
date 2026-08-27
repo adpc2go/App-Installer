@@ -1,0 +1,13 @@
+- [PC2Go MSP context](user-msp-context.md) — Canada-based remote IT support, clients mainly in Kuwait, very cost-sensitive
+- [Cloudflare R2 hosting](project-cloudflare-r2-hosting.md) — why R2 and not S3, plus the three constraints that bite
+- [Prove it with tests](feedback-prove-it-with-tests.md) — build a fault-injection harness before proposing a fix
+- [Catalog BOM phantom app](project-catalog-bom-phantom-app.md) — a BOM on apps.json shows "Live catalog" with one blank row instead of failing; unfixed
+- [Session state 2026-08-22](project-session-2026-08-22-state.md) — batch strip, countdown, office365 parked; PC formatted right after
+- [No git remote](project-no-git-remote.md) — a commit protects nothing here; tests/ and the handover are untracked
+- [Push button and R2 upload](project-push-button-r2-upload.md) — native S3 multipart in PowerShell; run `Test-Push.ps1 -Live` before the first real push
+- [Launch speed is antivirus](project-launch-speed-antivirus.md) — script SIZE costs 7s on a McAfee+Defender PC and 18ms on Defender alone; an AV exclusion beats any refactor
+- [Catalog repack check](project-catalog-repack-check.md) — some staged packages are pirated repacks; list the archive before publishing
+- [Silent-switch detection removed](project-silent-switch-detection-removed.md) — built then deleted 2026-08-22; sampling cannot prove a negative
+- [Sidecar outranks the catalog](project-sidecar-outranks-catalog.md) — hand-editing apps.json gets silently undone unless .push-state.json changes too
+- [office365 is parked](project-office365-parked.md) — its blank sha256 is deliberate; the consumer bootstrapper cannot install unattended
+- [Confirm every action](feedback-confirm-every-action.md) — acknowledge the press, then confirm the outcome separately; real indicators, counting down not up

@@ -27,6 +27,14 @@ irm https://YOUR-SERVER/go | iex
 
 The GUI launches detached, so the console it was typed into can be closed immediately.
 
+**If it takes a moment, it says so.** Between that line and the window there is a hash of 545 KB,
+possibly a 545 KB download, and PowerShell loading and antivirus scanning that file before one
+line of it runs. On a healthy machine that is under half a second and you see nothing. On a
+client running a second antivirus alongside Defender it has measured **eight seconds** of script
+scanning, which from the outside is indistinguishable from a hang - so the line gets pasted a
+second time and everything is paid for twice. `go.ps1` now shows a small splash **only if the run
+is still going after 1.2 seconds**, and takes it down before the UAC prompt appears.
+
 **Only one copy runs at a time.** Every instance shares one download queue in `%LOCALAPPDATA%`,
 and the elevated worker reads it as a stream — so two copies mean two workers taking each
 other's items, colliding on the same install (which fails it with *"installer exit code 1"*)
@@ -67,7 +75,8 @@ early rather than after 30 GB of downloading.
 ### Install flow
 
 1. Select apps (grouped by section, live search across all tabs)
-2. **Install Selected** → downloads begin
+2. **Install Selected** → the **pre-flight sheet**: what you picked, what it weighs, and whether
+   it fits (see below) → **Install N** → downloads begin
 3. First download completes → **single UAC prompt** → installs begin
 4. Downloads and installs overlap: app 2 downloads while app 1 installs
 5. Each app: SHA-256 verified in the elevated context → silent install → exit code checked
@@ -84,7 +93,84 @@ queues a follow-up batch that starts automatically, at the cost of one extra UAC
 during install, then becomes a green check / red cross / amber warning badge. Plus per-app
 percentage and speed, overall percentage, and a live stage line at the bottom.
 
+**Pre-flight.** `Install Selected` and `Uninstall Selected` used to start on the press — no list,
+no confirmation, and no check that what you picked would fit. There was no free-space check
+anywhere in the tool, so a 13.5 GB selection on a laptop with 8 GB free downloaded for twenty
+minutes and then failed inside an installer, which is the worst place to find out.
+
+The sheet lists exactly what is about to happen, with an **✕ on every row** — taking one out
+unticks it in the catalog too, or the next press would put it straight back. Underneath, the
+drive the downloads actually land on (`%LOCALAPPDATA%\PC2GoDeploy`, which is not always `C:`),
+what is already used, and what this run wants on top. Over half the free space warns; more than
+the free space says how much short it is.
+
+It does **not** block. The button stays live even when the disk says no, because a catalogued
+size can be stale and the technician standing at the machine knows things this does not. What it
+will not do is let that happen silently. `Force Remove` keeps its own separate wording — it is a
+different, and worse, thing to agree to.
+
+### Dependencies (`requires`)
+
+An add-on names the ids it needs (`autocad-electrical` requires `autocad`; `corona` and
+`floorgenerator` require `3dsmax`), and the pre-flight sheet — the one screen between picking
+and committing — is where that knowledge acts:
+
+- **Base missing entirely** (not installed, not in the batch): the sheet refuses in red and
+  offers a one-click "Add AutoCAD 2026 (4.5 GB)" that ticks the base into the batch ahead of
+  the add-on. An id the catalog does not know **fails open** with a log line — a fact we cannot
+  obtain is never the reason a batch will not start.
+- **Both selected**: bases are sorted ahead of their add-ons automatically, so the old
+  catalog-order folklore is now a rule.
+- **Installing a BASE while a dependent add-on is already on the machine**: the sheet offers —
+  ticked by default — the clean sequence: remove the add-on, install the base, download the
+  add-on again and put it back. One batch, one UAC prompt; the removal is queued to the same
+  worker but nothing is removed until the base's download has actually landed. A failed removal
+  skips the base *and* the reinstall; a failed base install still restores the add-on. Deep
+  clean is deliberately skipped for that removal — its `%AppData%` config is exactly what the
+  reinstall must inherit. Untick the box and the base installs as-is, exactly as before.
+
+### What a run leaves behind
+
+A finished batch used to leave **nothing you could read**. The per-app outcomes existed — the
+batch strip shows them well — but they live in a collection that is cleared the moment the next
+batch starts, and the only durable trace was the Activity log: one `RichTextBox` that every
+message is appended to. After twenty applications that is a wall of interleaved lines, and
+finding which two failed means reading all of it.
+
+Every batch now writes one small JSON file to `%LOCALAPPDATA%\PC2GoDeploy\runs\`. The newest
+twenty are kept. Nothing else in the tool reads them — they exist to be read by a person.
+
+The **Activity** tab is where you read them: runs down the left, newest first, with the live log
+as the first entry so the tab still opens on what it always showed. Pick a run and you get the
+report — the counts (`20 in this run · 17 succeeded · 2 failed · 1 with warnings`), which double
+as a filter, and the list underneath with **failures sorted to the top**, each carrying its
+reason rather than just a red state. Then **Copy report**, **Save report…**, and **Retry N
+failed**, which re-ticks the failures and opens the same pre-flight sheet any other install goes
+through — it does not start anything behind your back.
+
+**It never opens itself.** A finished run with failures puts a count on the Activity tab and
+waits there until you go and look; opening it clears the badge.
+
 ### Uninstall flow
+
+**It is a table.** Eighty programs in a two-column grid of cards cannot answer the question this
+tab is opened for — nobody comes here looking for things beginning with A. They come to find what
+is **big** and what is **junk**, and the size and publisher were already on every row without
+being sortable by either.
+
+So the list is one column of aligned cells under a header that sorts: **PROGRAM**, **PUBLISHER**,
+**INSTALLED**, **SIZE**. Press a heading to sort by it, press it again to turn it round. Under
+each name is a bar showing that program's size as a share of the largest thing on the machine —
+the number is already in the column beside it; the bar is for telling a 40 GB repack from a 90 MB
+utility at a glance. The biggest one is tagged **largest**.
+
+Each row keeps the program's own logo, pulled out of its executable by the icon pump. The footer
+says what is listed, what is ticked, and what removing it would give back — *80 programs | 1
+selected (40.9 GB reclaimed)*.
+
+Two honest limits. Sizes come from the registry's `EstimatedSize`, which plenty of installers
+never write, and `InstallDate` is missing just as often — a program with no date sorts **last**
+under *Installed* and is never counted as recent, because unknown is not the same as new.
 
 The Uninstall tab lists **everything installed on the machine**, discovered the way Wise
 Program Uninstaller does, in two sub-tabs scanned lazily on first visit:
@@ -177,6 +263,21 @@ applications" prompt — it sees DLLs loaded into unrelated processes, and resta
 when a shell extension is the culprit) → `takeown` + `icacls` for Access Denied → schedule
 for deletion at next boot via `MoveFileEx`. Results distinguish the outcomes:
 *"47 traces removed, 2 scheduled for next restart"*.
+
+### Vendor removal tools (removers)
+
+Some products cannot be removed cleanly by their registry uninstall string: Autodesk's
+licensing service has its own uninstaller hidden under `Common Files\Autodesk Shared`, and
+antivirus products need the vendor's dedicated remover (avastclear). The catalog carries these
+as `cleanup.removers`, and the leftover preview offers each one as a **REMOVER** row — never
+pre-ticked, because ticking one *executes* it. Two routes, both verified before anything runs:
+an exe already on the machine must live under a Program Files root (admin-writable only, so a
+tampered queue cannot point the elevated worker at a planted file), and a fetched one travels
+with a pinned SHA-256 the worker checks first — the same gate every installer passes. The
+preview also grew **Select all / Clear all** (suite-shared components and hidden name-only
+guesses are excluded from bulk-tick), name-only matches on short tokens are graded, dimmed and
+folded behind a "Show N possible matches" toggle, and the scan itself now runs off-thread —
+the window stays live and Cancel stops it, showing what was found so far.
 
 ### Tweaks
 
@@ -340,6 +441,29 @@ runs. Protect that server and its DNS like production infrastructure, because it
 
 ## Catalog reference (`apps.json`)
 
+The manifest carries a **`categories`** array alongside `apps`, and it is the order the client
+draws its group headers in:
+
+```jsonc
+"categories": ["Autodesk", "Adobe", "3D and Visualization", "3ds Max Plugins", "Utilities", "Apps"],
+```
+
+It exists because array position was doing two jobs at once. `AppDeploy.ps1` groups the Install
+tab by category and adds no sort of its own, so the order groups appeared in was a side effect of
+where each app happened to sit in `apps` — and that same order is the **install** order, which
+Civil 3D onto AutoCAD and Corona onto 3ds Max depend on. Reordering the rail would have silently
+reordered installations. Splitting them means a group can be moved without an install moving.
+
+It is **seeded, not required**: a catalog with no `categories` key is read exactly as before, and
+the editor fills the array in from whatever the apps already say, in first-appearance order, on
+first open. A category an app names but the array has not caught up with is appended rather than
+dropped, so a hand-edited catalog can never hide an app. `Catalog-Editor.ps1` creates, renames,
+reorders and removes them; no category name appears anywhere in the PowerShell.
+
+Removing a category asks where its applications go — move them to another named category, or
+delete them along with it. Neither touches R2: the catalog entry goes, the uploaded installer
+stays in the bucket.
+
 ```jsonc
 {
   "id": "autocad",                       // unique, also the icon filename
@@ -356,12 +480,30 @@ runs. Protect that server and its DNS like production infrastructure, because it
   "sha256": "…",                         // REQUIRED — mismatch means the file is never executed
   "silentArgs": "--silent",              // .msi files get /qn /norestart automatically
   "verifyPaths": ["%ProgramFiles%\\Autodesk\\AutoCAD 2026\\acad.exe"],
+  "requires": ["autocad"],               // optional: ids that must be installed first — see Dependencies
 
   "uninstall": {                         // optional: vendor uninstaller, preferred over registry
     "command": "%ProgramFiles%\\Autodesk\\AdODIS\\V1\\Installer.exe",
-    "args": "-i uninstall -q -o <manifest>.xml",
+    "args": "-i uninstall -q -o \"__ODIS_MANIFEST__\"",   // token resolved on the CLIENT — ODIS
+                                         // mints its manifest at install time, so no catalog
+                                         // written in advance can carry the path
     "detect": "%ProgramFiles%\\Autodesk\\AutoCAD 2026\\acad.exe"
   },
+
+  // optional inside "cleanup": vendor removal TOOLS the leftover scan offers as run-this rows.
+  // path-form runs an exe already on the machine (Program Files roots only); url-form is
+  // fetched at wipe time and hash-verified by the elevated worker before a byte executes.
+  // "shared": true marks a suite component (AdskLicensing) — listed, warned, never bulk-ticked.
+  "cleanup": { "removers": [
+    { "name": "Autodesk Licensing (AdskLicensing) — vendor removal tool",
+      "path": "%CommonProgramFiles(x86)%\\Autodesk Shared\\AdskLicensing\\uninstall.exe",
+      "args": "--mode unattended", "shared": true },
+    { "name": "Avast Removal Tool (avastclear)",
+      "url": "https://…/files/removers/avastclear.exe", "sha256": "…", "args": "/silent" } ] },
+
+  // "uninstallOnly": true — an entry that carries removal knowledge for a product we never
+  // install (Avast is the model). No url/hash/size; the edge serves it anyway, the Install tab
+  // never shows it, and the Uninstall tab's row upgrade reads its uninstall/cleanup blocks.
 
   "postInstall": [                       // optional: steps run AFTER the install verifies
     { "type": "kill", "name": "Close the app",        // installers often auto-launch it
@@ -391,7 +533,7 @@ runs. Protect that server and its DNS like production infrastructure, because it
 }
 ```
 
-Add an app with `tools\New-AppEntry.ps1`, which hashes the installer and emits the JSON.
+Add an app with `tools\Catalog-Editor.ps1` — it hashes the installer, reads what is inside the package, and writes the entry.
 
 ### Multi-file packages
 
@@ -440,7 +582,7 @@ this silently impossible.
 **Self-extracting exes were tried first and rejected.** A WinRAR SFX returns *its own* exit
 code — measured as `0` while the installer inside returned 1603 — which would report every
 failed install as a success and silence the dirty verdict entirely. One variant returned 0
-without running the installer at all. `tools\Test-DirtyCleanup.ps1` covers this path so the
+without running the installer at all. `tests\Test-DirtyCleanup.ps1` covers this path so the
 guarantee cannot quietly regress.
 
 ### Instructions shown to the technician
@@ -523,8 +665,71 @@ downloads resume.
 | `/files/*` | the installers |
 | `/icons/*` | app logos, named `<id>.png` |
 
-**Releasing a new AppDeploy.ps1:** upload it, run `Get-FileHash server\AppDeploy.ps1`, paste
-the hash into `$PinnedHash` in `go.ps1`, re-upload `go`. Optionally Authenticode-sign both.
+**Releasing a new AppDeploy.ps1:** run `tools\Publish-Release.ps1`. It uploads `go.ps1`,
+`AppDeploy.ps1` and `apps.json`, pins the new hash into `cloudflare\wrangler.toml` and deploys
+the Worker, which injects that pin into `go` as it is served.
+
+Do **not** paste a real hash into `$PinnedHash` in `go.ps1`. That line is a placeholder on
+purpose: the pin is kept out of the R2 copy so that an attacker able to rewrite `AppDeploy.ps1`
+in the bucket cannot also rewrite the hash guarding it. A hash pasted there goes stale on the
+very next release, and the file then fails its own integrity check for no visible reason.
+
+**Nothing reaches a client until that runs.** The Worker serves what is in R2, so an edit to
+`server\AppDeploy.ps1` on your machine is local until it is published.
+
+Checking whether local matches live takes one step more than it looks. The pin is the hash of the
+**shipped** file - comments stripped by `Compress-Script.ps1`, about 19% smaller - not of the
+source, so `Get-FileHash server\AppDeploy.ps1` never equals `APPDEPLOY_SHA256` even immediately
+after a publish. To compare properly, strip first:
+
+```powershell
+. tools\Compress-Script.ps1
+$ship = ConvertTo-ShippableScript -Source (Get-Content server\AppDeploy.ps1 -Raw)
+[IO.File]::WriteAllText("$env:TEMP\ship.ps1", $ship, (New-Object Text.UTF8Encoding $false))
+(Get-FileHash "$env:TEMP\ship.ps1" -Algorithm SHA256).Hash    # compare with APPDEPLOY_SHA256
+```
+
+### Access code
+
+The paste-line is public by nature — a client can note it off the screen. What it *fetches*
+is not: with an `ACCESS_CODE` secret set on the Worker, the tool (`/AppDeploy.ps1`) and the
+catalog (`/apps.json`) return 403 without the right `x-pc2go-code` header. The catalog is the
+asset that matters — it mints fresh signed `/files/` URLs, so serving it to a stranger hands
+them every installer. `/go` stays open because the bootstrap is useless without what it
+fetches.
+
+`go.ps1` asks for the code once (masked, console prompt, three tries) and hands it to the
+tool out-of-band — never a URL, never a command line, never a plain file. A wrong code inside
+the running tool shows an **Access code required** overlay pointing back at the go line.
+
+Getting it into the *elevated* copy is the subtle part, and worth knowing if you touch it:
+`-Verb RunAs` builds a fresh environment through the AppInfo service, so an environment
+variable does not survive — and that is the common case, because an admin technician
+launching normally gets elevated, and the elevated copy is the one that fetches the catalog.
+The code therefore travels as a DPAPI (LocalMachine) token at
+`%ProgramData%\PC2GoDeploy\access.bin`, written with its DACL applied **at creation**
+(creator + Administrators + SYSTEM, inheritance off — LocalMachine DPAPI has no per-user key,
+so the ACL *is* the control, and the creator is on it because a filtered-token admin cannot
+write to an Administrators-only file). It is a hand-off token, not storage: anything older
+than two minutes is ignored and deleted rather than trusted, and it is shredded once the
+catalog loads and again on window close. `tests\Test-AccessCode.ps1` pins all of it.
+
+Set or rotate it from the Management Console (**Access code…**), or by hand with
+`wrangler secret put ACCESS_CODE`.
+
+**What this is and is not.** It is access control, not secret-keeping: the code necessarily
+exists in cleartext in memory on every client machine the tool runs on. Treat it as cheap and
+routine to rotate, and do not let it become the only thing between the internet and something
+that matters — the signed-URL gate on `/files` and the SHA-256 pins are still what protect
+the installers themselves.
+
+Enable: `wrangler secret put ACCESS_CODE` — and the same command **rotates** it: one new
+value and every code ever handed out is dead, no republish, no client change. Unset, the gate
+is dormant and everything behaves exactly as before. Recommended alongside it: a Cloudflare
+rate-limit rule on 403s from these paths, so a code cannot be brute-forced politely.
+
+Planned, not built: multiple named codes with per-code usage counts (who used which code,
+how often, last seen) — the audit upgrade for when codes are handed to more than one person.
 
 ### Cloudflare R2 (recommended) — `cloudflare\README.md`
 
@@ -561,22 +766,142 @@ computing it at the edge would make the check worthless.
 
 | Script | Purpose |
 |---|---|
-| `tools\Catalog-Editor.ps1` | GUI catalog editor — add apps from a file **or a folder**, hash, package, validate |
-| `tools\New-AppEntry.ps1` | Hashes an installer and emits its catalog JSON (the CLI the editor supersedes) |
+| `tools\Catalog-Editor.ps1` | **PC2Go Management Console** — the privileged side of the tool: a category rail, an application grid, and a drawer that holds every field (add apps from a file **or a folder**, hash, package, validate), plus R2 credentials, Push/Publish, and setting or rotating the access code. The filename is unchanged so every existing path and harness keeps working |
 | `tools\Export-AppIcons.ps1` | Extracts real product icons from installers into `icons\*.png` |
-| `tools\Test-IconUrls.ps1` | Checks which `iconUrl` entries actually return an image |
 | `tools\Publish-Release.ps1` | Validates the catalog, uploads to R2, pins the hash, deploys, verifies |
-| `tools\Test-SilentSwitches.ps1` | Identifies an installer's packager, proposes silent switches, verifies them on a VM, writes the result back to `apps.json` |
-| `tools\Test-DirtyCleanup.ps1` | Fault-injects installer failures and asserts the dirty verdict, the wipe, and the pre-tick rule |
-| `tools\Test-DownloadResilience.ps1` | Interrupts and throttles downloads, and asserts BITS resumes rather than restarting |
-| `tools\Test-AfterInstallList.ps1` | Asserts the editor's after-install list — order, steps it cannot edit, and its output run by the real worker |
-| `tools\Test-CatalogScenarios.ps1` | Whole journeys: real zip → real dialog → real `apps.json` → re-edit → the real worker installing it |
-| `tools\Test-RealUninstall.ps1` | Installs three real per-user products on this machine, removes them with the tool, deep-cleans, and cleans up after itself |
-| `tools\Test-GuiBatch.ps1` | Clicks the real Install and Uninstall tab buttons — batch, Add to Queue, Cancel, the leftover preview and the wipe |
-| `tools\Test-DeepBatch.ps1` | A real BITS download over loopback HTTP, Pause/Resume, the full exit-code matrix, and elevation declined |
-| `tools\Test-Elevated.ps1` | **Run this elevated, by hand.** The real elevated worker, HKLM products, hosts lines, services, tasks, other profiles |
-| `tools\Test-CatalogEditorGui.ps1` | The editor's main window, a real HTTP fetch, `Publish-Release` validation, and a BOM'd catalog |
+| `tools\Convert-PackageToZip.ps1` | Rewrites a `.rar` or `.iso` as a `.zip`, verified file-by-file. Push does this automatically for any `.rar` before uploading |
+| `tools\R2-Upload.ps1` | The S3 transport: signing, multipart upload, resume. Dot-sourced by the editor's Push and by `Test-Push.ps1`, so one copy of the signing code ships |
+| `tests\Test-Push.ps1` | Drives the whole Push path against a loopback endpoint - signing, resume, the skip rule, and the automatic `.rar` conversion |
+| `tools\Compress-Script.ps1` | Strips comments from `AppDeploy.ps1` at publish time. Script size is what antivirus charges for on launch |
+| `tests\Test-DirtyCleanup.ps1` | Fault-injects installer failures and asserts the dirty verdict, the wipe, and the pre-tick rule |
+| `tests\Test-DownloadResilience.ps1` | Interrupts and throttles downloads, and asserts BITS resumes rather than restarting |
+| `tests\Test-AfterInstallList.ps1` | Asserts the editor's after-install list — order, steps it cannot edit, and its output run by the real worker |
+| `tests\Test-CatalogScenarios.ps1` | Whole journeys: real zip → real dialog → real `apps.json` → re-edit → the real worker installing it |
+| `tests\Test-RealUninstall.ps1` | Installs three real per-user products on this machine, removes them with the tool, deep-cleans, and cleans up after itself |
+| `tests\Test-GuiBatch.ps1` | Clicks the real Install and Uninstall tab buttons — the pre-flight sheet and its disk check, batch, Add to Queue, Cancel, the leftover preview and the wipe, the run record a finished batch writes, and the uninstall table's sorting |
+| `tests\Test-DeepBatch.ps1` | A real BITS download over loopback HTTP, Pause/Resume, the full exit-code matrix, and elevation declined |
+| `tests\Test-Elevated.ps1` | **Run this elevated, by hand.** The real elevated worker, HKLM products, hosts lines, services, tasks, other profiles |
+| `tests\Test-CatalogEditorGui.ps1` | The editor's main window, a real HTTP fetch, `Publish-Release` validation, and a BOM'd catalog |
 | `tools\Export-UiSnapshots.ps1` | Renders the real windows to PNG offscreen, so a person can see clipping and contrast that property tests miss |
+| `tests\Test-Categories.ps1` | The category model and the window it lives in — seeding, rename, reorder, that deleting a category can never silently delete an app, that the drawer floats and shuts, that the id is an editable field whose icon follows a rename, and that any picture you pick becomes a 256×256 PNG |
+| `tests\Test-Worker.mjs` | Imports the real `worker.js` and asserts the catalog filter, the URL signing, the `/files` gate and the access-code gate. `node tests\Test-Worker.mjs`, no wrangler and no network |
+| `tests\Test-AccessCode.ps1` | The access-code hand-off: that the DPAPI token is written unreadable by other accounts **from the first byte**, that a stale token is ignored rather than trusted, and that it is shredded after use. Lifts the real functions out of `go.ps1` and `AppDeploy.ps1` by AST, so the two copies cannot drift |
+
+### The editor window
+
+Two panes and a drawer: **categories** on the left, the **applications** in that category as a
+grid in the middle, and a **drawer** that slides over the grid when you open an app.
+
+The drawer is what replaced the pop-up. Editing an application used to mean a 620×880 modal —
+taller than a 768 px laptop screen, so its buttons sat off the display, and it covered the
+catalog while it was open. Everything that was in it is now in the drawer: name, id, category,
+icon, download URL, Fetch and hash, setup file, silent switches, verify path, and the full
+after-install builder. What went is the duplication — silent switches appeared twice, the steps
+appeared twice, and the package was described in two places.
+
+**Both windows are the same window.** 1060 x 700, one rounded panel at radius 11 filling it edge
+to edge, and the same header: transparent over that panel, 54 px tall, a 32 px logo tile, the
+tool's name at 14.5 semibold and a muted line under it for state. Search boxes and tabs share one
+shape too - radius 6, the same fills and the same hover.
+
+Buttons, dropdowns and scrollbars are the installer's in both windows. Two of those were not a
+matter of taste: a `ComboBox` styled with setters alone keeps the SYSTEM template and renders
+white whatever background is set on it, and a window with no `ScrollBar` style at all inherits
+the light system scrollbar - a grey slab down the side of a dark window. Both are templated now,
+in the editor's window resources and again in its drawer, which is where the dropdowns live.
+
+Two more things that had to be got right. The client used to sit 14 px inside its own window behind a
+drop shadow, so two windows of identical size rendered 28 px apart. And the header must stay
+TRANSPARENT: a coloured band with square top corners, painted over a rounded panel, is what makes
+a rounded window look square.
+
+**Both windows share one palette.** The editor declares eleven brushes — `Panel`, `Sunken`,
+`Raised`, `Line`, `LineSoft`, `Ink`, `Muted`, `Dim`, `Accent`, `Lift`, `Bad` — and `AppDeploy.ps1`
+now declares the same names with the same values, plus `Good`, `Warn` and `Danger` for states the
+editor never draws. It used to carry **41 colours written inline** at the point of use, among them
+six near-identical greys and an accent of `#3D7EF0` against the editor's `#2563EB`: close enough to
+read as a mistake, far enough to see side by side. Both windows are 1060 × 700.
+
+Three literals survive on purpose. The `<Window>` element's own `Foreground` cannot be a
+`StaticResource` — its attributes are set before `Window.Resources` exists. The root panel's
+`#FF1B1B20` is written inline in both files, because it is the one surface the brushes sit on.
+And the *largest* chip in the uninstall table carries its own border and translucent fill, which
+are one-off accents rather than palette colours.
+
+**The id is a field.** It used to sit under the name as grey text: not a heading, not editable,
+and fixed to whatever the app happened to be called when it was first added. It is now the first
+field in the drawer, typed like any other. What you type is normalised rather than rejected - a
+space becomes a dash - and an empty box falls back to the name, which is what it always did.
+
+Renaming an id **takes the icon with it**. An icon is found as `icons\<id>.png`, so leaving the
+file under the old name would silently blank the tile of an app that has one. It never overwrites
+an icon already sitting under the new name.
+
+The id is still the R2 key prefix, so renaming one that has already been pushed leaves the old
+bytes in the bucket under the old prefix. That is now your call to make rather than a decision
+the tool makes for you.
+
+**The name at the top is a field, not a caption.** Click it and rename the application; the
+card behind updates as you type. The `id` under it does not change, deliberately — it is the R2
+key prefix, so renaming an app after an upload would orphan the bytes already in the bucket.
+
+**There is no Save in the drawer**, because there is nothing to save to: it writes to the
+catalog entry as you type, exactly as the category dropdown does. The safety net is the one that
+was already there — nothing reaches disk until **Save catalog**, and closing with unsaved
+changes still warns. The one thing it will *not* write half-finished is the after-install list:
+a step with no file chosen is a step the worker would refuse on a client, so the list is written
+only when it is complete, and the drawer says what is missing meanwhile.
+
+It **floats** rather than taking a column. As a column it pushed the catalog into a third of the
+window and the tool went back to feeling like two windows. It shuts when you click away, and
+clicking the application it is already showing shuts it too — so the same click opens and closes
+Office. The grid drops to one column while it is open so nothing hides underneath it.
+
+Both lists are re-templated. Left alone, a WPF `ListBoxItem` paints a system-blue block on
+selection, which cannot show *which of two columns* is selected and looks nothing like the
+client. The rail uses the same accent bar the client puts on its group headers, and applications
+are cards with a hover and a selected border.
+
+Every row carries an **icon tile**: the letter mark from the catalog's own `iconText` and
+`iconColor`, or a dashed empty slot when the entry has neither. Dashed is deliberate — an empty
+square reads as artwork that failed to load, where a dashed one reads as *not done yet*.
+
+**Icons are your own pictures.** The **Pick a PNG…** button in the drawer takes any picture —
+PNG, JPEG, BMP, GIF, TIFF, `.ico` — and writes it to `icons\<id>.png`. Nothing is generated,
+extracted or downloaded.
+
+It is **converted, not copied**, into a 256×256 PNG, and how depends on what you gave it. An
+opaque picture — a photograph, a screenshot, a JPEG — is centre-cropped until it *fills* the
+square, because that is what makes it read as an app icon; fitting it inside instead left a
+1200×300 photograph as a thin strip floating in an empty tile. Artwork that carries real
+transparency keeps its shape and its margins, because on a logo that space is deliberate and
+cropping would cut the mark. A square logo comes out untouched either way.
+
+**PNG is what gets stored, and that is not a preference.** The client draws icons with WPF's
+`BitmapImage`: SVG has no decoder there at all, and WebP needs an optional Store codec that may
+be installed here and missing on a client — the worst kind of difference. So pick whatever you
+have; PNG is what lands in `icons\`.
+An icon-library search was built against [dashboardicons](https://dashboardicons.com) and removed
+again: measured against this catalog it matched 6 of 19, half of those coincidences
+(*azure-cost-management* for "Navisworks Manage", *gravit-designer* for "Design Review"), and no
+library carries Revit, Civil 3D, Photoshop, Illustrator, InDesign, DIALux, Corona or WinRAR.
+
+**Push carries them.** `icons\<id>.png` goes up to `/icons/<id>.png` alongside the installers and
+`iconUrl` is written into the catalog for each one that actually uploaded — never for one that
+failed, because the client caches what it fetches and a 404 would stick. Icons go **last**: they
+are kilobytes next to a 14 GB package, and a failed icon must never be the reason an installer
+did not go up. `Export-AppIcons.ps1` still does a whole folder of installers in one pass if you
+would rather generate them than source them.
+**Removing** is in two places and never ambiguous. An application: the **Remove** button in the
+drawer footer. A category: **Manage categories…** under the rail. Removing a category that owns
+applications asks where they go — move them to another named category, or delete them with it —
+and refuses a destination that is blank, itself, or nonexistent. Neither path touches R2: the
+catalog entry goes, the uploaded installer stays in the bucket.
+
+Search spans the whole catalog rather than the open category, because "where is Photoshop filed"
+is the question being asked, and answering it only inside the folder you already have open
+answers nothing.
+
 
 `Catalog-Editor.ps1` is deliberately not a tab in `AppDeploy.ps1` — that file is downloaded
 onto every client machine, and catalog editing has no business travelling with it. **"Add
@@ -629,15 +954,17 @@ step survives an edit untouched, and that `args` / `timeoutSec` / `stopOnError` 
 UI — outlive one too. Then it hands the editor's own output to the worker's `Invoke-PostInstall`
 and checks two real files land in two real directories.
 
-It also **drives the dialog itself**: `Show-AppDialog` is split at its `ShowDialog()` line, so
-the first half builds and wires a window that is never shown, the real buttons are clicked by
-raising their events, and the second half applies the result. No UI Automation, no human, no
-window on screen. That is what caught the bug where reading an editable ComboBox's `.Text`
+It also **drives the drawer itself**. `Show-AppDialog` no longer blocks on `ShowDialog()` - it
+builds the panel and returns it - so a harness calls it, reads `$dlg.Tag` for the controls, the
+state and the apply handler, clicks the real buttons by raising their events, and inspects what
+happened. No UI Automation, no human, no window on screen. (That change is also what caused four
+separate scope bugs: with the stack frame gone every helper became a closure, and a closure here
+captures `$script:` by value. See the comments at the top of `Show-AppDialog`.) That is what caught the bug where reading an editable ComboBox's `.Text`
 returned `$null` on a brand-new app — `Add an action` threw before adding anything, so the list
 stayed empty and the Move / Run radios stayed greyed with no way in. Note the trap it also
 exposes in *testing*: setting `.IsChecked` works on a **disabled** control, so a test that only
 sets properties passes while the person in front of the dialog cannot click a thing. Assert
-`IsEnabled`. 130 assertions, unelevated, `%TEMP%` only.
+`IsEnabled`. 206 assertions, unelevated, `%TEMP%` only.
 
 `Test-CatalogScenarios.ps1` is the one that goes all the way. It builds a real `.zip`, adds it
 as a brand-new app through the real dialog — the real background fetch and SHA-256 over real
@@ -658,17 +985,33 @@ steps rebuilt instead of edited, the package guard disabled, the null-`Text` cra
 the row list made fixed-size). Every one is caught — five by the scenario harness, all seven once
 `Test-AfterInstallList.ps1` runs too.
 
-`Test-SilentSwitches.ps1` exists to retire open item #1. It reads the binary rather than
-trusting the filename — NSIS, Inno Setup, InstallShield, WiX and ODIS each leave an
-unambiguous marker — then proposes the switches that packager actually honours. Run
-without `-Execute` it only identifies, so it is safe anywhere. With `-Execute` it runs the
-installer, bounds it with a timeout (**a hang is the failure being hunted**), checks
-`verifyPaths`, and only on a real pass writes `silentArgs` and clears the `VERIFY` marker.
+Silent switches are typed by hand, deliberately. The editor used to identify the packager and
+propose one; the proposal was right often enough to be trusted and wrong often enough to reach a
+client, and a wrong switch does not fail loudly - the installer opens its GUI on a machine nobody
+is sitting at. What catches it now is the thing that always did the real work: the installer
+guard stops a window that opens, bounds it with a timeout, and names the switch as the likely
+cause.
 
-`Publish-Release.ps1` refuses to publish a catalog that still contains placeholder
-hashes, `VERIFY`-marked silent switches, or a `postInstall` `run` step with no `sha256`
-(`-Force` overrides for staging). Validation runs before the wrangler check, so it is
+`Publish-Release.ps1` refuses to publish a catalog whose **servable** apps carry a
+`postInstall` `run` step with no `sha256`, the same installer under two ids, or an
+after-install destination with a second path inside it (`-Force` overrides for staging). Validation runs before the wrangler check, so it is
 usable as a catalog linter on a machine with no deploy toolchain installed.
+
+An app that still has a placeholder hash is **not** an error: the Worker drops it from
+the catalog it serves, so no client ever sees it — and it could never have installed
+anyway, because `AppDeploy.ps1` verifies the hash only *after* downloading the whole
+file. That is what lets a half-finished catalog be published at all, which it must be:
+installers go up a few at a time over weeks, and the finished ones cannot wait for the
+rest. The one case still refused is a catalog where *nothing* is ready, since the served
+`apps` array would be empty and every client would report a catalog failure.
+
+That filter is the one piece of edge logic that decides **what a technician is allowed to see**,
+so it is tested rather than eyeballed. `tests\Test-Worker.mjs` imports the real `worker.js` — not
+a copy — and asserts both directions: a placeholder or short hash is dropped, a finished app
+survives with its uninstall block, cleanup tokens, signed URL and rehosted icon intact. It also
+covers the two edges that a naive filter gets wrong, a catalog where everything is ready and one
+where nothing is, and checks the filter did not break signing, the `/files/` gate or `/health`.
+It needs no wrangler, no network and no deployed Worker: `node tests\Test-Worker.mjs`.
 
 ---
 
@@ -688,30 +1031,48 @@ PowerShell. Those environments need a signed compiled exe instead.
 Honest list of what is not finished. Nothing here has been run end-to-end against a real
 installer yet.
 
-1. **Silent-install switches are unverified.** Every Autodesk and Adobe entry is marked
-   `VERIFY` in its `_installNote`. `--silent` is right for single-product ODIS and Adobe
-   Admin Console packages; **deployment images** need
-   `Installer.exe -i deploy -q -o <manifest>.xml` instead, and the manifest name differs per
-   product. Wrong switches mean the installer opens its GUI and the batch hangs. Confirm each
-   against your actual packages before using this on a client.
+1. **Silent-install switches are typed by hand, and unconfirmed.** Nothing detects or proposes
+   them: that was tried and removed, because a proposal that is right most of the time is
+   indistinguishable from a checked fact by the time it reaches a client. Set `silentArgs`
+   from the vendor's own documentation and confirm it on a VM. A wrong one does not fail
+   loudly - the installer opens its GUI and waits - so what catches it is the installer guard,
+   which stops a window that opens, bounds it with a timeout, and names the switch as the
+   likely cause.
 2. **FloorGenerator has no installer.** It ships as a `.dlm` plugin copied into the 3ds Max
    plugins folder. Either wrap it in a self-extractor, or add a `copy` action to the tool
    (cleaner, and reusable for any future plugin).
 3. **Office 365 needs its whole ODT folder hosted**, since
    `setup.exe /configure configuration.xml` reads that XML from alongside itself.
-4. **Icons.** `iconUrl` is wired and cached; the PNGs still need to exist. Running
-   `Export-AppIcons.ps1` against your installer folder produces genuine per-product artwork
-   without depending on the internet — Autodesk and Chaos product logos are not published as
-   freely downloadable images, so hosting is the reliable route.
+4. **Icons are supplied by hand.** Pick any picture in the drawer, or drop one at
+   `icons\<id>.png`. Push uploads them and writes `iconUrl`. No library is consulted — the
+   measurements are in the editor section.
 5. **Code signing.** An unsigned script downloaded over a browser will trip SmartScreen. An OV
    certificate (~$100–400/yr) plus reputation, or EV for instant reputation, is worth
    budgeting for a client-facing tool.
 6. **Uninstall list includes runtimes** (Visual C++, .NET, drivers). Removing those breaks
    other software. Nothing is pre-selected, but the guard rails are on the leftover *wiping*,
    not on what a technician chooses to uninstall.
-7. **Ordering is by catalog order.** Civil 3D installs onto AutoCAD, and Corona/FloorGenerator
-   need 3ds Max — the current catalog order handles this, but there is no declared dependency
-   mechanism if the catalog is reordered.
+7. **Two removal pieces still need arming before publish.** `avastclear.exe` must be hosted
+   under `files/removers/` in R2 and its real SHA-256 pinned in `avast-free`'s remover entry
+   (the edge and worker are ready for it), and the `__ODIS_MANIFEST__` resolution has only been
+   proven against fixtures — confirm it once on a machine with a real Autodesk install.
+   (The dependency mechanism itself — `requires`, the pre-flight guard, and the orchestrated
+   remove-install-reinstall sequence — is built and test-proven.)
+8. **The single-instance guard and the harnesses fight over the same mutex.** Several suites
+   dot-source `AppDeploy.ps1`, which takes `Local\PC2GoAppInstaller` and **returns early** when
+   it is held. So the tool cannot be open while the suites run, and two suites cannot overlap.
+   The symptom is not "already running" but a confusing `The term 'Load-Catalog' is not
+   recognized`, or a launched window that vanishes with no message at all — the guard's fallback
+   is `Write-Host` into a console the tool has already hidden. A `-NoSingleInstance` switch for
+   the harnesses, and a distinct exit code on that path, would fix both halves.
+9. **`Export-UiSnapshots.ps1` hangs** before writing its first PNG, so `ui-snapshots\` is stale:
+   those images predate the shared palette and the uninstall table. The renders used while
+   building both were taken by parsing the XAML directly instead.
+10. **No git remote.** Several sessions of verified work exist in exactly one place: this
+    disk, uncommitted. Creating a private remote and pushing outranks every other item on
+    this list. (The old pre-existing `Test-DirtyCleanup` failure is fixed; every suite —
+    1,100+ assertions across ten harnesses plus the Worker's — passes, `Test-Elevated`
+    19/19 when run elevated by hand.)
 
 ---
 
