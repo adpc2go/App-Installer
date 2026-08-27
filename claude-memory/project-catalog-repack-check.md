@@ -13,7 +13,8 @@ On 2026-08-21 the `sketchup` entry blocked a publish. Its package,
 folder with replacement `SketchUp.exe` and `LayOut.exe` beside the installer. The entry and the
 R2 object were both deleted at the user's direction.
 
-**Why:** the packages are staged from `C:\Users\Lenovo-G\Documents\Apps`, and at least some came
+**Why:** the packages are staged locally (they now live in the repo's `packages\` folder; the
+old path `C:\Users\Lenovo-G\Documents\Apps` is from the machine that was formatted), and at least some came
 from file-sharing sources. Nothing in the toolchain detects this — the publish gate only checks
 hashes, VERIFY markers and now duplicates, and the Worker only checks that a hash is 64 hex
 characters. A repack passes every automated check and ships cracked software to client machines,

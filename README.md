@@ -16,24 +16,33 @@ Universal line — works pasted into **cmd**, **Windows PowerShell 5.1**, **Powe
 the Win+R Run dialog:
 
 ```
-powershell -NoP -EP Bypass -C "irm https://YOUR-SERVER/go | iex"
+powershell -NoP -EP Bypass -C "irm https://apps.pc2go.ca/go | iex"
 ```
 
 Shorthand from a PowerShell window:
 
 ```powershell
-irm https://YOUR-SERVER/go | iex
+irm https://apps.pc2go.ca/go | iex
 ```
 
-The GUI launches detached, so the console it was typed into can be closed immediately.
+It asks for the **access code** first - masked, three tries - and the GUI then launches detached,
+so the console it was typed into can be closed immediately. The code gates `/AppDeploy.ps1` and
+`/apps.json` at the edge; `/go` itself stays open, because the bootstrap is useless without what
+it fetches. See "Access code" below for how to set or rotate it.
 
 **If it takes a moment, it says so.** Between that line and the window there is a hash of 545 KB,
 possibly a 545 KB download, and PowerShell loading and antivirus scanning that file before one
 line of it runs. On a healthy machine that is under half a second and you see nothing. On a
 client running a second antivirus alongside Defender it has measured **eight seconds** of script
 scanning, which from the outside is indistinguishable from a hang - so the line gets pasted a
-second time and everything is paid for twice. `go.ps1` now shows a small splash **only if the run
-is still going after 1.2 seconds**, and takes it down before the UAC prompt appears.
+second time and everything is paid for twice.
+
+`go.ps1` shows a small splash from the moment the access code is accepted until the tool's own
+window is on screen, and it is shown **directly** rather than on a timer - an event cannot fire
+while the same thread is inside a blocking download, which is why the earlier timer-based splash
+never appeared at all. It comes down once `MainWindowHandle` is non-zero (the WPF window does not
+claim one until it actually shows) plus a short linger, and a `finally` block takes it down even
+if the technician presses Ctrl+C at the code prompt.
 
 **Only one copy runs at a time.** Every instance shares one download queue in `%LOCALAPPDATA%`,
 and the elevated worker reads it as a stream — so two copies mean two workers taking each
@@ -45,7 +54,7 @@ harness reproduced it before the guard existed.
 ### Local testing (no server)
 
 ```powershell
-powershell -NoP -EP Bypass -File "server\AppDeploy.ps1" -BaseUrl "file:///C:/Users/Lenovo-G/Desktop/App-Installer/server"
+powershell -NoP -EP Bypass -File "server\AppDeploy.ps1" -BaseUrl "file:///C:/Users/Legion-T7/Projects/App-Installer/server"
 ```
 
 The title bar shows a build number. If you are unsure whether an edit took effect, check it —
@@ -279,67 +288,88 @@ guesses are excluded from bulk-tick), name-only matches on short tokens are grad
 folded behind a "Show N possible matches" toggle, and the scan itself now runs off-thread —
 the window stays live and Cancel stops it, showing what was found so far.
 
-### Tweaks
+### Optimize
 
-A winutil-style tab, in two columns. The lists are **built into the tool**, not fetched —
-they work with no server and cannot be changed by whoever controls the catalog host.
-Everything is applied by the same elevated worker, so a whole batch is one UAC prompt.
+A winutil-style tab, **three sub-tabs** on the same pill pattern the Uninstall tab uses. The
+lists are **built into the tool**, not fetched — they work with no server and cannot be changed
+by whoever controls the catalog host. Everything is applied by the same elevated worker, so a
+whole batch is one UAC prompt.
 
-**Left column — 38 tweaks**, Essential and Advanced stacked as one list:
-
-| Group | Count | Behaviour |
+| Sub-tab | Rows | What they are |
 |---|---|---|
-| Essential Tweaks | 18 | Privacy, telemetry, disk and UI fixes. Reversible policy/registry changes |
-| Advanced Tweaks **CAUTION** | 20 | Removes software or changes network/OS behaviour. Extra confirm dialog naming exactly what will run |
+| **Tweaks** | 47 (42 pre-ticked, 5 **CAUTION**) | Configuration only. Reversible policy and registry changes, plus removals |
+| **Cleanup** | 5 (4 pre-ticked, 1 **CAUTION**) | One-time disk actions. Each reports the space it reclaimed. No Undo — they are events, not states |
+| **Gaming** | 14 (10 pre-ticked, 4 **CAUTION**) | The gaming-customer persona: scheduling, power, NVIDIA driver profile, NIC tuning |
 
-**Right column — 25 Customize Preferences.** These are **toggles, not one-shot tweaks**:
-each has an on and an off state, and the tick shows what the machine is *currently* set to,
-read live when the tab loads. Only preferences you actually **change** are applied — opening
-the tab and pressing Apply never rewrites 25 settings you did not touch. `Clear` drops
-pending edits and shows the machine's real state again rather than unticking everything,
-because 25 unticked toggles would read as "turn all of these off".
+Each sub-tab has **its own Apply**, and **every toolbar button acts on the sub-tab on screen
+only** — Select All, Clear All, Reset, Detect Applied, and Gaming's Measure. Nothing you cannot
+see ever runs. Rows carry no icon and no size column, so roughly twice as many fit on screen; a
+3px accent bar (blue standard, amber CAUTION) is all that remains.
 
-Rows carry no icon and no size column, so roughly twice as many fit on screen; a 3px accent
-bar (blue Essential, amber CAUTION, green Preference) is all that remains.
+**Reset, not Clear.** Reset returns the default selection — everything ticked except CAUTION —
+rather than unticking everything, because an empty list reads as "turn all of these off". It
+stays visible beside Detect on purpose: Detect's contract is *"tick what is already applied"*,
+which can legitimately empty a list, and Reset is the way back.
 
-The preference table is defined **once** in the GUI and substituted into the worker's own
-code when it launches. Both sides therefore always agree, and the queue still carries
-nothing but an id and `on`/`off` — the elevated worker never takes registry paths off a file
-any user process could write to. A test asserts the injected worker still parses and that
-both tables hold identical ids.
+**There is no Preferences tab, and it is not coming back.** It held toggles that mirrored the
+machine — and **a tick there meant "this is how the machine already is", while a tick in Tweaks
+means "I will apply this"**: the same control with opposite meanings. That is how an unticked
+preference once silently left-aligned a taskbar nobody asked it to move. Four rows were promoted
+into Tweaks (Lock Screen, Logon Verbose Mode, Mouse Acceleration, Settings Home Page); the rest
+were dropped. **Window Snapping was dropped rather than promoted because its target value IS the
+Windows default** — as a tweak it would have been a row that changes nothing on a healthy
+machine, and no Tweaks row is allowed to be that.
 
-**Presets, so nobody hand-ticks 38 rows.** One click selects a set:
-
-| Button | Selects | For |
-|---|---|---|
-| **Minimal** | 8 | Restore point plus core privacy. Safe on any client machine |
-| **Standard** | 23 | Every Essential plus the reversible advanced items. The recommended build |
-| **Advanced** | 37 | Everything except `IPv6 Set IPv4 as Preferred` |
-| **Clear** | — | Deselects everything |
-
-`IPv6 - Disable` and `IPv6 Set IPv4 as Preferred` write the **same** registry value to
-different numbers, so no preset ever contains both — a test enforces this.
+**Check before apply.** Every selected row is probed first. Anything already in place reports
+*"Already applied - skipped"* and is never queued; a batch where nothing is left to do also
+skips the restore point.
 
 **Detect Applied** reads the machine and ticks what is already in place, so you can see a
-client's current state before changing anything. It runs unelevated (no UAC): `HKLM` and
-service state read fine without admin, and `HKCU` in the GUI is the technician's own hive,
-which is exactly the profile the per-user tweaks target. Tweaks that are *actions* rather
-than states — Disk Cleanup, Temporary Files, Restore Point — are never reported as applied.
+client's current state before changing anything. It runs unelevated (no UAC): `HKLM` and service
+state read fine without admin, and `HKCU` in the GUI is the technician's own hive, which is
+exactly the profile the per-user tweaks target. Rows that are *actions* rather than states —
+Disk Cleanup, Temporary Files, Restore Point — are never reported as applied.
 
-**Undo Selected** reverts the ticked tweaks. Detect → Undo is the natural pair for cleaning
-up a machine someone else debloated. Undo restores the **documented Windows default** rather
-than replaying a saved snapshot: keeping a state file would leave exactly the permanent
-footprint this tool promises not to. For policy values that is exact — the value is deleted
-and Windows reverts on its own. Anything that deleted files or removed an app cannot be put
-back, and the confirm dialog names those before you commit; the row then reports e.g.
-*"sync policy lifted - OneDrive is NOT reinstalled"*.
+**Undo Selected** reverts the ticked tweaks. Detect → Undo is the natural pair for cleaning up a
+machine someone else debloated. Undo restores the **documented Windows default** rather than
+replaying a saved snapshot: keeping a state file would leave exactly the permanent footprint
+this tool promises not to. For policy values that is exact — the value is deleted and Windows
+reverts on its own. Anything that deleted files or removed an app cannot be put back, and the
+confirm dialog names those before you commit; the row then reports e.g. *"sync policy lifted -
+OneDrive is NOT reinstalled"*. Cleanup has no Undo at all, for the same reason it has no
+detector.
+
+#### The tool checks its own work
+
+`Applied` used to mean *"the registry write did not throw"*. It now means the machine agrees:
+
+- A value this build of Windows **refuses** is not counted as written. The row says so and names
+  it: *"(this Windows build refused: TaskbarDa)"*.
+- After every batch, each row that reported `Applied` is **re-read through its own detector**
+  before the totals are counted. Disagreement becomes *"Applied - could not confirm on this
+  machine"* plus a log line naming every row.
+- Rows with no detector — restore points, cleanup — make no claim either way. Silence is the
+  honest answer for an event.
+
+**A written value is not a visible one.** Explorer caches, and nothing re-reads until it is
+told, so a batch that changed the theme or Explorer's own settings broadcasts
+`WM_SETTINGCHANGE` once at the end (capped at 100 ms with `SMTO_ABORTIFHUNG`, so one wedged
+window cannot stall the tool).
+
+**Windows 11 25H2 relocated several settings**, and the values documented everywhere else are
+now dead ends marked `Migrated=1`. Explorer privacy moved up out of `Advanced`; Start's recent
+and frequent lists moved to `Explorer\Start`; the taskbar Resume badge and Start's
+recommendations are new keys entirely; Home and Gallery are unpinned through their shell CLSIDs
+rather than a policy. All five were found by diffing the registry while toggling the real
+Settings UI, not from documentation.
 
 Two rules make this safe to hand to a technician:
 
 **Restore Point runs first.** If "Restore Point - Create" is ticked it is queued ahead of
-everything else — after the other tweaks have run it would be worthless. The CAUTION dialog
-says out loud whether a restore point is selected, so nobody applies twenty system changes
-with no way back by accident.
+everything else — after the other tweaks have run it would be worthless. The CAUTION dialog says
+out loud whether a restore point is selected, so nobody applies twenty system changes with no
+way back by accident. A point created in the last 24 hours counts as done, so a second run in
+the same session does not stack another one.
 
 **Per-user tweaks land in the right hive.** The worker runs elevated, and if the technician
 elevated with a *different* admin account, `HKCU` inside it is that admin's hive, not the
@@ -350,13 +380,77 @@ The service tweak sets services to **Manual**, never Disabled (a disabled servic
 genuinely needs fails hard; Manual still allows a trigger start), and the list deliberately
 excludes BITS — this tool downloads through it — along with the core OS services.
 
-Honest limits: `BitLocker - Disable` blocks *automatic device encryption* and reports any
-already-encrypted volumes rather than silently decrypting them, which would be hours of disk
-I/O on a client machine. `Microsoft Edge - Remove` runs the real uninstaller and blocks the
-chromium reinstall, but Windows Update can still bring Edge back. Both report what actually
-happened in the row status.
+**Gaming** is evidence-ported rather than copied: NVIDIA Low Latency Ultra and Max Prerendered
+Frames are written through the NVAPI driver profile database (the `.reg` guides that circulate
+do nothing), power values are written with `powercfg` but **read back from the registry**
+because `powercfg /query` hides `Attributes=1` settings like core parking, and **Measure** is a
+read-only before/after latency probe with a warmup round and a double gate so it never
+manufactures a verdict. Apply Gaming un-ticks "Xbox and Gaming - Remove" and says so — a gamer
+keeps Game Pass — but it does **not** un-tick Game DVR, because DVR off is a measured FPS win.
+
+Honest limits, reported in the row rather than hidden: `BitLocker - Disable` blocks *automatic
+device encryption* and reports any already-encrypted volumes rather than silently decrypting
+them, which would be hours of disk I/O on a client machine. `Microsoft Edge - Debloat` applies
+policy only; Windows Update can still restore what it changes. And **removed apps come back on
+their own** — a machine here had Xbox Game Bar and the Gaming App reinstalled by Windows Update
+hours after removal, which wiped the gaming settings with them. **Nothing in the tool prevents
+that.** A Store opt-out row was built for it and then removed on request, because the only
+switch that works stops *every* Store update - including the codecs and WebView2 a customer's own
+software depends on. Deprovisioning is correct; the Store update channel is simply out of reach.
 
 
+### Toolbox
+
+Repair actions and shortcuts, in three groups plus the legacy Windows panels.
+
+| Group | Rows |
+|---|---|
+| **Fixes** | AutoLogon, Multiplane Overlay - Disable, Network - Reset, S3 Sleep - Force, NTP Server - Enable, System Corruption Scan (sfc + DISM), Windows Update - Reset, WinGet - Reinstall |
+| **Remote Access** | OpenSSH Server - Enable (installs sshd, starts it, opens port 22) |
+| **Diagnostics** | Slow PC - Diagnose |
+
+Fixes run elevated through the same one-UAC queue as everything else. The **panels** are just
+shortcuts, launched unelevated straight from the GUI — Windows elevates them itself if they need
+it, and routing them through the worker would cost a pointless UAC prompt.
+
+Each row's hint says what it costs, not just what it does: Multiplane Overlay fixes GPU flicker
+on some panels but *costs* performance on healthy ones, so it is a symptom fix rather than a
+default; S3 Sleep is hardware-dependent and can break wake.
+
+#### Slow PC - Diagnose
+
+Seven layers, **read in order**, about five seconds, and it **changes nothing at all**. It runs
+in the elevated worker because SMART, service paths and the event log need admin. Each layer
+prints its own `VERDICT L<n>` line into the Activity log, and the full report is written to the
+cache folder as `slowpc-<timestamp>.txt` — UTF-8, so it survives being pasted to a client.
+
+| Layer | Question |
+|---|---|
+| **L0** | Is it hardware-doomed? Disk type, RAM, free space, SMART wear and read errors, CPU class |
+| **L1** | Is something eating the machine right now? Cumulative **CPU-seconds**, not percent |
+| **L2** | Is it security software? Two AV products fighting is the classic |
+| **L3** | Memory pressure — compression *and* low available memory together |
+| **L4** | Background work — servicing, indexing, a pending reboot, uptime |
+| **L5** | Startup and persistence — OEM updaters, trials, "cleaner/booster" software |
+| **L6** | Faults and throttling — disk and WHEA errors, clock pinned below max, power plan |
+
+The order is the point: each layer decides whether the next is worth doing, so the top finding
+is the one to act on.
+
+**Cumulative CPU-seconds, not percent**, is what makes L1 work — Task Manager's percentage hides
+a scanner sitting at 8% forever, while CPU-seconds since boot exposes it immediately.
+
+Two things it deliberately does *not* do. It never proposes a fix, because the verdicts are not
+yet wired to the rows that would apply them. And it is **strict on purpose**: L1 only fires when
+a third-party process beats `explorer` and `dwm` combined, which will miss a moderate hog on a
+busy workstation. Ranking by an absolute number instead would fire on every healthy machine, so
+the evidence always names the top third-party consumer *and* the number it had to beat, and the
+judgement stays with the technician.
+
+Calibrated against a healthy machine before shipping — three false positives on the first run
+(Windows' own `svchost`, memory compression with plenty free, and Squirrel apps launching via
+`Update.exe`) were each fixed by a rule rather than a name list — and then proved it can still
+fire: 10 of 10 real PUP and OEM names flagged, 10 of 10 legitimate startup entries clean.
 
 ---
 
@@ -786,6 +880,8 @@ computing it at the edge would make the check worthless.
 | `tests\Test-Categories.ps1` | The category model and the window it lives in — seeding, rename, reorder, that deleting a category can never silently delete an app, that the drawer floats and shuts, that the id is an editable field whose icon follows a rename, and that any picture you pick becomes a 256×256 PNG |
 | `tests\Test-Worker.mjs` | Imports the real `worker.js` and asserts the catalog filter, the URL signing, the `/files` gate and the access-code gate. `node tests\Test-Worker.mjs`, no wrangler and no network |
 | `tests\Test-AccessCode.ps1` | The access-code hand-off: that the DPAPI token is written unreadable by other accounts **from the first byte**, that a stale token is ignored rather than trusted, and that it is shredded after use. Lifts the real functions out of `go.ps1` and `AppDeploy.ps1` by AST, so the two copies cannot drift |
+| `tests\Test-Wrangler.ps1` | The hidden `wrangler` call: that it never passes `-Wait`, that its exit code is a real integer rather than empty, that a Cloudflare sign-in prompt is recognised from wrangler's own output, both give-up clocks, the tree-kill, and a secret file that never exists readable and does not survive the call |
+| `tests\Test-TweakReality.ps1` | **Not a pass/fail suite.** A read-only reality check: it lifts every `Set-Reg` / `Set-RegSoft` / `Remove-RegVal` out of the worker by AST and reports, value by value, whether this machine currently matches. Before a run, a MISMATCH just means "not applied yet"; **after** a run that reported Applied, every MISMATCH is a tweak that did not take |
 
 ### The editor window
 
@@ -1068,11 +1164,28 @@ installer yet.
 9. **`Export-UiSnapshots.ps1` hangs** before writing its first PNG, so `ui-snapshots\` is stale:
    those images predate the shared palette and the uninstall table. The renders used while
    building both were taken by parsing the XAML directly instead.
-10. **No git remote.** Several sessions of verified work exist in exactly one place: this
-    disk, uncommitted. Creating a private remote and pushing outranks every other item on
-    this list. (The old pre-existing `Test-DirtyCleanup` failure is fixed; every suite —
-    1,100+ assertions across ten harnesses plus the Worker's — passes, `Test-Elevated`
-    19/19 when run elevated by hand.)
+10. **No git remote.** The work *is* committed now — 29 commits on branch `console-rework` —
+    but it still exists in exactly one place: this disk. Creating a private remote and pushing
+    outranks every other item on this list, and this is the fourth handover to say so.
+11. **S0 Sleep Network Connectivity is absent.** It was dropped with the Preferences tab and
+    approved for Tools ▸ Fixes, but never re-homed. It is the one agreed change that is simply
+    missing rather than deferred.
+12. **The slow-PC verdicts do not link to the rows that fix them.** L6 can report "Power Saver
+    on AC" while the Power Plan row that fixes it sits one tab away, unmentioned. Agreed,
+    designed, not built.
+13. **The access gate is not rate-limited.** Measured: five wrong codes accepted at line rate,
+    0 s, unthrottled. The compare is constant-time, so the gap is throttling, not the check —
+    it is a Cloudflare dashboard rule on 403s, not code.
+14. **One access code for everyone.** A leaked code can only be fixed by rotating everybody.
+    The planned upgrade is named codes with per-code usage counts, so one can be revoked alone.
+15. **`HintNetManual` has no `Add_TextChanged`** (AppDeploy.ps1), so its grey
+    `\\PC-NAME\SharedFolder` watermark sits underneath whatever the technician types. It is the
+    only hint in either file missing that toggle.
+16. **`Test-GuiBatch` has two pre-existing failures** — one environmental, one a chain-settle
+    timing race — and `Test-Push` has one flaky assertion (`Stop-ProcessTree`: `taskkill /T` is
+    asynchronous, so the check occasionally reads the child before Windows has reaped it).
+    None of the three is a defect in shipped behaviour, but they make a green run ambiguous,
+    which is worse than a red one.
 
 ---
 

@@ -3,7 +3,7 @@
 - [Prove it with tests](feedback-prove-it-with-tests.md) — build a fault-injection harness before proposing a fix
 - [Catalog BOM phantom app](project-catalog-bom-phantom-app.md) — a BOM on apps.json shows "Live catalog" with one blank row instead of failing; unfixed
 - [Session state 2026-08-22](project-session-2026-08-22-state.md) — batch strip, countdown, office365 parked; PC formatted right after
-- [No git remote](project-no-git-remote.md) — a commit protects nothing here; tests/ and the handover are untracked
+- [No git remote](project-no-git-remote.md) — committed locally on `console-rework`, but still no remote: a commit here is not a backup
 - [Push button and R2 upload](project-push-button-r2-upload.md) — native S3 multipart in PowerShell; run `Test-Push.ps1 -Live` before the first real push
 - [Launch speed is antivirus](project-launch-speed-antivirus.md) — script SIZE costs 7s on a McAfee+Defender PC and 18ms on Defender alone; an AV exclusion beats any refactor
 - [Catalog repack check](project-catalog-repack-check.md) — some staged packages are pirated repacks; list the archive before publishing
@@ -11,3 +11,4 @@
 - [Sidecar outranks the catalog](project-sidecar-outranks-catalog.md) — hand-editing apps.json gets silently undone unless .push-state.json changes too
 - [office365 is parked](project-office365-parked.md) — its blank sha256 is deliberate; the consumer bootstrapper cannot install unattended
 - [Confirm every action](feedback-confirm-every-action.md) — acknowledge the press, then confirm the outcome separately; real indicators, counting down not up
+- [Windows 11 25H2 relocations](project-win11-25h2-relocations.md) — old tweak targets write fine and do nothing; diff the registry while toggling Settings

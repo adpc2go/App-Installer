@@ -1,15 +1,252 @@
+# Handover - 2026-08-27
+
+A **field-test session**. The tool ran on real client machines - Windows 11 Home and Pro, both
+25H2 - and the reports came back as symptoms rather than stack traces: *"I used dark theme,
+nothing changed"*, *"show recent apps is not off"*, *"90% of them still there"*. Almost
+everything below was found by measuring a machine, not by reading the code. Read the first
+section before touching anything: it changes what "Applied" is allowed to mean.
+
+**It is committed.** The last three handovers opened with a warning that nothing was; that is
+now false. 29 commits sit on branch `console-rework`, ahead of `master` by 29 and behind by 0.
+The live pin is `10AFBE9AFE2C7C0B07C527D6012627C0D0579FCD044D1C3C455C749B2B1DC494`.
+**There is still no git remote** - one disk, two local branches. It stays at the top of
+"Next, in order" for the fourth handover running.
+
+## The finding that mattered: the tool was lying about its own work
+
+*"the app was reporting its done while its not done"*, and the user was right. `Applied` meant
+**"the registry write did not throw"** - not that the value landed, and never that Windows read
+it back. Three changes make the word mean something:
+
+- **`Set-RegSoft` + `$script:RegDenied`.** A value this Windows build refuses is no longer
+  counted as written. `Apply-Tweak` resets the list per row and appends
+  *"(this Windows build refused: X)"* to that row's own status, naming the values.
+- **`Confirm-AppliedRows`, called first thing in `Finish-Batch`.** After a batch, every row
+  that says `Applied` is re-read **through its own detector** - the same probe Detect Applied
+  uses. Disagreement becomes *"Applied - could not confirm on this machine"*, an amber ring,
+  and a log line naming every row. It runs **before** the totals are counted, so the summary
+  describes what the machine confirms rather than what the writes returned.
+- **No probe means no claim.** A restore point and every cleanup row are *events*, not states.
+  They have no detector, they are skipped, and silence is the honest answer for them.
+
+That is the shape of the whole session: the tool now checks its own work, and where it cannot,
+it says so instead of claiming success.
+
+## Windows 11 25H2 moved five settings, and the old writes were dead
+
+Each was found by **before/after registry diffing over PowerShell Direct** while the user
+toggled the real Settings UI on the VM - not from documentation, which is still wrong about
+most of these. `Migrated=1` marks the old location dead.
+
+| What the user saw | Old location | Where 25H2 actually reads it |
+|---|---|---|
+| Explorer Privacy unchanged | `Explorer\Advanced\ShowRecent`, `ShowFrequent`, `ShowCloudFilesInQuickAccess` | the same names one level **up**, in `Explorer\` |
+| Start still showed recent / most-used | `Explorer\Advanced\Start_TrackDocs` and friends | `Explorer\Start\ShowRecentList`, `ShowFrequentList`, `AllAppsViewMode=2` |
+| Start recommendations still there | (none) | `Explorer\ShowRecommendations` |
+| Taskbar "Resume" badge | (none) | `Explorer\Advanced\IsEnabled` |
+| Home and Gallery in the sidebar | (none) | `HKCU\Software\Classes\CLSID\{f874310e-...}` and `{e88865ea-...}`, `System.IsPinnedToNameSpaceTree=0` |
+
+**A written value is not a visible one.** Explorer caches; nothing re-reads until it is told.
+`Send-SettingChange` (GUI side) broadcasts `WM_SETTINGCHANGE` / `ImmersiveColorSet` through
+`SendMessageTimeout` with `SMTO_ABORTIFHUNG` and a **100 ms** cap - so one wedged top-level
+window cannot stall the tool the way a plain `SendMessage` would - plus `SHChangeNotify`.
+Measured cost ~300 ms, once per batch, and only when the batch wrote something that needs it.
+
+**`TaskbarDa` is refused by this build even non-elevated, and it is not a bug to chase.** It
+does not turn Widgets off - it removes the whole option from Settings. The row reports the
+refusal rather than pretending.
+
+**Gaming: `AllowAutoGameMode` / `AutoGameModeEnabled` were never wrong.** The user's own
+WinUtil log proved the tool writes the same values. What actually happened: **Windows Update
+reinstalled `XboxGamingOverlay` and `GamingApp` hours after removal and wiped the gaming
+settings with them.** `Remove-AppxByName` deprovisions correctly; the gap is the Store update
+channel. A Store opt-out row was built for it and then dropped the same day at the user's
+instruction, because the only switch that works stops *every* Store update, including the codecs
+and WebView2 a customer's own software needs. So nothing in the tool prevents the reinstall now.
+
+## The doubled Optimize log was not double execution
+
+A run logged 42 rows twice. It was **one batch reported twice**: `Read-WorkerStatus`'s offset
+could move **backwards**, so consumed status lines were replayed. Diagnosed by timing rather
+than by reading - pass 2's 42 rows completed inside one second against 20 s for pass 1, which
+no real batch does. The guard is one line, and the offset now only ever moves forward:
+
+```powershell
+if ($lines.Count -le $script:StatusOffset) { return }
+```
+
+## Preferences is gone, and four rows came up to Tweaks
+
+The user's call, and the right one: *"we dont need the whole prepfrance tab ? why it should be
+threr empty ?"* - an empty tab had been staged for safety, and was removed outright instead.
+
+Why the tab was wrong is the part worth keeping: **a tick in Tweaks means "I will apply this",
+while a tick in Preferences meant "this is how the machine already is"** - the same control
+carrying opposite meanings. That is how an unticked preference once silently left-aligned a
+taskbar nobody asked it to move. A tweak acts in **one direction** only; Undo is what goes back.
+
+Promoted: **Lock Screen - Disable**, **Logon Verbose Mode - Enable**, **Mouse Acceleration -
+Disable**, **Settings Home Page - Hide**. **Window Snapping was dropped rather than promoted**,
+and the rule behind that is the reusable part: *its target value IS the Windows default*, so as
+a tweak it would have been a row that changes nothing on a healthy machine. No Tweaks row is
+allowed to be a no-op on a healthy machine.
+
+Also removed, on the user's instruction: the **DNS resolver** row and the **stop automatic
+Store updates** row. (Deleting `dnsresolver` is where the multi-line-detector trap bit - see
+the traps below.)
+
+**S0 Sleep Network Connectivity is currently ABSENT.** The user approved moving it into
+Tools > Fixes; it was dropped from Preferences and never re-homed. It is the one piece of
+agreed work this session did not finish.
+
+## Slow PC - Diagnose (Tools > Diagnostics)
+
+`Get-SlowPcReport`, in the elevated worker because SMART, services and the event log need
+admin. Seven layers **read in order**, ~5 s, and it **changes nothing**. One
+`Write-Status <id> 'Checking' "VERDICT L<n>: ..."` per layer, so each lands as its own line in
+the existing Activity log with no new UI, and the report is written to
+`$script:CacheDir\slowpc-<yyyyMMdd-HHmmss>.txt` through `Out-File -Encoding utf8` - the `>`
+redirection operator writes UTF-16 on 5.1, which turns a pasted report into mojibake for
+whoever receives it.
+
+L0 hardware Ã‚Â· L1 what is running Ã‚Â· L2 security software Ã‚Â· L3 memory Ã‚Â· L4 background work Ã‚Â·
+L5 startup and persistence Ã‚Â· L6 faults and throttling. The order is the point: each layer
+decides whether the next is worth doing, and the top finding is the one to act on.
+
+**Calibration was the work, not the layers.** The first run on a healthy i9 workstation flagged
+three false positives, and each fix is a rule worth keeping:
+
+- **L1** named `svchost` and `WmiPrvSE`, because Windows' own infrastructure accumulates
+  thousands of CPU-seconds on any long-running machine. It now judges by **where the binary
+  lives**, not by a hand-maintained name list.
+- **L3** flagged 1 GB of memory compression with 15 GB free. Compression only means pressure
+  when memory is **also** short, so it now needs both.
+- **L5** flagged Discord and Logitech, because Squirrel-packaged apps launch through
+  `Update.exe` and the pattern contained a bare `update`.
+
+Then it was proved it can still **fire**, because a check that cannot fail proves nothing:
+**10/10 real PUP and OEM names flagged, 10/10 legitimate startup entries clean**, and a
+third-party binary correctly told apart from `svchost`.
+
+**Known limit, stated on purpose.** L1's bar - beat `explorer` + `dwm` combined - will miss a
+moderate hog on a busy workstation: the user's own `rsEngineSvc` at 1562 CPU-s reads *below*
+this machine's 1858 shell total. Ranking by an absolute number would fire constantly instead.
+So the verdict stays strict, and the **evidence always names the top third-party consumer with
+the number it had to beat**, leaving the judgement with the technician.
+
+Not wired yet: the verdicts do not link to the rows that fix them (Power Saver -> Power Plan,
+and so on). Discussed, agreed, not built.
+
+## go.ps1: the splash, and Ctrl+C
+
+Three separate bugs, one window.
+
+- **It never appeared.** The splash was raised on a timer, and **an event action cannot fire
+  while the same thread sits inside a blocking call** - measured: an 800 ms timer fired at
+  +4051 ms of a 4052 ms download. It is now shown **directly**, right after the code is typed.
+- **It never left** when Ctrl+C was pressed at the code prompt. The whole flow is wrapped in
+  `try { ... } finally { SplashTimer.Stop(); Hide-Splash; $env:PC2GO_CODE = '' }`, and
+  `finally` does run on `StopPipeline` - proven, not assumed.
+- **It vanished too early**, before the app window was up. `Wait-AppWindow` polls
+  `MainWindowHandle`, which stays 0 until the WPF window actually shows (measured flipping at
+  3716 ms), then lingers 1200 ms.
+
+## New traps (continuing the numbering)
+
+19. **An event or timer action cannot fire while its thread is inside a blocking call.** A
+    DispatcherTimer set for 800 ms fired at +4051 ms of a 4052 ms `Invoke-WebRequest`. If
+    something must be on screen *before* slow work starts, show it directly - a timer is not a
+    thread.
+20. **`$V` and `$v` are the same variable.** PowerShell names are case-insensitive, so
+    `Get-Volume`'s result silently overwrote the verdict table: all seven verdicts came back
+    empty while the evidence collected perfectly. Nothing errors and nothing warns. Found by
+    running it, not by reading it.
+21. **`Kill` is an alias for `Stop-Process`.** A helper function of that name is shadowed and
+    silently never runs.
+22. **Editing `AppDeploy.ps1`: multi-line string replacement is unreliable** (mixed line
+    endings through the file); brace-balanced line-range edits work. And **deleting the first
+    line of a multi-line detector orphans its continuation** - removing `dnsresolver`'s first
+    line produced five parse errors somewhere else entirely. Re-parse after every deletion.
+23. **Publishing and running the suites in one command is a sequencing mistake.** It was done
+    once this session, and a `Test-Push` failure surfaced *after* the publish had gone out. It
+    turned out to be flaky rather than a regression, which is luck, not process.
+
+## Test baseline
+
+Re-measured 2026-08-27 on this machine, counted by PASS lines. Suites are mutex-serial and the
+tool cannot be open while they run.
+
+| Suite | Pass | Fail |
+|---|---|---|
+| Test-AfterInstallList | 207 | 0 |
+| Test-GuiBatch | 205 | **2** (both pre-existing) |
+| Test-Push | 273 | 0 |
+| Test-Categories | 234 | 0 |
+| Test-CatalogEditorGui | 97 | 0 |
+| Test-DirtyCleanup | 83 | 0 |
+| Test-Wrangler | 75 | 0 |
+| Test-CatalogScenarios | 66 | 0 |
+| Test-AccessCode | 54 | 0 |
+| Test-Worker.mjs | 40 | 0 |
+| Test-TweakReality | read-only reality check, no pass/fail | Ã¢â‚¬â€ |
+
+**1,294 PowerShell assertions plus the Worker's 40, and 2 failures**, both in `Test-GuiBatch`
+and both pre-existing: *"and it did not elevate itself"* (environmental) and *"the failing
+batch settled"* (a chain-settle timing race). Not re-run this session, unchanged since 08-26:
+`Test-RealUninstall` (51), `Test-DownloadResilience` (35), `Test-DeepBatch` (27), and
+`Test-Elevated` (19/19, which must be **launched from an already-elevated PowerShell** or its
+UAC prompt opens unfocused).
+
+`Test-TweakReality` is new and is deliberately **not** a pass/fail suite: it is a read-only
+reality check that extracts `Set-Reg` / `Set-RegSoft` / `Remove-RegVal` from the worker by AST
+and reports, per value, whether this machine currently matches. Read it as: *before* an
+Optimize run a MISMATCH simply means "not applied yet"; **after** a run that reported Applied,
+every MISMATCH is a tweak that did not take.
+
+`Test-Wrangler` (75) covers the hidden wrangler call - never `-Wait`, a real integer exit code,
+sign-in detected from wrangler's own output, both give-up clocks, the tree-kill, and a secret
+file that never exists readable and does not survive the call.
+
+**One flaky assertion to know about:** `Test-Push`'s *"and its child was stopped with it, not
+left running"* (a `Stop-ProcessTree` test) failed once in three runs, the other two at 274/0.
+`taskkill /T` is asynchronous and the assertion occasionally reads the child before Windows has
+finished reaping it. It is a timing race in the test, not a defect in the tree-kill.
+
+## Next, in order
+
+1. **git remote + push.** Fourth handover saying it. 29 commits, one disk.
+2. **Re-home S0 Sleep Network Connectivity in Tools > Fixes** - approved, dropped, never
+   rebuilt. The only agreed item this session left undone.
+3. Wire the slow-PC verdicts to the rows that fix them.
+4. Cloudflare **rate-limit rule on 403s**: the access gate can be brute-forced at line rate
+   (measured 5 attempts in 0 s, unthrottled). A dashboard setting, not code.
+5. Multi-code access audit - named codes plus per-code usage counts, so one leaked code can be
+   revoked without rotating everyone.
+6. Host `avastclear.exe` under `files/removers/` in R2 and pin its sha256 (`-ValidateOnly`
+   still warns).
+7. `HintNetManual` (AppDeploy.ps1) still has no `Add_TextChanged`, so the grey
+   `\\PC-NAME\SharedFolder` sits under whatever the technician types.
+8. `Test-GuiBatch`'s two pre-existing failures - one environmental, one chain-settle timing.
+9. `Export-UiSnapshots.ps1` still hangs; `ui-snapshots\` is still stale.
+
+---
+
 # Handover - 2026-08-26
 
 Two Claude sessions worked the same tree in parallel, coordinating by message. Everything
 below is verified by the suites listed at the end. `docs\CODEMAP.md` is new: a grep-anchor
 index of the repo, written to be scanned by a machine before a human.
 
-## Still not committed
+## Still not committed - RESOLVED 2026-08-27
 
-Same warning as the last two handovers, now heavier: ~50 verified fixes and three new feature
-systems sit uncommitted on one disk with no remote. Nothing below survives this machine.
+This said: ~50 verified fixes and three new feature systems sat uncommitted on one disk with
+no remote. They are committed now, on branch `console-rework`. There is still no remote - see
+the 08-27 section at the top.
 
 ## Workstream A - Optimize tab rebuild (build 54)
+
+> Historical. The Preferences sub-tab described below was REMOVED on 08-27 - four rows were
+> promoted into Tweaks and the rest dropped. Read the 08-27 section for what ships today.
 
 The old Tweaks tab is now **Optimize**, four sub-tabs on the Uninstall pill pattern, each
 Apply acting only on what is on screen: Tweaks 44 rows (38 pre-ticked / 6 CAUTION, config
@@ -135,9 +372,9 @@ keeps its hash running invisibly.
 
 ## Test baseline
 
-GuiBatch 207 · Push 274 · Categories 235 · AfterInstallList 207 · DirtyCleanup 83 ·
-CatalogEditorGui 97 · Wrangler 75 · CatalogScenarios 66 · AccessCode 54 · RealUninstall 51 ·
-Worker.mjs 40 · DownloadResilience 35 · DeepBatch 27 · Elevated 19/19 (by hand, elevated).
+GuiBatch 207 Ã‚Â· Push 274 Ã‚Â· Categories 235 Ã‚Â· AfterInstallList 207 Ã‚Â· DirtyCleanup 83 Ã‚Â·
+CatalogEditorGui 97 Ã‚Â· Wrangler 75 Ã‚Â· CatalogScenarios 66 Ã‚Â· AccessCode 54 Ã‚Â· RealUninstall 51 Ã‚Â·
+Worker.mjs 40 Ã‚Â· DownloadResilience 35 Ã‚Â· DeepBatch 27 Ã‚Â· Elevated 19/19 (by hand, elevated).
 Suites are mutex-serial; the tool cannot be open while they run.
 
 Counted on 2026-08-26 by PASS lines, which is why some numbers moved without the suite
@@ -297,7 +534,7 @@ failure (`the new folder was observed`) that predates this work.
 
 ---
 
-# Earlier - Handover — 2026-08-22 (second pass)
+# Earlier - Handover Ã¢â‚¬â€ 2026-08-22 (second pass)
 
 *(Historical. The format has happened; the paths below are from the old machine.)*
 
@@ -352,58 +589,58 @@ sidecar itself matters, because it is what remembers they exist.
 
 The catalog now has **19** apps, of which **3** carry a real hash and would publish:
 `winrar`, `sketchup-pro-2026`, `email-migration`. The rest have no hash, so the edge drops
-them — that is deliberate, not a fault.
+them Ã¢â‚¬â€ that is deliberate, not a fault.
 
 **`office365` was parked this session.** It had picked up a real hash and would have gone
-live on the next Update, but the file behind it is `OfficeSetup.exe` — the **consumer**
+live on the next Update, but the file behind it is `OfficeSetup.exe` Ã¢â‚¬â€ the **consumer**
 bootstrapper, 7.4 MB, not the Office Deployment Tool. It has no silent switch: it opens its
 own UI and fetches Office itself, so on a machine with nobody sitting at it, it stalls. Its
 `sha256` is now empty in `server/apps.json`, which makes `Test-App` say "not hashed yet", so
 `New-PushPlan` skips it and Publish drops it.
 
-The sidecar was blanked in the same pass — `sha256`, `hashedUtc`, `localPath`, `mtimeUtc` —
+The sidecar was blanked in the same pass Ã¢â‚¬â€ `sha256`, `hashedUtc`, `localPath`, `mtimeUtc` Ã¢â‚¬â€
 because the sidecar outranks the catalog and would otherwise re-arm it. `remote` was left
 alone on purpose: those bytes really are in R2, and saying otherwise buys a pointless
 re-upload. Re-arming it needs a real ODT package (`setup.exe` + `configuration.xml` under one
 key prefix), not a re-hash of the bootstrapper.
 
-**The edge was not re-checked this session** — the last verified reading is the one from the
-previous pass (tool hash `E6C93E07B12AEFB9…`, the Worker pin agreeing, 2 apps served).
+**The edge was not re-checked this session** Ã¢â‚¬â€ the last verified reading is the one from the
+previous pass (tool hash `E6C93E07B12AEFB9Ã¢â‚¬Â¦`, the Worker pin agreeing, 2 apps served).
 
 Nothing is committed. The tree is still on `3b44e68`.
 
 ## Shipped and live
 
-- **Downloads over 8 connections** for files ≥100 MB. Measured against the edge, 192 MB, median
-  of three: 1 stream 48 MB/s, 4 → 78, 8 → 92, 16 → 97. One connection left half the link unused.
+- **Downloads over 8 connections** for files Ã¢â€°Â¥100 MB. Measured against the edge, 192 MB, median
+  of three: 1 stream 48 MB/s, 4 Ã¢â€ â€™ 78, 8 Ã¢â€ â€™ 92, 16 Ã¢â€ â€™ 97. One connection left half the link unused.
   Falls back to BITS on any doubt, so the worst case is the old behaviour.
-- **`.rar` → `.zip` conversion, automatic inside Update.** libarchive before 3.6 cannot extract
+- **`.rar` Ã¢â€ â€™ `.zip` conversion, automatic inside Update.** libarchive before 3.6 cannot extract
   many RAR5 archives; a stock Windows 10 client here has 3.5.2 and failed where this machine's
-  3.8.4 succeeded in 7 seconds on identical bytes. `.iso` is left alone — it is mounted, never
+  3.8.4 succeeded in 7 seconds on identical bytes. `.iso` is left alone Ã¢â‚¬â€ it is mounted, never
   read through tar.
 - **tar failures name the machine**, not just the archive: stderr is captured, and a `.rar`
   failure says which libarchive is present and to republish as `.zip`.
-- **`.rar`/`.iso` are removed by the cache sweep** — they were missing from the list, so the log
+- **`.rar`/`.iso` are removed by the cache sweep** Ã¢â‚¬â€ they were missing from the list, so the log
   claimed installers were deleted while a 1.1 GB `.rar` stayed.
-- **Post-install issue count is honest** — a failure on the *last* step no longer adds
+- **Post-install issue count is honest** Ã¢â‚¬â€ a failure on the *last* step no longer adds
   "remaining steps skipped", which turned one problem into "2 issue(s)".
 
 ## Editor, not published (reopen the editor to get it)
 
-- **One button.** `Update…` and `Save catalog`. `Re-publish only…` is gone: Update asks the
+- **One button.** `UpdateÃ¢â‚¬Â¦` and `Save catalog`. `Re-publish onlyÃ¢â‚¬Â¦` is gone: Update asks the
   bucket first and skips anything already there, so with nothing to upload the two did identical
   work.
-- **A live dot per app** — green when every field matches what the edge serves, amber for
+- **A live dot per app** Ã¢â‚¬â€ green when every field matches what the edge serves, amber for
   *not uploaded* / *not published* / *not live*. Compares the **whole entry**, so removing a
   post-install step shows as changed. Refreshes after a publish.
 - **Publishing completes when the edge says so**, not when a process handle reports. That is why
   a publish once sat at 0% forever while the catalog had actually gone live.
-- **The status line has its own row** under the buttons and wraps — it used to sit on top of them.
+- **The status line has its own row** under the buttons and wraps Ã¢â‚¬â€ it used to sit on top of them.
 - **Reopening an app lists what is in its package** without re-hashing, so the after-install
   *from* dropdown is populated and a file that is not in the package is called out.
 - **Duplicate guard**: same bytes under two ids, same name at the same version, or two entries on
   one bucket key. A genuinely different version is fine.
-- **Filenames are parsed properly** — `SketchUp Pro 2026.26.1.256.rar` gives name *SketchUp Pro*
+- **Filenames are parsed properly** Ã¢â‚¬â€ `SketchUp Pro 2026.26.1.256.rar` gives name *SketchUp Pro*
   and version *2026.26.1.256*, instead of a name with the version spread through it.
 - **A destination with a path inside it is repaired** as you type, and refused at publish.
 - **A hashed entry keeps its silent switches and verify path** when its own file is re-fetched.
@@ -416,7 +653,7 @@ Nothing is committed. The tree is still on `3b44e68`.
 `VERIFY` publish gate are gone.
 
 It was removed because the answer was never solid enough to act on. The last version sampled
-3 MB of a 1.05 GB installer — 0.28% — found no MSI marker, and concluded there was none. A
+3 MB of a 1.05 GB installer Ã¢â‚¬â€ 0.28% Ã¢â‚¬â€ found no MSI marker, and concluded there was none. A
 switch that is nearly right does not fail loudly; the installer opens its GUI on a machine
 nobody is sitting at. `silentArgs` stays as a plain text field you fill in, and the installer
 guard is what catches a wrong one.
@@ -425,7 +662,7 @@ Do not rebuild this without a reason that answers the sampling problem.
 
 ## BUILT: the batch strip
 
-Specified in the previous pass, built in this one. The design below is unchanged — it is kept
+Specified in the previous pass, built in this one. The design below is unchanged Ã¢â‚¬â€ it is kept
 in full because the reasoning is what stops it being relitigated. What actually shipped, and
 where it departs from the spec, is under **"How it came out"** at the end of this section.
 
@@ -507,12 +744,12 @@ the catalog outgrows one screen. Worth it at ~40 apps, not at 19.
 
 ### How it came out
 
-All in `server/AppDeploy.ps1`. About +18 KB of source (530,899 → 549,403 bytes, +3.5%) — worth
+All in `server/AppDeploy.ps1`. About +18 KB of source (530,899 Ã¢â€ â€™ 549,403 bytes, +3.5%) Ã¢â‚¬â€ worth
 knowing only because script SIZE is what costs 7s on a McAfee+Defender client.
 
 - **The strip is a fourth row in the bottom bar**, above the status line and the buttons and
   below whichever tab panel is showing. `MaxHeight="150"` with its own `ScrollViewer`.
-- **The rows ARE the catalog rows** — the same `AppItem` objects, not copies. They already
+- **The rows ARE the catalog rows** Ã¢â‚¬â€ the same `AppItem` objects, not copies. They already
   raise `PropertyChanged`, so one status update lights up both places and there is no mirror to
   keep in step. `$script:BatchRows` is just a second `ObservableCollection` over the same
   objects.
@@ -522,7 +759,7 @@ knowing only because script SIZE is what costs 7s on a McAfee+Defender client.
 - **A removed row is marked, not spliced out.** The spec said "drop it from `$script:Pending`
   (mind `$DlIndex` bookkeeping)". It is left in place with status `Removed from batch` and the
   download pump steps over it instead. `$DlIndex` counts positions in that array, so removing
-  an entry behind the index would silently skip its neighbour — and a row that stays visible,
+  an entry behind the index would silently skip its neighbour Ã¢â‚¬â€ and a row that stays visible,
   saying what happened to it, reads better than one that vanishes.
 - **Collapse, not dismiss.** The strip has a header that never moves and never goes away while
   a batch exists. The chevron - or a click anywhere on the header bar - folds it to that one
@@ -557,7 +794,7 @@ knowing only because script SIZE is what costs 7s on a McAfee+Defender client.
   denominator, and inventing one would be the same lie in a different place.
 - **`skip.txt`**, one id per line, beside `cancel.flag` in the cache. The worker takes it as
   `-SkipFile` and re-reads it before every entry, at the same point it checks the cancel flag.
-  Re-read rather than cached, because the GUI appends to it long after the worker started —
+  Re-read rather than cached, because the GUI appends to it long after the worker started Ã¢â‚¬â€
   which is the whole point of it being a file.
 - **`$script:BatchLive`**, not `$script:Phase`, decides whether a row can still be pulled out.
   Every starter opens the strip on the line BEFORE it sets `Phase`, so reading `Phase` there
@@ -568,20 +805,20 @@ knowing only because script SIZE is what costs 7s on a McAfee+Defender client.
   button. The worker reports a lot of intermediate states and more will be added; an
   unrecognised one has to fail towards "you cannot remove that" rather than towards a removal
   that arrives after the installer has launched.
-- **The button now says what it does.** `Install Selected` → `Add to Batch` while downloads are
-  running (a press really does extend the batch on screen) → `Queue Next Batch` once the worker
+- **The button now says what it does.** `Install Selected` Ã¢â€ â€™ `Add to Batch` while downloads are
+  running (a press really does extend the batch on screen) Ã¢â€ â€™ `Queue Next Batch` once the worker
   has been told no more are coming, because from there the same press starts a follow-up batch
   with its own UAC prompt.
 
 **The cancel hole is closed too.** A removal during a segmented download returns out of the
-pump's `catch` instead of retrying on BITS — and so does a **cancel**, which used to fall
+pump's `catch` instead of retrying on BITS Ã¢â‚¬â€ and so does a **cancel**, which used to fall
 straight through it. That mattered more: by the time the `catch` runs, the Cancel handler has
 already pushed `$DlIndex` past the end and moved `Phase` to `Install`, so a BITS job started
-there is never looked at again — it sits in `$script:CurJob` transferring a file the batch has
+there is never looked at again Ã¢â‚¬â€ it sits in `$script:CurJob` transferring a file the batch has
 written off, and the Download branch is never re-entered to clean it up.
 
 It was first written off as blocked by `Test-DownloadResilience`. That was wrong: section 7
-calls `Invoke-SegmentedDownload` **directly** and asserts what the function does — it never
+calls `Invoke-SegmentedDownload` **directly** and asserts what the function does Ã¢â‚¬â€ it never
 touches the pump's fallback decision. Nothing was in the way. Locked now by a new assertion in
 Test-GuiBatch section 2: `no download job outlived the cancel`.
 
@@ -589,10 +826,10 @@ Test-GuiBatch section 2: `no download job outlived the cancel`.
 
 It does **not** have the same shape, so it did not need solving twice.
 
-The leftover review is `WipeOverlay` — a modal, 620 wide, `MaxHeight="520"`, with its own
+The leftover review is `WipeOverlay` Ã¢â‚¬â€ a modal, 620 wide, `MaxHeight="520"`, with its own
 `ScrollViewer` and rows grouped under the app that owns them. It is already bounded and
 already self-scrolling: the same answer the strip arrives at, reached earlier by a different
-route. And it is a **review-then-approve** surface, not a progress view — read once, ticked,
+route. And it is a **review-then-approve** surface, not a progress view Ã¢â‚¬â€ read once, ticked,
 dismissed. Nothing about it doubles as the catalog, which is the actual collision the strip
 exists to solve.
 
@@ -612,7 +849,7 @@ before, without a line written for it.
    batch looks identical to one merely selected - tick a ninth app and nothing says it is not
    running. Proposal, NOT agreed: clear the ticks when a batch starts, so a tick means one
    thing only - "staged, not submitted". Ask before building it.
-3. **Decide the strip height.** `tools\Export-UiSnapshots.ps1` now renders it — a new
+3. **Decide the strip height.** `tools\Export-UiSnapshots.ps1` now renders it Ã¢â‚¬â€ a new
    `1b-batch-strip.png` with one row in every state the strip can show, against the real
    19-app catalog. It reads correctly: the header counts, the colours match the catalog rows,
    and the remove button appears on exactly the one row that is still removable (mid-download)
@@ -623,8 +860,8 @@ before, without a line written for it.
 4. **`sketchup-pro-2026` has an empty `silentArgs`** and is live. It will open a GUI and be
    stopped by the guard. Its installer is InstallScript with no embedded MSI (measured), so it
    needs a `setup.iss` recorded on a VM.
-5. **Measure the download on the Kuwait client** — 1.92× here, and the gain grows with latency.
-   If it is 4× there, that work is the most valuable thing in the project; if it is 1.2×, say so
+5. **Measure the download on the Kuwait client** Ã¢â‚¬â€ 1.92Ãƒâ€” here, and the gain grows with latency.
+   If it is 4Ãƒâ€” there, that work is the most valuable thing in the project; if it is 1.2Ãƒâ€”, say so
    and stop.
 6. **16 of the 19 apps have no file on this machine**, so nothing can be confirmed about them.
    Only `winrar`, `sketchup-pro-2026` and `email-migration` have bytes here. `office365` joined
@@ -641,7 +878,7 @@ before, without a line written for it.
   thing that breaks. The lift list is now an exact-count check that names what is missing.
 - **A harness failing at "this instance holds the single-instance lock" is not a code failure,
   and it happens often.** Three times in one session, on `Test-GuiBatch` twice and on
-  `Export-UiSnapshots` once — every time, a plain re-run passed and the mutex probed free
+  `Export-UiSnapshots` once Ã¢â‚¬â€ every time, a plain re-run passed and the mutex probed free
   afterwards. Something transient grabs `Local\PC2GoAppInstaller`; AppDeploy `return`s at that
   check rather than exiting, so the caller carries on and every later assertion fails against a
   `$null` window, which reads exactly like the change under test having broken everything. Any
@@ -652,7 +889,7 @@ before, without a line written for it.
   pointing at the old file means the next save silently undoes the edit. This happened twice.
 - A leftover instance holds the `Local\PC2GoAppInstaller` mutex, so the next launch says
   "already running" and exits.
-- `go.ps1` is never cached and `AppDeploy.ps1` re-downloads when the pin changes — judge launch
+- `go.ps1` is never cached and `AppDeploy.ps1` re-downloads when the pin changes Ã¢â‚¬â€ judge launch
   speed on the **second** run.
 - `Test-GuiBatch`, `Test-DeepBatch` and `Test-Push`'s installer-guard assertion are
   timing-sensitive. Run them when the machine is not busy; a failure there is usually load.
@@ -678,19 +915,19 @@ All green, every harness re-run in full after the strip went in.
 
 `Test-GuiBatch` section 1b is new, and is where the strip is proved:
 
-- the removability boundary as a table — eight states checked against `Test-Removable`
+- the removability boundary as a table Ã¢â‚¬â€ eight states checked against `Test-Removable`
   directly, rather than inferred from what happens to be on screen;
 - the strip appearing with the batch, holding one row per app, holding the SAME objects as the
   catalog, and the catalog not reordering underneath it;
-- a queued app pulled out through the **real routed handler** — a `Click` raised on `ListBatch`
+- a queued app pulled out through the **real routed handler** Ã¢â‚¬â€ a `Click` raised on `ListBatch`
   carrying the row in `Tag`, which is exactly what the on-screen button does. The window is
   never shown here, so there is no button object to find;
 - its id landing in `skip.txt`, the row staying visible rather than vanishing, the batch still
-  completing, the other two still installing, and — the real proof — the removed app never
+  completing, the other two still installing, and Ã¢â‚¬â€ the real proof Ã¢â‚¬â€ the removed app never
   appearing in `queue.jsonl` at all;
 - a removal reported as removed rather than failed, and sorted above the rows that worked.
 
-`Test-DownloadResilience` sections 6–8 are new: eight connections rebuilding one file
+`Test-DownloadResilience` sections 6Ã¢â‚¬â€œ8 are new: eight connections rebuilding one file
 byte-identically, resume from a half-written journal, a stale journal being discarded, Stop
 mid-download, and everything it refuses so BITS can take over.
 
