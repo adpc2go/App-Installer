@@ -1,80 +1,45 @@
 # App-Installer test lab
 
-Real Windows 11, wiped clean in ~7 seconds, host never rebooted.
+Real Windows 11, wiped clean in under ten seconds, host never rebooted.
 
 ## Two VMs, on purpose
 
-| | Edition | Why |
-|---|---|---|
-| `AppLab` | **Home** | What most client machines actually run - the honest test target |
-| `AppLabPro` | **Pro** | Comfort: native clipboard, drag-and-drop, resizable window |
+| | Edition | Loop | Why it exists |
+|---|---|---|---|
+| `AppLab` | **Home** | ~6s | What most client machines actually run - the honest test target |
+| `AppLabPro` | **Pro** | ~10s | Comfortable to work in: native clipboard, resizable window |
 
-Windows **Home cannot host RDP**, and Enhanced Session Mode *is* RDP into the guest. So on
-the Home VM there is no native clipboard and no Enhanced Session - not through any setting.
-The clipboard bridge below exists for that reason and works on both.
+Windows **Home cannot accept an inbound RDP session**, and Hyper-V's Enhanced Session Mode
+*is* RDP into the guest. So the Home VM can never have Enhanced Session, native clipboard,
+or a resizable window - through any setting, driver or registry key. That is a licensing
+gate in the Home SKU, not a fault. It is the entire reason the Pro VM exists.
+
+Both guests have identical drivers. Pro shows a second display adapter in Device Manager
+only because an RDP session is live; it disappears when you disconnect.
 
 ## Daily use
 
-From any directory (functions live in your PowerShell profile):
+From any directory - these live in your PowerShell profile:
 
 ```powershell
-lab                 # Home: wipe, push working tree, run server\AppDeploy.ps1
-lab -Mode Live      # Home: wipe, run  irm https://apps.pc2go.ca/go | iex
-lab -NoRevert       # Home: do NOT wipe - inspect a failure before losing it
+lab -Mode Live      # Home: wipe, then run  irm https://apps.pc2go.ca/go | iex
+lab                 # Home: wipe, push the working tree, run server\AppDeploy.ps1
 labpro -Mode Live   # same, against the Pro VM
-tolab               # host clipboard -> lab
-fromlab             # lab clipboard -> host
+
+lab -NoRevert       # do NOT wipe - inspect a failure before losing it
+lab -NoLaunch       # wipe and boot, start nothing - for editing the baseline
+
 lablog              # guest launch transcript
+labsync -Background # live host->guest clipboard mirror (Home)
+tolab / fromlab     # one-shot clipboard, either direction
+labsave             # freeze the current guest state as a baseline
+labconn             # mstsc over the VMBus (Pro)
 ```
 
 Or call the scripts directly with `-VMName AppLabPro`. Credentials are stored per VM under
-`%LOCALAPPDATA%\<VMName>\guest.cred.xml`.
+`%LOCALAPPDATA%\<VMName>\guest.cred.xml`, DPAPI-encrypted to your Windows account.
 
-## Clipboard between host and lab
-
-**Pro VM:** native. Enhanced Session works, so copy/paste just works both ways.
-
-**Home VM:** Windows Home cannot host RDP, and Enhanced Session *is* RDP into the guest -
-so native clipboard is impossible there, through any setting. Use one of these instead:
-
-```powershell
-labsync -Background   # live mirror: host clipboard -> Home guest, automatically
-labsync               # same, foreground, Ctrl+C to stop
-tolab / fromlab       # one-shot, either direction
-```
-
-`labsync` must run STA - a PowerShell background job runs MTA, where Get-Clipboard silently
-returns nothing and the loop never sees a change. `-Background` spawns a detached -STA
-process for that reason. It reconnects on its own when a revert kills its session.
-
-vmconnect also has **Clipboard > Type clipboard text** built in - host to guest, typed as
-keystrokes, no setup.
-
-
-
-```powershell
-.\Send-LabClipboard.ps1                 # your host clipboard -> the lab
-.\Send-LabClipboard.ps1 -Text 'foo'     # send literal text instead
-.\Get-LabClipboard.ps1                  # the lab's clipboard -> your host
-.\Get-LabClipboard.ps1 -NoSet           # print it instead of replacing yours
-```
-
-Both scripts hand the actual clipboard call to a scheduled task running in the guest's
-signed-in session. The clipboard belongs to a window station, and PowerShell Direct lands
-in session 0 - a `Set-Clipboard` there writes a clipboard nothing on the desktop can see.
-
-Enhanced Session would give you this natively, plus drag-and-drop. Turn it on in
-**Hyper-V Manager > Hyper-V Settings > User > Enhanced Session Mode**. These scripts keep
-working either way.
-
-## Reading guest-side errors
-
-```powershell
-.\Get-LabLog.ps1        # transcript of the last launch inside the guest
-```
-
-`Test.ps1` prints this automatically when it spots an error. Guest failures otherwise
-print to a console inside the VM that the host cannot see.
+The guest console opens **black**, not PowerShell blue.
 
 ## How the wipe works
 
@@ -87,73 +52,153 @@ saved memory     RAM contents at the moment of the checkpoint
 ```
 
 Reverting deletes the `.avhdx` and reloads the saved memory. It does not copy or restore
-anything, which is why it takes the same ~1.5s whether the test installed one app or fifty,
+anything, which is why it costs the same ~1.5s whether the test installed one app or fifty,
 and why the disk never grows across runs.
 
 Reloading memory is also why the guest *resumes* at a logged-in desktop instead of booting.
 A Production checkpoint would use VSS and cold-boot instead - about 25s. Standard is
 deliberate.
 
-Nothing in the guest survives a revert. The code push is one-way (host -> guest), so
-nothing the test does can reach your working tree.
-
-## Checkpoints
-
-```
-CLEAN-prerdp     original baseline, before Enhanced Session was enabled
-  └── CLEAN      what Test.ps1 uses
-```
+Nothing in the guest survives a revert, and the code push is one-way (host -> guest), so
+nothing a test does can reach your working tree.
 
 ## Changing what "clean" means
 
-All of these run on the HOST, never inside the VM.
+All of this runs on the HOST, never inside the VM.
 
 **Changes you make by hand** (install something, tweak a setting):
 
 ```powershell
-lab                                    # 1. start from a CLEAN vm - do not skip this
+lab -NoLaunch                          # 1. start from a CLEAN vm - do not skip this
                                        # 2. make your changes in the VM window
-.\Save-Baseline.ps1 -To CLEAN-v3 -Promote   # 3. freeze it and make it the default
+labsave -To CLEAN-v6 -Promote          # 3. freeze it and make it the default
 ```
 
-Step 1 is the whole discipline. `Save-Baseline.ps1` captures the guest exactly as it is,
-so capturing after a test run bakes that test's installs and registry debris in for good.
-It prompts before it commits, and `-Promote` renames the old baseline rather than deleting
+Step 1 is the whole discipline. `Save-Baseline.ps1` captures the guest exactly as it is, so
+capturing after a test run bakes that test's installs and registry debris in permanently.
+It prompts before committing, and `-Promote` renames the old baseline rather than deleting
 it.
 
-**Changes you can script** - use this instead, it reverts to clean for you:
-
-Never edit the guest and re-checkpoint by hand - you would bake in the last test's residue.
-Use this instead: it reverts to the current baseline first, applies your change to a
-pristine guest, then writes a NEW checkpoint (the old one survives).
+**Changes you can script** - this reverts to clean for you, so the discipline is automatic:
 
 ```powershell
-.\Update-Baseline.ps1 -ApplyFile .\guest-enable-rdp.ps1 -To CLEAN-v2
-.\Test.ps1 -Checkpoint CLEAN-v2          # try it
-
-# happy with it? make it the default:
+.\Update-Baseline.ps1 -VMName AppLab -ApplyFile .\guest-set-resolution.ps1 -To CLEAN-v6
+.\Test.ps1 -Checkpoint CLEAN-v6        # try it before committing to it
 Rename-VMCheckpoint -VMName AppLab -Name CLEAN -NewName CLEAN-old
-Rename-VMCheckpoint -VMName AppLab -Name CLEAN-v2 -NewName CLEAN
+Start-Sleep -Seconds 2                 # Hyper-V needs a beat between renames
+Rename-VMCheckpoint -VMName AppLab -Name CLEAN-v6 -NewName CLEAN
 ```
 
-## Build scripts (already run - here for a rebuild)
+### Two traps when re-baselining
+
+- **Reboot the guest and it comes back at the LOCK SCREEN.** A Standard checkpoint captures
+  memory, so locking there means typing a password on every future run. Always log back in
+  and sit at the desktop before saving. This has already bitten once - a reboot mid-edit
+  reset the display resolution and the wrong value got frozen in.
+- **Never change VM hardware while a memory checkpoint exists.** RAM, vCPU, `Set-VMVideo` -
+  the saved memory image is bound to the device configuration it was captured with, and the
+  restore fails with *"Microsoft Video Monitor ... Catastrophic failure"*. To change
+  hardware: delete every checkpoint, change it, boot, re-baseline.
+
+## Resolution and sharpness
+
+The two VMs resize by completely different mechanisms.
+
+| | Home (Basic Session) | Pro (Enhanced Session) |
+|---|---|---|
+| What is sent | a video feed of a virtual monitor | RDP drawing instructions |
+| Who sets the size | the **guest** | the **connection** |
+| How to change it | Settings > System > Display inside the VM | drag the window edge |
+| Resizable | no - fixed, then stretched | yes, dynamic |
+| Ceiling | 1920x1200 (`Get-VMVideo`) | any |
+
+Home is baked at **1920x1080** - 16:9, matching the monitor, so no letterboxing. Anything
+set by hand inside Home reverts on the next `lab`; bake it in with
+`Update-Baseline.ps1 -ApplyFile .\guest-set-resolution.ps1` (edit `$W`/`$H` at the top).
+
+**Why Home looked blurry and oversized:** the primary display runs at 150% scaling
+(1707x960 effective on a 2560x1440 panel), and Windows was upscaling the whole vmconnect
+window by 1.5x - bigger *and* softer. Fixed by marking vmconnect DPI-aware:
+
+```
+HKCU\...\AppCompatFlags\Layers   C:\Windows\System32\vmconnect.exe = "~ HIGHDPIAWARE"
+```
+
+Basic Session is now 1:1 and sharp, but smaller. Put the Home window on the unscaled
+2560x1440 monitor for the best of both. Pro is unaffected - RDP negotiates DPI itself.
+
+## Clipboard
+
+**Pro:** native, both directions. Nothing to configure.
+
+**Home:** impossible natively (see above). Use the bridge:
+
+```powershell
+labsync -Background   # live mirror, host -> guest, automatic
+labsync               # same, foreground, Ctrl+C to stop
+tolab / fromlab       # one-shot, either direction
+```
+
+`labsync` must run **STA** - a PowerShell background job runs MTA, where `Get-Clipboard`
+silently returns nothing and the loop never sees a change. `-Background` spawns a detached
+`-STA` process for that reason, and it reconnects on its own when a revert kills its session.
+
+Both bridge scripts hand the actual clipboard call to a scheduled task in the guest's
+signed-in session: the clipboard belongs to a window station, and PowerShell Direct lands in
+session 0, where a `Set-Clipboard` writes a clipboard nothing on the desktop can see.
+
+vmconnect also has **Clipboard > Type clipboard text** built in - host to guest, typed as
+keystrokes, no setup.
+
+## Scripts
 
 | | |
 |---|---|
-| `1-Enable-HyperV.ps1` | Enables Hyper-V. Needs a real **Restart**, not Shut down (Fast Startup skips pending servicing). |
-| `2-New-LabVM.ps1` | Gen 2 VM, TPM + Secure Boot, Default Switch. Windows setup needs a **local** account. |
-| `3-Set-Baseline.ps1` | Preps guest, stores credential, takes the first checkpoint. |
-| `guest-enable-rdp.ps1` | Enables RDP so vmconnect can use Enhanced Session. |
+| `Test.ps1` | **The loop.** Revert, resume, push code, launch. `-Mode Live`, `-NoRevert`, `-NoLaunch`, `-Checkpoint`, `-VMName` |
+| `Save-Baseline.ps1` | Freeze the current guest state as a baseline (hand-made changes) |
+| `Update-Baseline.ps1` | Revert to clean, apply a script, checkpoint (scripted changes) |
+| `Get-LabLog.ps1` | Read the guest launch transcript from the host |
+| `Send-LabClipboard.ps1` / `Get-LabClipboard.ps1` | One-shot clipboard, either direction |
+| `Sync-LabClipboard.ps1` | Live host->guest clipboard mirror |
+| `Connect-Lab.ps1` | mstsc over the VMBus (port 2179). Pro only - Home cannot host RDP |
+| `guest-enable-rdp.ps1` | Enables RDP in a guest (applied via `Update-Baseline.ps1`) |
+| `guest-set-resolution.ps1` | Sets guest resolution via ChangeDisplaySettings, in the interactive session |
 
-## Gotchas worth remembering
+### Build scripts (already run - here for a rebuild)
 
-- **Window too small** = you are in Basic Session at 1024x768. Close the VM window and
-  reopen it; Enhanced Session offers a size dialog. Enhanced Session rides the VMBus, not
-  TCP/3389, so no firewall rule is involved.
-- **`Test.ps1` needs Hyper-V rights.** You are in `Hyper-V Administrators`, so it runs from
-  a normal terminal - no elevation.
-- **Guest must use a LOCAL account.** PowerShell Direct cannot authenticate a Microsoft
-  account.
+| | |
+|---|---|
+| `1-Enable-HyperV.ps1` | Enables Hyper-V. Needs a real **Restart**, not Shut down - Fast Startup skips pending servicing and the install silently half-applies. |
+| `2-New-LabVM.ps1` | Gen 2 VM, TPM + Secure Boot, Default Switch. Setup needs a **local** account. |
+| `3-Set-Baseline.ps1` | Preps guest, stores credential, ejects the ISO, takes the first checkpoint. `-NoCheckpoint` does everything except the checkpoint. |
+
+## Checkpoints
+
+```
+AppLab                                      AppLabPro
+  CLEAN-prerdp                                CLEAN
+    +-- CLEAN-1024
+          +-- CLEAN-old-20260826-2228
+                +-- CLEAN-v4-1280
+                      +-- CLEAN   <- live
+```
+
+Every checkpoint adds another differencing disk to the chain: Home's five cost ~39 GB of
+`.avhdx` against an 18 GB base, and every read walks all five. Pro's single checkpoint costs
+5.6 GB. Deleting a superseded checkpoint merges it into its parent and reclaims the space -
+worth doing once a baseline is settled.
+
+## Gotchas
+
+- **`vmicrdv` must be Automatic**, or Enhanced Session does not come back after a guest
+  reboot and vmconnect reports a flat *"could not connect"* instead of retrying. Set on Pro
+  by `3-Set-Baseline.ps1`.
+- **Guests must use a LOCAL account.** PowerShell Direct cannot authenticate a Microsoft
+  account. `Shift+F10` then `start ms-cxh:localonly` during setup.
+- **`Test.ps1` needs Hyper-V rights.** You are in `Hyper-V Administrators`, so it runs from a
+  normal terminal - no elevation.
+- **Activation is not needed.** Unactivated Windows 11 runs indefinitely; you lose a
+  watermark and personalization settings, nothing your installer touches.
 
 ## What this covers that `../sandbox/` does not
 
