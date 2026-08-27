@@ -62,7 +62,11 @@ function Assert-True([string]$What, $Condition) { Assert-Equal $What $true ([boo
 # it directly and shows no sheet, and both paths have to keep working.
 function Invoke-Commit($Button) {
     Invoke-Click $Button
-    if ($PreflightOverlay -and "$($PreflightOverlay.Visibility)" -eq 'Visible') { Invoke-Click $BtnPfGo }
+    if ($PreflightOverlay -and "$($PreflightOverlay.Visibility)" -eq 'Visible') {
+        # an app the sheet sees as already installed is skipped by default; the harness wants it run
+        if ($ChkPfHave -and $PfHave -and "$($PfHave.Visibility)" -eq 'Visible') { $ChkPfHave.IsChecked = $true }
+        Invoke-Click $BtnPfGo
+    }
 }
 
 function Write-Section([string]$Title) {
@@ -349,9 +353,10 @@ try {
     foreach ($it in $script:Items) { Write-Host ("    {0,-16} {1}" -f $it.Name, $it.Status) -ForegroundColor DarkGray }
 
     Assert-True 'exit 0    -> Installed'                      ($byId['ok'].Status -like 'Installed*')
+    # the card carries the verdict word; the sentence behind it is StatusDetail
     Assert-True 'exit 3010 -> Installed, reboot required'     ($byId['reboot'].Status -like 'Installed*' -and
-                                                               $byId['reboot'].Status -match '(?i)reboot')
-    Assert-True 'exit 1602 -> cancelled inside the installer' ($byId['ucancel'].Status -match '(?i)cancel')
+                                                               $byId['reboot'].StatusDetail -match '(?i)reboot')
+    Assert-True 'exit 1602 -> cancelled inside the installer' ($byId['ucancel'].StatusDetail -match '(?i)cancel')
     Assert-True 'exit 1619 -> the package could not be opened' ($byId['badpkg'].Status -match '(?i)could not be opened|Failed')
     # the one an exit code alone can never catch
     Assert-True 'exit 0 with nothing installed -> Failed'     ($byId['liar'].Status -like 'Failed*')

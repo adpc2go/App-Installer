@@ -404,6 +404,10 @@ public class AppItem : INotifyPropertyChanged {
     // finer than Chain: skip this entry only if one of THESE step ids failed. The reinstall
     // must survive a failed BASE (Chain would kill it) yet die with a failed REMOVAL.
     public string[] After;
+    // Per-app installer overrides from the catalog. Install-One had read both off the queue
+    // entry for a long time; nothing ever put them there, so the documented knobs were dead.
+    public int InstallTimeoutSec;        // 0 = the worker's default (90 min)
+    public bool AllowUi;                 // the installer shows a window even when silent
     // Real logo (extracted from the exe, or downloaded from the catalog); when present the
     // vector category glyph is hidden and the coloured tile turns transparent.
     // This MUST raise PropertyChanged: the icon pump assigns it after the row is already
@@ -433,6 +437,10 @@ public class AppItem : INotifyPropertyChanged {
     public bool IsSelected { get { return _sel; } set { _sel = value; Raise("IsSelected"); } }
     private string _status = "";
     public string Status { get { return _status; } set { _status = value; Raise("Status"); } }
+    // The whole sentence. Status is what the CARD shows - one verdict word once a row is
+    // settled - and this is the full text behind it: the tooltip, the run record, the log.
+    private string _statusDetail = "";
+    public string StatusDetail { get { return _statusDetail; } set { _statusDetail = value; Raise("StatusDetail"); } }
     private string _fg = "#FF8A8A94";
     public string StatusFg { get { return _fg; } set { _fg = value; Raise("StatusFg"); } }
     private double _prog;
@@ -880,7 +888,7 @@ $xaml = @'
                   </DockPanel.Style>
                   <TextBlock Text="{Binding Status}" FontSize="11" FontWeight="SemiBold"
                              Foreground="{Binding StatusFg}" TextWrapping="Wrap"
-                             ToolTip="{Binding Status}"/>
+                             ToolTip="{Binding StatusDetail}"/>
                 </DockPanel>
 
                 <ProgressBar Grid.Row="2" Grid.ColumnSpan="4" Style="{StaticResource ThinProgress}"
@@ -1023,7 +1031,7 @@ $xaml = @'
 
                 <TextBlock Grid.Row="1" Grid.Column="2" Grid.ColumnSpan="4" Text="{Binding Status}"
                            FontSize="11" FontWeight="SemiBold" Foreground="{Binding StatusFg}"
-                           TextWrapping="Wrap" Margin="4,4,0,0" ToolTip="{Binding Status}">
+                           TextWrapping="Wrap" Margin="4,4,0,0" ToolTip="{Binding StatusDetail}">
                   <TextBlock.Style>
                     <Style TargetType="TextBlock">
                       <Style.Triggers>
@@ -2826,6 +2834,7 @@ $xaml = @'
               <RowDefinition Height="Auto"/>
               <RowDefinition Height="Auto"/>
               <RowDefinition Height="Auto"/>
+              <RowDefinition Height="Auto"/>
             </Grid.RowDefinitions>
 
             <StackPanel Grid.Row="0" Margin="24,20,24,12">
@@ -2852,6 +2861,9 @@ $xaml = @'
                         </Button>
                         <TextBlock DockPanel.Dock="Right" Text="{Binding SizeText}" Foreground="{StaticResource Dim}"
                                    FontSize="11" VerticalAlignment="Center" Margin="10,0,4,0"/>
+                        <!-- 'installed' / 'skipped' when the product is already on the machine -->
+                        <TextBlock DockPanel.Dock="Right" Text="{Binding HaveText}" Foreground="{StaticResource Warn}"
+                                   FontSize="10.5" FontWeight="SemiBold" VerticalAlignment="Center" Margin="8,0,0,0"/>
                         <TextBlock Text="{Binding Name}" Foreground="{StaticResource Ink}" FontSize="12.3"
                                    VerticalAlignment="Center" Margin="10,0,8,0" TextTrimming="CharacterEllipsis"/>
                       </DockPanel>
@@ -2861,9 +2873,25 @@ $xaml = @'
               </ItemsControl>
             </ScrollViewer>
 
+            <!-- Already installed. The sheet used to let a product that was plainly on the
+                 machine go straight back through its installer - a second copy, or a repair
+                 nobody asked for, on a 9 GB download. Those rows are named here and SKIPPED
+                 unless the technician says otherwise; the tick is the decision. -->
+            <Border x:Name="PfHave" Grid.Row="2" Background="{StaticResource Panel}" Padding="24,10"
+                    BorderThickness="0,1,0,0" BorderBrush="{StaticResource LineSoft}" Visibility="Collapsed">
+              <StackPanel>
+                <TextBlock x:Name="TxtPfHaveNote" Text="" FontSize="11.5" TextWrapping="Wrap"
+                           Foreground="{StaticResource Warn}"/>
+                <CheckBox x:Name="ChkPfHave" Margin="0,8,0,0">
+                  <TextBlock Text="Reinstall over the existing copies anyway"
+                             FontSize="11.5" Foreground="{StaticResource Ink}" TextWrapping="Wrap"/>
+                </CheckBox>
+              </StackPanel>
+            </Border>
+
             <!-- Dependencies: the refusal (add-on without its base) or the offer (remove the
                  installed add-on first, put it back after). Collapsed on every ordinary sheet. -->
-            <Border x:Name="PfDep" Grid.Row="2" Background="{StaticResource Panel}" Padding="24,10"
+            <Border x:Name="PfDep" Grid.Row="3" Background="{StaticResource Panel}" Padding="24,10"
                     BorderThickness="0,1,0,0" BorderBrush="{StaticResource LineSoft}" Visibility="Collapsed">
               <StackPanel>
                 <TextBlock x:Name="TxtPfDepNote" Text="" FontSize="11.5" TextWrapping="Wrap"/>
@@ -2876,7 +2904,7 @@ $xaml = @'
               </StackPanel>
             </Border>
 
-            <Border x:Name="PfDisk" Grid.Row="3" Background="{StaticResource Panel}" Padding="24,12"
+            <Border x:Name="PfDisk" Grid.Row="4" Background="{StaticResource Panel}" Padding="24,12"
                     BorderThickness="0,1,0,0" BorderBrush="{StaticResource LineSoft}">
               <StackPanel>
                 <DockPanel LastChildFill="False" Margin="0,0,0,7">
@@ -2901,7 +2929,7 @@ $xaml = @'
 
             <!-- Buttons docked FIRST so they get their width before the caption does. Declared
                  the other way round, a long download path ate the row and left Cancel a sliver. -->
-            <DockPanel Grid.Row="4" Margin="24,14,24,18" LastChildFill="True">
+            <DockPanel Grid.Row="5" Margin="24,14,24,18" LastChildFill="True">
               <Button x:Name="BtnPfGo" DockPanel.Dock="Right" Content="Install" Style="{StaticResource AccentBtn}"
                       Padding="24,8"/>
               <Button x:Name="BtnPfCancel" DockPanel.Dock="Right" Content="Cancel" Style="{StaticResource GhostBtn}"
@@ -2950,6 +2978,7 @@ foreach ($n in 'ListApps','BarOverall','TxtOverall','TxtLog','TxtStatus','TxtCat
                'PreflightOverlay','TxtPfTitle','TxtPfSub','ListPf','PfDisk','TxtPfDiskWhere',
                'TxtPfDiskFacts','PfBarUsed','PfBarNeed','TxtPfDiskNote','TxtPfFoot','BtnPfGo','BtnPfCancel',
                'PfDep','TxtPfDepNote','BtnPfAddDep','ChkPfReinstall',
+               'PfHave','TxtPfHaveNote','ChkPfHave',
                'LoadUn','TxtLoadUn','TxtLoadUn2','BtnSubDesktop','BtnSubStore','BtnRescan',
                'BtnColName','BtnColPub','BtnColDate','BtnColSize',
                'BtnSearchClear','EmptyInstall','EmptyUn','BtnForce','BtnOverlayCancel','RowNow','RowProgress',
@@ -3296,9 +3325,30 @@ function Format-Eta([long]$Remaining, [double]$BytesPerSec) {
     return "$($h)h $($m % 60)m left"
 }
 
+# The card gets the verdict; the Activity tab gets the sentence.
+#
+# A settled row - ok, fail, warn - used to carry the worker's entire explanation on the card:
+# "Failed: installed but could not be verified - the installer created 2 folder(s) yet none of
+# this app's verifyPaths exist. Fix verifyPaths in the catalog..." wrapped over four lines of a
+# tile meant for one word. The full text now lives in StatusDetail (tooltip, run record) and is
+# written to the Activity log ONCE, here, when it changes; Status keeps only the leading state -
+# the part everything else in the tool matches on (^Installed, Failed*, ^Skipped...), so nothing
+# that counts or sorts by it sees a difference. Live states (Downloading 45%, Queued) are not
+# touched: those are the progress, not a verdict.
 function Set-Status([object]$Item, [string]$Text, [string]$Kind = 'neutral') {
     $Item.StatusFg = $StatusPalette[$Kind]
-    $Item.Status = $Text
+    $short = $Text
+    if ($Kind -in 'ok', 'fail', 'warn') {
+        $m = [regex]::Match($Text, '^(.*?)(?::| - )')
+        if ($m.Success -and $m.Groups[1].Value.Trim()) { $short = $m.Groups[1].Value.Trim() }
+        if ($short -ne $Text -and ('' + $Item.StatusDetail) -ne $Text) {
+            try { Add-Log "$($Item.Name) -> $Text" } catch { }
+        }
+    }
+    # every row class that reaches here carries StatusDetail except the harnesses' hand-made
+    # PSCustomObjects; a class without the property must not turn a status write into a throw
+    if ($Item.PSObject.Properties['StatusDetail']) { $Item.StatusDetail = $Text }
+    $Item.Status = $short
 }
 
 # per-app indicator states (App Store style): empty ring -> filling ring -> spinner -> badge
@@ -3618,11 +3668,22 @@ function ConvertTo-WpfImage([byte[]]$Bytes) {
 # Catalog logo, from the on-disk cache ONLY - instant. A missing file is fetched by the
 # background icon pump instead, so a cold cache never stalls the UI thread on the network
 # (with no icons hosted yet, the old inline fetch cost one failed request per app per launch).
+# A catalog id becomes a FILE NAME in three places - the per-app download folder, the icon
+# cache, the icon miss-marker - and two of them are written to and one of them is deleted
+# recursively. One rule for all three, so an id like "..\..\x" can never name anything
+# outside the cache. Get-AppCacheDir and Get-BatchSpaceNeeded used to each carry their own
+# copy of this regex; the icon paths had none.
+function Get-SafeId([string]$Id) {
+    $safe = (('' + $Id) -replace '[^A-Za-z0-9._-]', '_').Trim('.')
+    if (-not $safe) { $safe = 'unknown' }
+    return $safe
+}
+
 function Get-CachedCatalogIcon([string]$Url, [string]$Id) {
     if (-not $Url) { return $null }
     try {
         $ext = [IO.Path]::GetExtension(([Uri]$Url).LocalPath); if (-not $ext) { $ext = '.png' }
-        $cache = Join-Path $script:IconDir "$Id$ext"
+        $cache = Join-Path $script:IconDir "$(Get-SafeId $Id)$ext"
         if (Test-Path -LiteralPath $cache) {
             return ConvertTo-WpfImage ([IO.File]::ReadAllBytes($cache))
         }
@@ -3760,8 +3821,11 @@ public static class IconEx {
                 # marker so a dead URL costs one attempt per session, not one per row
                 'url' {
                     $ext = [IO.Path]::GetExtension(([Uri]$job.Url).LocalPath); if (-not $ext) { $ext = '.png' }
-                    $cache = Join-Path $IconDir "$($job.Id)$ext"
-                    $miss  = Join-Path $IconDir "$($job.Id).miss"
+                    # same sanitising rule as Get-SafeId in the GUI; this runspace cannot call it
+                    $safeId = (('' + $job.Id) -replace '[^A-Za-z0-9._-]', '_').Trim('.')
+                    if (-not $safeId) { $safeId = 'unknown' }
+                    $cache = Join-Path $IconDir "$safeId$ext"
+                    $miss  = Join-Path $IconDir "$safeId.miss"
                     if (-not (Test-Path -LiteralPath $cache) -and -not (Test-Path -LiteralPath $miss)) {
                         try {
                             Invoke-WebRequest -Uri $job.Url -OutFile $cache -UseBasicParsing -TimeoutSec 10
@@ -4921,11 +4985,27 @@ function Load-Catalog {
         # business outliving that on a client's disk.
         Clear-AccessFile
     } catch {
+        $fetchErr = $_.Exception.Message
+        # The offline copy is only a fallback if it PARSES. A cache truncated by a crash
+        # mid-write, or a BOM from a hand edit, threw from inside this catch - unhandled,
+        # at startup, with the window not yet on screen - and the tool simply did not open.
+        $cached = $null
         if (Test-Path $script:ManifestCache) {
-            $manifest = Get-Content $script:ManifestCache -Raw | ConvertFrom-Json
+            $parseErr = 'it has no apps array'
+            try {
+                $cached = (('' + (Get-Content $script:ManifestCache -Raw)).TrimStart([char]0xFEFF) | ConvertFrom-Json)
+                if (-not $cached -or -not $cached.apps) { $cached = $null }
+            } catch { $cached = $null; $parseErr = $_.Exception.Message }
+            if (-not $cached) {
+                Add-Log "The offline catalog copy is unreadable and was discarded ($parseErr)."
+                try { Remove-Item -LiteralPath $script:ManifestCache -Force -ErrorAction Stop } catch { }
+            }
+        }
+        if ($cached) {
+            $manifest = $cached
             $TxtCatalogInfo.Text = 'Offline copy'
             $DotLive.Fill = '#FFFBBF24'
-            Add-Log "Server unreachable - using cached catalog. ($($_.Exception.Message))"
+            Add-Log "Server unreachable - using cached catalog. ($fetchErr)"
         } else {
             # Name the actual cause. "no offline copy exists" describes a missing cache file,
             # which is a CONSEQUENCE - it says nothing about why the fetch failed, and sends
@@ -4941,22 +5021,54 @@ function Load-Catalog {
     }
     # Where-Object, because @() around a $null property yields a one-element array of nothing,
     # and that one element becomes a row with no name, no size and no way to explain itself
+    $seenIds = @{}
+    $skipped = @()
     foreach ($a in @(@($manifest.apps) | Where-Object { $_ })) {
         # An uninstall-only entry carries a vendor's removal knowledge (uninstall block,
         # cleanup, removers) for a product WE never install - Avast is the model. It feeds
         # Refresh-UnList's row upgrade from the raw manifest and must never become an
         # installable row: it has no url, no hash, nothing to download.
         if ($a.uninstallOnly) { continue }
+        # One bad entry must cost that entry, not the tab. This loop runs OUTSIDE the try
+        # above, and three lines in it throw on ordinary catalog mistakes - [Uri] on a url
+        # with a space in it, [long] on a sizeBytes of "" - which unwound Load-Catalog with
+        # nothing on screen but a green "Live catalog" over an empty list. And an entry that
+        # gets through with no hash or no url fails much later, mid-batch, with a message
+        # about a null method call. The catalog is checked here, where the row is made.
+        $id = ('' + $a.id).Trim()
+        $why = ''
+        if (-not $id) { $why = 'no id' }
+        elseif ($seenIds.ContainsKey($id)) { $why = "duplicate id '$id' - the first entry wins" }
+        elseif (-not ('' + $a.url).Trim()) { $why = 'no url' }
+        elseif (('' + $a.url) -notmatch '^(?i)(https?|file)://') { $why = "url is not http(s):// or file:// ($($a.url))" }
+        elseif (('' + $a.sha256) -notmatch '^(?i)[0-9a-f]{64}$') { $why = 'sha256 is missing or is not 64 hex characters' }
+        if ($why) {
+            $skipped += "$(if ($a.name) { $a.name } elseif ($id) { $id } else { '(unnamed)' }): $why"
+            continue
+        }
+        $seenIds[$id] = $true
         $item = New-Object AppItem
-        $item.Id = $a.id; $item.Name = $a.name; $item.Version = $a.version
-        $item.Url = $a.url; $item.Sha256 = ('' + $a.sha256).ToUpper()
-        $item.SilentArgs = $a.silentArgs
-        $item.Entry = [string]$a.entry      # set only for .zip packages
-        $item.Instructions = [string]$a.instructions
-        $item.VerifyPaths = @($a.verifyPaths)
-        $item.SizeBytes = [long]$a.sizeBytes
-        $item.Size = Format-Size $item.SizeBytes
-        $item.FileName = [IO.Path]::GetFileName(([Uri]$a.url).LocalPath)
+        try {
+            $item.Id = $id; $item.Name = [string]$a.name; $item.Version = [string]$a.version
+            $item.Url = [string]$a.url; $item.Sha256 = ('' + $a.sha256).ToUpper()
+            $item.SilentArgs = [string]$a.silentArgs
+            $item.Entry = [string]$a.entry      # set only for .zip packages
+            $item.Instructions = [string]$a.instructions
+            $item.VerifyPaths = @(@($a.verifyPaths) | Where-Object { $_ } | ForEach-Object { [string]$_ })
+            $item.SizeBytes = [long]$a.sizeBytes
+            $item.Size = Format-Size $item.SizeBytes
+            $item.FileName = [IO.Path]::GetFileName(([Uri][string]$a.url).LocalPath)
+            # a url that ends in "/" or "?" has no file name, and Join-Path would then name the
+            # app's cache FOLDER as the download target
+            if (-not $item.FileName) { $item.FileName = "$(Get-SafeId $id).bin" }
+            # the two per-app knobs Install-One reads - see the AppItem fields for why
+            $item.InstallTimeoutSec = [int]$(if ($a.installTimeoutSec) { $a.installTimeoutSec } else { 0 })
+            $item.AllowUi = [bool]$a.allowUi
+        } catch {
+            $skipped += "$(if ($a.name) { $a.name } else { $id }): $($_.Exception.Message)"
+            continue
+        }
+        if (-not $item.Name) { $item.Name = $id }
         $item.PostInstall = $a.postInstall
         # who must already be on the machine, and the cheapest probe for "is it": the
         # uninstall block's detect path, read beside verifyPaths by Test-CatalogInstalled
@@ -4996,6 +5108,13 @@ function Load-Catalog {
         $script:Items.Add($item)
     }
     Add-Log "Catalog loaded: $($script:Items.Count) applications."
+    # Named, one line each, so a row that is "just not there" can be explained without
+    # opening apps.json. A catalog that is entirely bad also says so on the strip.
+    foreach ($sk in $skipped) { Add-Log "Catalog entry skipped - $sk" }
+    if ($skipped.Count -and -not $script:Items.Count) {
+        $TxtCatalogInfo.Text = 'Catalog has no usable entries'
+        $DotLive.Fill = '#FFF87171'
+    }
     $script:LastManifest = $manifest
     $script:UnDirty = $true
     Update-Dash
@@ -5015,9 +5134,16 @@ function Load-Catalog {
 function Get-FreshCatalogUrl([object]$Item) {
     try {
         $m = Invoke-RestMethod -Uri "$BaseUrl/apps.json" -UseBasicParsing -TimeoutSec 30 -Headers $script:AccessHeader
+        # the same BOM case Load-Catalog handles: a string here meant $m.apps was $null and
+        # the app was reported "no longer in the catalog" while sitting right there in it
+        if ($m -is [string]) { $m = $m.TrimStart([char]0xFEFF) | ConvertFrom-Json }
         $entry = @($m.apps) | Where-Object { $_.id -eq $Item.Id } | Select-Object -First 1
         if (-not $entry -or -not $entry.url) {
             Add-Log "Catalog refresh: $($Item.Name) is no longer in the catalog."
+            return $null
+        }
+        if (('' + $entry.url) -notmatch '^(?i)(https?|file)://') {
+            Add-Log "Catalog refresh: $($Item.Name) now has a url that is not http(s):// - not switching."
             return $null
         }
         if (('' + $entry.sha256).ToUpper() -ne ('' + $Item.Sha256).ToUpper()) {
@@ -5043,7 +5169,7 @@ $script:UrlRefreshed = @{}
 # 'caution' entries remove software or change network/OS behaviour: they are grouped
 # separately, never pre-selected, and the tech confirms an extra dialog before they run.
 $script:TweakDefs = @(
-    # --- Tweaks sub-tab: config only, pre-ticked (38) ---
+    # --- Tweaks sub-tab: config only, pre-ticked (42) ---
     @{ id = 'activityhistory'; name = 'Activity History - Disable';        hint = 'policy' }
     @{ id = 'backgroundapps';  name = 'Background Apps - Disable';         hint = 'policy' }
     @{ id = 'debloatweb';      name = 'Bing and Web Services - Remove';    hint = 'removes' }
@@ -5092,17 +5218,18 @@ $script:TweakDefs = @(
     @{ id = 'updatecontrol';   name = 'Windows Update - No Surprise Reboots or Driver Overwrites'; hint = 'policy' }
     @{ id = 'debloatxbox';     name = 'Xbox and Gaming - Remove';          hint = 'removes' }
     # --- Tweaks sub-tab: CAUTION, unticked - security/network posture, hardware-specific,
-    #     or removes something not trivially restorable (6) ---
+    #     or removes something not trivially restorable (5) ---
     @{ id = 'adobeblock';      name = 'Adobe URL Block List - Enable';     hint = 'hosts';    caution = $true }
     @{ id = 'bitlocker';       name = 'BitLocker - Disable';               hint = 'policy';   caution = $true }
     @{ id = 'onedriveremove';  name = 'Microsoft OneDrive - Remove';       hint = 'removes';  caution = $true }
     @{ id = 'razerdisable';    name = 'Razer Software Auto-Install - Disable'; hint = 'policy'; caution = $true }
-    # CAUTION and unticked on purpose, because the cost lands on somebody else. Removed apps
-    # come back on their own - a machine here had Xbox Game Bar and Gaming App reinstalled by
-    # Windows Update hours after they were removed, which wiped the gaming settings with them -
-    # and this is the only thing that stops it. But it stops EVERY Store update, including the
-    # codecs, WebView2 and runtimes a customer's own software depends on. That is a decision for
-    # the technician who knows the machine, not a default buried in a 42-row batch.
+    # CAUTION because it REMOVES a component, not just a policy: unticked, and the technician
+    # decides. (The Store opt-out that used to sit here was dropped on 2026-08-27 at the user's
+    # instruction. It was the only thing that stopped Windows Update reinstalling Xbox Game Bar
+    # and the Gaming App - measured on a machine here, hours after removal, wiping the gaming
+    # settings with them - but it also stopped EVERY Store update, including the codecs and
+    # WebView2 a customer's own software depends on. That trade is no longer offered; removed
+    # Store apps can come back on their own, and nothing in the tool prevents it.)
     @{ id = 'windowsai';       name = 'Windows AI - Disable And Remove';   hint = 'removes';  caution = $true }
     # --- Cleanup sub-tab: one-time disk actions, each reports reclaimed space (5).
     #     componentstore is the DISM half SPLIT OUT of the old diskcleanup row - never
@@ -6156,7 +6283,7 @@ function Build-MigrateList {
 # once made a bulk selection change do nearly a thousand registry reads and freeze the tab.
 
 # ---------- sub-tabs ----------
-# Optimize is three sub-tabs - Tweaks, Cleanup, Preferences - each full width, each with
+# Optimize is three sub-tabs - Tweaks, Cleanup, Gaming - each full width, each with
 # its own Apply. Buttons act on the sub-tab on screen only: nothing you cannot see runs.
 # The presets are gone: each list arrives pre-configured (ticked except CAUTION), so
 # adding a tweak later is "add a row", not "edit three preset arrays".
@@ -6733,8 +6860,7 @@ function Invoke-TweakDetect {
         $window.Cursor = $null
         $BtnDetect.IsEnabled = $true
     }
-    # no  here any more: the toggles get their re-read when Detect is pressed ON
-    # the Preferences sub-tab, per the nothing-global rule
+    # Detect re-reads the sub-tab on screen and nothing else, per the nothing-global rule.
     $TxtTweakHint.Text = "$applied already applied, $notDetectable not detectable"
     Add-Log "Detect ($($script:OptSubTab)): $applied row(s) already applied on this machine, $notDetectable are one-time actions that cannot be detected."
     Update-Dash
@@ -8139,12 +8265,39 @@ function Remove-Unpacked {
     $script:UnpackedDir = $null
 }
 
+# `entry` names a file INSIDE the package. It is joined onto the unpacked folder (or the
+# mounted disc) and then RUN, elevated - so it must not be allowed to walk out of that folder
+# with "..\" and name something else on the machine. Resolved to a full path and required to
+# sit under the root; $null means it does not.
+function Resolve-PackageEntry([string]$Root, [string]$Entry) {
+    if (-not $Root -or -not $Entry) { return $null }
+    if ([IO.Path]::IsPathRooted($Entry)) { return $null }
+    try {
+        $rootFull = [IO.Path]::GetFullPath($Root).TrimEnd('\') + '\'
+        $full = [IO.Path]::GetFullPath((Join-Path $rootFull $Entry))
+        if (-not $full.StartsWith($rootFull, [StringComparison]::OrdinalIgnoreCase)) { return $null }
+        return $full
+    } catch { return $null }
+}
+
 function Install-One($app) {
     # before the before/after snapshot, or the per-user half of it watches the wrong profile
     Resolve-WatchRoots ([string]$app.userSid)
     Write-Status $app.id 'Verifying file' ''
+    # An entry with no hash cannot be verified, and "matches" against nothing is not a pass.
+    # The GUI now refuses such a catalog row, but this side runs elevated and takes the queue
+    # on trust for everything else - it does not get to inherit the check.
+    $want = ('' + $app.sha256).Trim().ToUpper()
+    if ($want -notmatch '^[0-9A-F]{64}$') {
+        Write-Status $app.id 'Failed' 'no SHA-256 in the queue entry - refused, not executed'
+        return
+    }
+    if (-not $app.file -or -not (Test-Path -LiteralPath $app.file -PathType Leaf)) {
+        Write-Status $app.id 'Failed' "the downloaded file is missing ($($app.file))"
+        return
+    }
     $hash = (Get-FileHash -LiteralPath $app.file -Algorithm SHA256).Hash.ToUpper()
-    if ($hash -ne $app.sha256.ToUpper()) {
+    if ($hash -ne $want) {
         # DELETE it, or this app can never install again on this machine.
         #
         # The GUI treats a cached file whose SIZE matches the catalogue as already downloaded
@@ -8225,7 +8378,12 @@ function Install-One($app) {
         # of. A left-behind mount locks the image file the batch-end sweep then tries to delete.
         $script:MountedIso  = $app.file
         $script:UnpackedDir = $root      # post-install `from` steps resolve against the disc
-        $runFile = Join-Path $root ([string]$app.entry)
+        $runFile = Resolve-PackageEntry $root ([string]$app.entry)
+        if (-not $runFile) {
+            Write-Status $app.id 'Failed' "entry '$($app.entry)' points outside the image - refused"
+            Remove-Unpacked
+            return
+        }
         if (-not (Test-Path -LiteralPath $runFile)) {
             Write-Status $app.id 'Failed' "the image does not contain '$($app.entry)'"
             Remove-Unpacked
@@ -8322,7 +8480,12 @@ function Install-One($app) {
             Write-Status $app.id 'Failed' "could not unpack the package - $($_.Exception.Message)"
             return
         }
-        $runFile = Join-Path $unpacked ([string]$app.entry)
+        $runFile = Resolve-PackageEntry $unpacked ([string]$app.entry)
+        if (-not $runFile) {
+            Write-Status $app.id 'Failed' "entry '$($app.entry)' points outside the package - refused"
+            try { Remove-Item -LiteralPath $unpacked -Recurse -Force } catch {}
+            return
+        }
         if (-not (Test-Path -LiteralPath $runFile)) {
             Write-Status $app.id 'Failed' "the package does not contain '$($app.entry)'"
             try { Remove-Item -LiteralPath $unpacked -Recurse -Force } catch {}
@@ -8367,7 +8530,9 @@ function Install-One($app) {
         if ($ext -eq '.msi') {
             $msiArgs = "/i `"$runFile`" /qn /norestart"
             if ($app.silentArgs) { $msiArgs += " $($app.silentArgs)" }
-            $p = Start-InstallerWatched -FilePath 'msiexec.exe' -ArgumentList @($msiArgs) @watch
+            # the full path, as every other system binary the worker launches: a bare name is
+            # resolved through PATH, and this process is elevated
+            $p = Start-InstallerWatched -FilePath (Join-Path $env:SystemRoot 'System32\msiexec.exe') -ArgumentList @($msiArgs) @watch
         } elseif ([string]::IsNullOrWhiteSpace($app.silentArgs)) {
             $p = Start-InstallerWatched -FilePath $runFile @watch
         } else {
@@ -8452,10 +8617,17 @@ function Install-One($app) {
             Write-Activity $app.id 'verify' 'Failed' (
                 "created $(@($created).Count) folder(s) but no verifyPath matched (exit $($p.ExitCode)). " +
                 "created: $(@($created) -join ' | '); missing verifyPaths: $($missing -join ' | ')")
+            # The row names the folders ITSELF. It used to say "the log names both" - meaning
+            # activity.jsonl, a file inside the elevated worker's cache that the on-screen log
+            # never sees - so the one fact a technician needs to fix the catalog was on disk
+            # and nowhere on screen. Two is enough to point at the right place; the rest is in
+            # the activity record.
+            $where = @(@($created) | Select-Object -First 2) -join ', '
+            if (@($created).Count -gt 2) { $where += ", +$(@($created).Count - 2) more" }
             Write-Status $app.id 'Failed' (
-                "installed but could not be verified - the installer created $(@($created).Count) folder(s) " +
-                "yet none of this app's verifyPaths exist. Fix verifyPaths in the catalog (the log names " +
-                'both). Nothing is offered for removal.') $false @()
+                "installed but could not be verified - the installer created $where, " +
+                "yet none of this app's verifyPaths exist (expected $(@($missing) -join ' | ')). " +
+                'Point verifyPaths in the catalog at a file inside the folder it created. Nothing is offered for removal.') $false @()
             Remove-Unpacked
             return
         }
@@ -12076,9 +12248,7 @@ try {
 function Get-AppCacheDir([string]$Id) {
     # ids come from the catalogue, so they are tame, but this path is about to be created and
     # deleted recursively and it must never be talked into leaving the cache folder
-    $safe = ($Id -replace '[^A-Za-z0-9._-]', '_')
-    if (-not $safe) { $safe = 'unknown' }
-    $dir = Join-Path (Join-Path $script:CacheDir 'files') $safe
+    $dir = Join-Path (Join-Path $script:CacheDir 'files') (Get-SafeId $Id)
     if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Force -Path $dir | Out-Null }
     return $dir
 }
@@ -12125,6 +12295,10 @@ function Enqueue-Install([object]$Item) {
                    path = [string]$st.path; value = [string]$st.value; valueType = [string]$st.valueType
                    action = [string]$st.action; timeoutSec = [int]$st.timeoutSec
                    command = [string]$st.command; folder = [string]$st.folder
+                   # read as $steps[$i].stopOnError in Invoke-PostInstall, so the harness's
+                   # `$step.<field>` scan never saw it - and a catalog's "stopOnError": false
+                   # never arrived. Absent means true, which is the worker's own default.
+                   stopOnError = $(if ($null -ne $st.stopOnError) { [bool]$st.stopOnError } else { $true })
                    waitMs = [int]$st.waitMs }
         if ($st.url) {
             # The [Uri] cast THROWS on anything that is not a url, and this runs inside the
@@ -12186,6 +12360,9 @@ function Enqueue-Install([object]$Item) {
         id = $Item.Id; action = 'install'; file = (Get-AppCachePath $Item)
         sha256 = $Item.Sha256; silentArgs = $Item.SilentArgs; verifyPaths = @($Item.VerifyPaths)
         entry = $Item.Entry; postInstall = $steps; userSid = $sid
+        # the per-app knobs Install-One reads off this entry - they were documented there
+        # and never sent, so every installer got the 90-minute default and the window guard
+        installTimeoutSec = [int]$Item.InstallTimeoutSec; allowUi = [bool]$Item.AllowUi
         # the worker's own sequencing flags: `chain` on a base install whose way was cleared
         # by a remove-first step; `after` on a reinstall, naming the removal it depends on
         chain = [bool]$Item.Chain
@@ -12323,7 +12500,9 @@ function Read-WorkerStatus {
             # read once - guaranteed by the forward-only offset at the top of this function,
             # NOT by the queue. It was assumed here, it was not true, and a whole batch was
             # logged twice before anybody noticed.
-            Add-Log "$($item.Name) -> $txt"
+            # A settled verdict was already written by Set-Status when it shortened the card
+            # text; logging it here as well would be the very duplicate this guards against.
+            if ($item.Status -eq $txt) { Add-Log "$($item.Name) -> $txt" }
         }
     }
     # Guarded rather than assigned. The early return above already covers the case this
@@ -12368,7 +12547,7 @@ function Start-LeftoverScan {
     # reason - so what each row said is kept here and restored in Complete-LeftoverScan
     $was = @{}
     foreach ($p in $targets) {
-        $was[[string]$p.Id] = @{ Status = ('' + $p.Status); Fg = ('' + $p.StatusFg) }
+        $was[[string]$p.Id] = @{ Status = ('' + $p.Status); Fg = ('' + $p.StatusFg); Detail = ('' + $p.StatusDetail) }
         Set-Status $p 'Scanning for leftovers' 'active'
         Set-Ring $p 'busy'
     }
@@ -12465,7 +12644,7 @@ function Complete-LeftoverScan {
         if ($p.Dirty) {
             # a failed install stays failed and stays red: it is only its debris being scanned
             $saved = $ctl.Was[[string]$p.Id]
-            if ($saved) { $p.Status = $saved.Status; $p.StatusFg = $saved.Fg }
+            if ($saved) { $p.Status = $saved.Status; $p.StatusFg = $saved.Fg; $p.StatusDetail = ('' + $saved.Detail) }
             Set-Ring $p 'fail'
         } else {
             Set-Status $p 'Uninstalled' 'ok'
@@ -12622,6 +12801,16 @@ function Finish-Batch {
     $script:DeepClean = $false
     $script:ForceMode = $false
     if ($fail -gt 0 -or $cans -gt 0) { $script:HadFailures = $true }
+    # A row that made it comes off the selection. Left ticked, the next press offered the
+    # whole finished batch again - and the pre-flight then had to explain, row by row, that
+    # they were already installed. A row that FAILED stays ticked on purpose: a retry is one
+    # press. Only the install tab - an uninstall row disappears from its list by itself.
+    if ($script:BatchTab -eq 'Install') {
+        foreach ($p in $script:Pending) {
+            # Skipped is this tool's "installed, with a caveat" - the product is on disk
+            if ($p.IsSelected -and $p.Status -match '^(Installed|Skipped)') { $p.IsSelected = $false }
+        }
+    }
     $BarOverall.Value = 100
     $TxtOverall.Text = ''
     # Cancelled and Skipped are counted together above because they drive the same decisions -
@@ -12695,10 +12884,9 @@ function Finish-Batch {
     # (taskbar, Start, desktop icons, context menu). The GUI runs unelevated as the
     # signed-in user, so the desktop comes back owned by the right profile - the elevated
     # worker must never do this itself.
-    # Preferences and the Explorer/theme tweaks write values Windows only re-reads when it is
-    # told to. This is deliberately NOT gated on a tab: a preference applies from the
-    # Preferences tab and the same values are also written by tweak rows, and the broadcast is
-    # cheap and idempotent - so it is driven by what was APPLIED, not by where it was clicked.
+    # The Explorer, Start and theme tweaks write values Windows only re-reads when it is told
+    # to. Deliberately NOT gated on a tab or a row list: the broadcast is cheap and idempotent,
+    # so it is driven by what was APPLIED, not by where it was clicked.
     if ($script:NeedSettingBroadcast) {
         $script:NeedSettingBroadcast = $false
         try {
@@ -12854,8 +13042,12 @@ $timer.Add_Tick({
                 if ($item.Status -like 'Removed*' -or $item.Status -like 'Skipped*' -or
                     $item.BatchAction -eq 'uninstall') { $script:DlIndex++; return }
                 $dest = Get-AppCachePath $item
-                # already fully present (size matches) -> hash gets verified by the worker anyway
-                if ((Test-Path $dest) -and ((Get-Item $dest).Length -eq $item.SizeBytes)) {
+                # already fully present (size matches) -> hash gets verified by the worker anyway.
+                # Only when the catalog STATES a size: with sizeBytes 0 an empty leftover file
+                # matched, was handed to the worker, failed the hash and was deleted - one
+                # wasted round trip through elevation per batch before the download ran.
+                if ($item.SizeBytes -gt 0 -and (Test-Path -LiteralPath $dest) -and
+                    ((Get-Item -LiteralPath $dest).Length -eq $item.SizeBytes)) {
                     Enqueue-Install $item
                     $script:DlIndex++
                     return
@@ -13112,7 +13304,7 @@ function Get-BatchSpaceNeeded([object[]]$Items) {
         if (-not $s) { continue }
         $want = [long]([long]$s.SizeBytes * $(if ($s.Entry) { 2.2 } else { 1.2 }))
         try {
-            $have = Join-Path (Join-Path (Join-Path $script:CacheDir 'files') (('' + $s.Id) -replace '[^A-Za-z0-9._-]', '_')) ([string]$s.FileName)
+            $have = Join-Path (Join-Path (Join-Path $script:CacheDir 'files') (Get-SafeId $s.Id)) ([string]$s.FileName)
             if (Test-Path -LiteralPath $have) { $want -= [long](Get-Item -LiteralPath $have).Length }
         } catch { }
         if ($want -gt 0) { $need += $want }
@@ -13436,9 +13628,23 @@ function New-DepUnRow([object]$Addon, [hashtable]$Un, [object]$Base) {
 # with bases sorted ahead, then the add-ons coming back. Also what the disk maths runs on -
 # the sheet must gate on the same figure Start-Batch will, re-download bytes included
 # (Get-BatchSpaceNeeded already subtracts a cached copy, so "the cache spares it" comes free).
+# The rows on the sheet that are already on this machine (id -> $true), and whether the
+# technician has said to reinstall them regardless. Rows in the map are dropped from the
+# batch until that tick is given - see the PfHave panel in the markup for why.
+$script:PfHave      = @{}
+$script:PfReinstall = $false
+
+function Get-PfHaveItems { return @(@($script:PfItems) | Where-Object { $_ -and $script:PfHave[[string]$_.Id] }) }
+
 function Get-PfCommitItems {
     $items = @($script:PfItems)
     if ($script:PfAction -ne 'install') { return $items }
+    # already-installed rows leave the batch here, so every consumer - the disk figure, the
+    # button count, the commit itself - sees the same list
+    if (-not $script:PfReinstall -and $script:PfHave.Count) {
+        $items = @($items | Where-Object { -not $script:PfHave[[string]$_.Id] })
+    }
+    if (-not $items.Count) { return @() }
     if (-not $script:PfDep) { return (Sort-ByRequires $items) }
     $un = @(); $re = @()
     if ($script:PfDep.Reinstall) {
@@ -13493,6 +13699,8 @@ function Hide-Preflight {
     $script:PfItems  = @()
     $script:PfAction = ''
     $script:PfDep    = $null
+    $script:PfHave   = @{}
+    $script:PfReinstall = $false
     $BtnPfGo.IsEnabled = $true
 }
 
@@ -13505,6 +13713,8 @@ function Sync-Preflight {
     $bytes = [long]0
     foreach ($i in $items) { $bytes += [long]$i.SizeBytes }
 
+    $have = @()
+    if ($install) { $have = Get-PfHaveItems }
     $ListPf.ItemsSource = @($items | ForEach-Object {
         [pscustomobject]@{
             Item     = $_
@@ -13512,15 +13722,31 @@ function Sync-Preflight {
             IconText = [string]$_.IconText
             IconBg   = [string]$_.IconBg
             SizeText = $(if ([long]$_.SizeBytes -gt 0) { Format-Size ([long]$_.SizeBytes) } else { 'size unknown' })
+            HaveText = $(if ($have -contains $_) { if ($script:PfReinstall) { 'reinstall' } else { 'installed - skipped' } } else { '' })
         } })
 
     $n = $items.Count
     $word = $(if ($n -eq 1) { 'application' } else { 'applications' })
     if ($install) {
+        # the number on the button is what will actually run, not what was ticked
+        $nGo = @(Get-PfCommitItems | Where-Object { $_.BatchAction -ne 'uninstall' }).Count
         $TxtPfTitle.Text = "Install $n $word"
         $TxtPfSub.Text   = 'Nothing has been downloaded yet. Take out anything you did not mean to pick.'
-        $BtnPfGo.Content = "Install $n"
+        $BtnPfGo.Content = "Install $nGo"
         $TxtPfFoot.Text  = 'Downloads to %LOCALAPPDATA%\PC2GoDeploy'
+        if ($PfHave) {
+            $PfHave.Visibility = 'Collapsed'
+            if ($have.Count) {
+                $PfHave.Visibility = 'Visible'
+                $names = (@($have | ForEach-Object { $_.Name }) -join ', ')
+                $TxtPfHaveNote.Text = $(if ($have.Count -eq 1) {
+                    "$names is already installed on this machine, so it is skipped."
+                } else {
+                    "$($have.Count) of these are already installed on this machine, so they are skipped: $names."
+                })
+                if ($ChkPfHave.IsChecked -ne [bool]$script:PfReinstall) { $ChkPfHave.IsChecked = [bool]$script:PfReinstall }
+            }
+        }
     } else {
         $TxtPfTitle.Text = "Uninstall $n $word"
         $TxtPfSub.Text   = 'The vendor uninstaller runs for each of these. Take out anything you did not mean to pick.'
@@ -13539,6 +13765,8 @@ function Sync-Preflight {
         $ChkPfReinstall.Visibility = 'Collapsed'
     }
     $BtnPfGo.IsEnabled = $true
+    # every row already installed and no reinstall asked for: nothing would run
+    if ($install -and -not @(Get-PfCommitItems).Count) { $BtnPfGo.IsEnabled = $false }
     if ($install -and $script:PfDep -and $PfDep) {
         $missing = @(@($script:PfDep.Missing) | Where-Object {
             $items -contains $_.Addon -and $items -notcontains $_.Base -and
@@ -13646,10 +13874,15 @@ function Show-Preflight([object[]]$Items, [string]$Action) {
     # belongs in Sync-Preflight's per-click path. Machine state cannot change while the
     # sheet is open, so caching it is honest.
     $script:PfDep = $null
+    $script:PfHave = @{}
+    $script:PfReinstall = $false
     if ($Action -eq 'install') {
         try {
             $inst = @{}
             foreach ($c in @($script:Items)) { if ($c -and $c.Id) { $inst[[string]$c.Id] = (Test-CatalogInstalled $c) } }
+            # the same probe, read for the rows on the sheet themselves: a product that is
+            # already here is skipped unless the technician ticks the reinstall box
+            foreach ($p in $script:PfItems) { if ($p -and $p.Id -and $inst[[string]$p.Id]) { $script:PfHave[[string]$p.Id] = $true } }
             $dep = Get-PfDepState $script:PfItems $inst
             $orph = @()
             foreach ($o in @($dep.Orphans)) {
@@ -13716,7 +13949,8 @@ function Write-RunRecord([object[]]$Items, [string]$Kind) {
                 id      = [string]$_.Id
                 name    = [string]$_.Name
                 outcome = Get-RunOutcome $_.Status
-                detail  = [string]$_.Status
+                # the whole sentence, not the one word the card shows
+                detail  = $(if ($_.StatusDetail) { [string]$_.StatusDetail } else { [string]$_.Status })
                 bytes   = [long]$_.SizeBytes
             } })
         $rec = [pscustomobject]@{
@@ -14045,6 +14279,17 @@ $BtnPfGo.Add_Click({
     if ($action -eq 'install' -and (Test-PfDepBlocked)) { return }
     # the EFFECTIVE batch: remove-first steps, bases ahead of their add-ons, reinstalls last
     $items = Get-PfCommitItems
+    # The rows the sheet left out because they are already here. They are not in the batch,
+    # so nothing else will ever write to them: the card says why, the log says why, and the
+    # tick comes off so the next press does not offer them all over again.
+    if ($action -eq 'install' -and -not $script:PfReinstall) {
+        foreach ($h in @(Get-PfHaveItems)) {
+            Set-Status $h 'Already installed' 'ok'
+            Set-Ring $h 'ok'
+            $h.IsSelected = $false
+            Add-Log "$($h.Name): already installed on this machine - skipped (tick 'Reinstall over the existing copies' on the sheet to run it again)."
+        }
+    }
     Hide-Preflight
     if ($items.Count -eq 0) { return }
     if ($action -eq 'install') { Start-Batch $items } else { Start-Uninstall $items $false }
@@ -14060,6 +14305,10 @@ $BtnPfAddDep.Add_Click({
 })
 $ChkPfReinstall.Add_Checked({   if ($script:PfDep) { $script:PfDep.Reinstall = $true };  Sync-Preflight })
 $ChkPfReinstall.Add_Unchecked({ if ($script:PfDep) { $script:PfDep.Reinstall = $false }; Sync-Preflight })
+if ($ChkPfHave) {
+    $ChkPfHave.Add_Checked({   $script:PfReinstall = $true;  Sync-Preflight })
+    $ChkPfHave.Add_Unchecked({ $script:PfReinstall = $false; Sync-Preflight })
+}
 
 $BtnOverlayOk.Add_Click({
     $Overlay.Visibility = 'Collapsed'
@@ -15864,10 +16113,8 @@ function Set-OptSelection([bool]$On) {
     Update-Dash
 }
 # The ticked-list collection behind the active sub-tab. Valid ONLY for the three ticked
-# lists - the default falls through to TweakItems,
-# so a caller that reaches this while Preferences is on screen would silently operate on 44
-# tweak rows. Every Prefs special-case must happen BEFORE calling this (see Invoke-TweakDetect
-# and BtnPreClear, which both early-return into ).
+# lists - the default falls through to TweakItems, so a caller reaching it from anywhere else
+# would silently operate on the 47 Tweaks rows instead of the list on screen.
 function Get-OptItems {
     switch ($script:OptSubTab) {
         'Clean' { return $script:CleanItems }
@@ -15899,8 +16146,7 @@ $BtnMeasure.Add_Click({
 $BtnPreClear.Add_Click({
     if (Test-TweakListBusy) { return }
     # The ACTIVE sub-tab only - same rule as Select All/Clear All and Apply: nothing global.
-    # A reset pressed while experimenting on Gaming must not un-curate ticks on Tweaks or
-    # silently drop Preference edits staged on another sub-tab.
+    # A reset pressed while experimenting on Gaming must not un-curate ticks on Tweaks.
     # Reset returns to the DEFAULT state (ticked except CAUTION), not to all-unticked -
     # with no presets to restore a selection, all-unticked would strand the user with no
     # way back except reloading the app
@@ -15918,8 +16164,8 @@ $BtnDetect.Add_Click({ if (-not (Test-TweakListBusy)) { Invoke-TweakDetect } })
 
 $BtnTweakUndo.Add_Click({
     if (Test-BatchBusy) { return }
-    # Tweaks or Gaming sub-tab - the button is hidden on Cleanup (one-time actions) and
-    # Preferences (a toggle has no undo). Acts on the list on screen.
+    # Tweaks or Gaming sub-tab - the button is hidden on Cleanup, whose rows are one-time
+    # actions with nothing to undo. Acts on the list on screen.
     $sel = @(Get-OptItems | Where-Object { $_.IsSelected })
     if ($sel.Count -eq 0) {
         Show-Overlay 'Nothing selected' 'Select at least one tweak to undo. Tip: "Detect Applied" ticks everything currently applied on this machine.'

@@ -68,7 +68,13 @@ function Assert-True([string]$What, $Condition) { Assert-Equal $What $true ([boo
 # it directly and shows no sheet, and both paths have to keep working.
 function Invoke-Commit($Button) {
     Invoke-Click $Button
-    if ($PreflightOverlay -and "$($PreflightOverlay.Visibility)" -eq 'Visible') { Invoke-Click $BtnPfGo }
+    if ($PreflightOverlay -and "$($PreflightOverlay.Visibility)" -eq 'Visible') {
+        # Every fake app here verifies against the same app.exe, so from the second batch on the
+        # sheet sees them as already installed and skips them - which is the tool doing its job.
+        # The harness is the technician who wants them run again, so it ticks the box.
+        if ($ChkPfHave -and $PfHave -and "$($PfHave.Visibility)" -eq 'Visible') { $ChkPfHave.IsChecked = $true }
+        Invoke-Click $BtnPfGo
+    }
 }
 
 function Write-Section([string]$Title) {
@@ -434,6 +440,31 @@ class R {
     Assert-True 'the product is really on disk' (Test-Path -LiteralPath "$appDir\app.exe")
     Assert-True 'no failures were recorded'     (-not $script:HadFailures)
     Assert-True 'the cached installer was cleaned up' (Test-StagedPackageGone)
+
+    # ---- the same app a second time. The sheet used to let a product that was plainly on the
+    # machine straight back through its installer. Now it is named, skipped, and only a tick
+    # sends it - the decision is the technician's, and it is explicit.
+    Write-Section '1a. Already installed: skipped unless you say so'
+    Show-Preflight @($script:Items[0]) 'install'
+    Assert-Equal 'the sheet opened'                   'Visible' "$($PreflightOverlay.Visibility)"
+    Assert-Equal 'the already-installed panel shows'  'Visible' "$($PfHave.Visibility)"
+    Assert-True  'and names the app'                  ($TxtPfHaveNote.Text -like "*$($script:Items[0].Name)*")
+    Assert-Equal 'the row is tagged'                  'installed - skipped' ([string]@($ListPf.ItemsSource)[0].HaveText)
+    Assert-Equal 'the reinstall box starts unticked'  $false ([bool]$ChkPfHave.IsChecked)
+    Assert-Equal 'the button counts nothing to run'   'Install 0' "$($BtnPfGo.Content)"
+    Assert-Equal 'and is disabled'                    $false $BtnPfGo.IsEnabled
+    Assert-Equal 'nothing would be committed'         0 @(Get-PfCommitItems).Count
+    $ChkPfHave.IsChecked = $true
+    Assert-Equal 'ticking it puts the app back'       1 @(Get-PfCommitItems).Count
+    Assert-Equal 'the button follows'                 'Install 1' "$($BtnPfGo.Content)"
+    Assert-Equal 'and is live again'                  $true $BtnPfGo.IsEnabled
+    Assert-Equal 'the row now says reinstall'         'reinstall' ([string]@($ListPf.ItemsSource)[0].HaveText)
+    Invoke-Click $BtnPfCancel
+    Assert-Equal 'cancel clears the choice'           $false $script:PfReinstall
+    # a not-installed app shows no panel at all
+    Show-Preflight @($script:Items[3]) 'install'
+    Assert-Equal 'no panel for an app that is not here' 'Collapsed' "$($PfHave.Visibility)"
+    Invoke-Click $BtnPfCancel
 
     # ---- the run record: what a finished batch leaves behind for somebody to read.
     #
@@ -937,6 +968,11 @@ class R {
     $base.IsSelected = $true
     Invoke-Click $BtnInstall
     Assert-Equal 'offered again, ticked by default again' $true ([bool]$ChkPfReinstall.IsChecked)
+    # the declined batch above installed the base, so the sheet now also flags it as already
+    # installed and skips it - the technician asks for the reinstall, same as Invoke-Commit does
+    Assert-Equal 'and the base is flagged as already installed' 'Visible' "$($PfHave.Visibility)"
+    $ChkPfHave.IsChecked = $true
+    Assert-Equal 'ticking reinstall keeps the full sequence' 3 @(Get-PfCommitItems).Count
     Invoke-Click $BtnPfGo
     Assert-True 'the orchestrated batch finished'  (Wait-For { $script:Phase -in 'Done', 'Idle' } 240000)
     Assert-True 'the remove-first step really ran' (Test-Path -LiteralPath $depUnRan)

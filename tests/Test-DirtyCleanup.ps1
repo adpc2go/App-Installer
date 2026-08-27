@@ -652,7 +652,8 @@ try {
     $row = $script:Pending[0]
     Assert-Equal 'row is marked dirty by the worker verdict' $true  $row.Dirty
     Assert-Equal 'row still reads as failed after the wipe'  $true  ($row.Status -like 'Failed*')
-    Assert-Equal 'and still says what was removed'           $true  ($row.Status -like '*6 trace(s) removed*')
+    # the card shows the verdict word; the sentence is StatusDetail
+    Assert-Equal 'and still says what was removed'           $true  ($row.StatusDetail -like '*6 trace(s) removed*')
     Assert-Equal 'red, not green'                            $StatusPalette['fail'] $row.StatusFg
 
     # the same row after a successful install must NOT be dragged into any of this
