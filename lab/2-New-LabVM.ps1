@@ -8,7 +8,7 @@
 #>
 [CmdletBinding()]
 param(
-    [string]$VMName   = 'AppLab',
+    [string]$VMName   = 'Home',
     [string]$Root     = 'C:\VMs',
     [Parameter(Mandatory)] [string]$IsoPath,
     [int]$MemoryGB    = 6,

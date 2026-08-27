@@ -11,7 +11,7 @@
 #>
 [CmdletBinding()]
 param(
-    [string]$VMName    = 'AppLab',
+    [string]$VMName    = 'Home',
     [int]$PollMs       = 700,
     [string]$CredPath  = "$env:LOCALAPPDATA\$VMName\guest.cred.xml",
     [switch]$Background

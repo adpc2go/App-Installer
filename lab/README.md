@@ -6,8 +6,8 @@ Real Windows 11, wiped clean in under ten seconds, host never rebooted.
 
 | | Edition | Loop | Why it exists |
 |---|---|---|---|
-| `AppLab` | **Home** | ~6s | What most client machines actually run - the honest test target |
-| `AppLabPro` | **Pro** | ~10s | Comfortable to work in: native clipboard, resizable window |
+| `Home` | Windows 11 **Home** | ~6s | What most client machines actually run - the honest test target |
+| `Pro` | Windows 11 **Pro** | ~10s | Comfortable to work in: native clipboard, resizable window |
 
 Windows **Home cannot accept an inbound RDP session**, and Hyper-V's Enhanced Session Mode
 *is* RDP into the guest. So the Home VM can never have Enhanced Session, native clipboard,
@@ -36,10 +36,54 @@ labsave             # freeze the current guest state as a baseline
 labconn             # mstsc over the VMBus (Pro)
 ```
 
-Or call the scripts directly with `-VMName AppLabPro`. Credentials are stored per VM under
+Or call the scripts directly with `-VMName Pro`. Credentials are stored per VM under
 `%LOCALAPPDATA%\<VMName>\guest.cred.xml`, DPAPI-encrypted to your Windows account.
 
 The guest console opens **black**, not PowerShell blue.
+
+## When to run what
+
+| What you want | Run |
+|---|---|
+| Test the **published** tool the way a technician gets it | `lab -Mode Live` |
+| Test code you just **edited** but have not published | `lab` |
+| A test failed and you want to **look at the wreckage** | run nothing yet - the VM is still dirty, go look |
+| ...then retry **on top of** that dirty state | `lab -NoRevert` |
+| See the error the guest printed | `lablog` |
+| Paste things into the VM all session | `labsync -Background` once, then just copy normally |
+| Grab text **out** of the VM | `fromlab` |
+| Prepare the baseline by hand | `lab -NoLaunch`, change it, then `labsave -To CLEAN-v6 -Promote` |
+| Same, but scripted and repeatable | `.\Update-Baseline.ps1 -ApplyFile .\my-change.ps1 -To CLEAN-v6` |
+| Run any of it against Pro | `labpro ...` or add `-VMName Pro` |
+| Pro lost its connection after a guest reboot | close the window and reopen, or `labconn -VMName Pro` |
+
+### The normal rhythm
+
+```
+labsync -Background     once, at the start of the day (Home only)
+
+lab -Mode Live          clean VM, your tool launches
+                        ...poke at it, find a bug...
+                        fix the code in VS Code on the HOST - the dirty VM is irrelevant
+lab -Mode Live          clean VM again, new code, ~6 seconds
+                        repeat
+```
+
+You never uninstall anything, never clean up, never undo. **The wipe is the first thing every
+run does, not the last** - so leaving the VM filthy is expected. There is no cleanup step in
+this workflow.
+
+The only time you skip the wipe is when a failure is worth studying: leave it dirty, read
+`lablog`, poke around, and use `-NoRevert` if you want to run again without losing it. That
+is also how you test the leftover-removal path properly - let something install and fail
+dirty, then run the uninstaller against that exact mess rather than a fresh machine.
+
+### Which VM
+
+Use **Home** by default. It is the honest target: most client machines run Home, and if your
+uninstaller works there it works everywhere. Use **Pro** when you want to work comfortably
+inside the VM - reading logs, editing files, poking at the registry - because it has native
+clipboard and a resizable window.
 
 ## How the wipe works
 
@@ -47,9 +91,12 @@ The checkpoint froze two things: the disk, and the RAM.
 
 ```
 AppLab.vhdx      frozen at checkpoint - never written to again
-AppLab.avhdx     every change since: installs, registry, temp files
+AppLab_*.avhdx   every change since: installs, registry, temp files
 saved memory     RAM contents at the moment of the checkpoint
 ```
+
+(The VMs were renamed to `Home` and `Pro` after creation. `Rename-VM` does not rename files,
+so the disks under `C:\VMs` are still `AppLab*.vhdx` and `AppLabPro*.vhdx`. Cosmetic only.)
 
 Reverting deletes the `.avhdx` and reloads the saved memory. It does not copy or restore
 anything, which is why it costs the same ~1.5s whether the test installed one app or fifty,
@@ -82,11 +129,11 @@ it.
 **Changes you can script** - this reverts to clean for you, so the discipline is automatic:
 
 ```powershell
-.\Update-Baseline.ps1 -VMName AppLab -ApplyFile .\guest-set-resolution.ps1 -To CLEAN-v6
+.\Update-Baseline.ps1 -VMName Home -ApplyFile .\guest-set-resolution.ps1 -To CLEAN-v6
 .\Test.ps1 -Checkpoint CLEAN-v6        # try it before committing to it
-Rename-VMCheckpoint -VMName AppLab -Name CLEAN -NewName CLEAN-old
+Rename-VMCheckpoint -VMName Home -Name CLEAN -NewName CLEAN-old
 Start-Sleep -Seconds 2                 # Hyper-V needs a beat between renames
-Rename-VMCheckpoint -VMName AppLab -Name CLEAN-v6 -NewName CLEAN
+Rename-VMCheckpoint -VMName Home -Name CLEAN-v6 -NewName CLEAN
 ```
 
 ### Two traps when re-baselining
@@ -175,18 +222,26 @@ keystrokes, no setup.
 ## Checkpoints
 
 ```
-AppLab                                      AppLabPro
-  CLEAN-prerdp                                CLEAN
-    +-- CLEAN-1024
-          +-- CLEAN-old-20260826-2228
-                +-- CLEAN-v4-1280
-                      +-- CLEAN   <- live
+Home            Pro
+  CLEAN           CLEAN
 ```
 
-Every checkpoint adds another differencing disk to the chain: Home's five cost ~39 GB of
-`.avhdx` against an 18 GB base, and every read walks all five. Pro's single checkpoint costs
-5.6 GB. Deleting a superseded checkpoint merges it into its parent and reclaims the space -
-worth doing once a baseline is settled.
+One each - keep it that way.
+
+Every checkpoint adds another differencing disk to the chain, and every disk read walks the
+whole chain. Home briefly carried five (from rebuilding the baseline five times during
+setup) and they cost ~39 GB of `.avhdx` on top of an 18 GB base. Deleting the four
+superseded ones merged them down and reclaimed **35 GB**:
+
+```
+before  Home ~57 GB + Pro ~31 GB = 99 GB
+after   Home  33.7 GB + Pro 26.6 GB = 64 GB
+```
+
+So: keep intermediate checkpoints only while you are still deciding whether a new baseline
+is right. Once it is settled, delete the old ones - `Remove-VMCheckpoint` merges rather than
+discards, so the surviving baseline keeps all its data. Do it with the VM **off**; the merge
+is faster and cannot race a running guest.
 
 ## Gotchas
 

@@ -161,6 +161,23 @@ $script:SplashTimer.AutoReset = $false
 Register-ObjectEvent -InputObject $script:SplashTimer -EventName Elapsed -Action { Show-Splash } | Out-Null
 $script:SplashTimer.Start()
 
+<#
+    Everything from here to the end runs inside one try/finally, and the finally is the only
+    thing that guarantees the splash comes down.
+
+    Ctrl+C at the access-code prompt used to leave it on screen for ever. The splash owns a
+    dedicated STA runspace thread running Dispatcher.Run(), which blocks until somebody calls
+    InvokeShutdown() - and stopping the pipeline calls nothing. The window stayed, the runspace
+    stayed open inside the technician's own session, and the only way out was closing the
+    console. `trap` is no use here: Ctrl+C stops a pipeline, it does not raise a terminating
+    error, so finally is the one construct that still runs.
+
+    The body below is deliberately NOT re-indented. Shifting nearly three hundred lines by four
+    spaces would bury this change in a diff that looked like a rewrite, and PowerShell does not
+    care - the reader does.
+#>
+try {
+
 $needFetch = $true
 if ($pinned -and (Test-Path -LiteralPath $ps1)) {
     try {
@@ -281,6 +298,12 @@ function Invoke-WithAccess([scriptblock]$Try) {
                          ('' + $resp.Headers['x-pc2go-auth']) -eq 'required')
             } catch { }
             if (-not $need) { throw }
+            # The TIMER first, then the window. Hiding it alone was not enough: the timer is a
+            # one-shot armed at startup, so if the 403 came back in under 1.2 seconds this
+            # cleared a splash that did not exist yet and the timer then fired ON TOP of the
+            # prompt - $script:Splash being $null by then, Show-Splash happily built a second
+            # one, and nothing hid it again until the code was accepted.
+            $script:SplashTimer.Stop()
             Hide-Splash    # the prompt must be visible, not behind the splash
             if ($tries -ge $max) {
                 Write-Host ''
@@ -454,3 +477,16 @@ Start-Process -FilePath $winPS -WindowStyle Hidden -ArgumentList $launch
 # The launched tool inherited it a moment ago; leaving a copy behind in the technician's own
 # shell serves nothing, and the next go line asks again by design.
 $env:PC2GO_CODE = ''
+
+} finally {
+    # Reached on EVERY exit: the normal launch above, a throw, and - the case this exists for -
+    # Ctrl+C at the access-code prompt. Both calls are idempotent and both swallow their own
+    # failures, because a splash that will not close must never become the reason a launch
+    # fails or an error is replaced by a different one on the way out.
+    try { $script:SplashTimer.Stop() } catch { }
+    try { Hide-Splash } catch { }
+    # The code never outlives the bootstrap. On the Ctrl+C path nothing below the prompt runs,
+    # so without this a cancelled launch would leave the typed code sitting in the technician's
+    # own shell for anything later in that session to read.
+    $env:PC2GO_CODE = ''
+}

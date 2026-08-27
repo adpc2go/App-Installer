@@ -7,7 +7,7 @@
 #>
 [CmdletBinding()]
 param(
-    [string]$VMName     = 'AppLab',
+    [string]$VMName     = 'Home',
     [string]$Checkpoint = 'CLEAN',
     [string]$CredPath   = "$env:LOCALAPPDATA\$VMName\guest.cred.xml",
     [switch]$NoCheckpoint

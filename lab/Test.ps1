@@ -11,7 +11,7 @@
 #>
 [CmdletBinding()]
 param(
-    [string]$VMName   = 'AppLab',
+    [string]$VMName   = 'Home',
     [string]$Checkpoint = 'CLEAN',
     [ValidateSet('Local','Live')] [string]$Mode = 'Local',
     [string]$BaseUrl  = 'https://apps.pc2go.ca',

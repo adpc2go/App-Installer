@@ -4,7 +4,7 @@
   Add -NoSet to print it instead of replacing your host clipboard.
 #>
 param(
-    [string]$VMName   = 'AppLab',
+    [string]$VMName   = 'Home',
     [string]$CredPath = "$env:LOCALAPPDATA\$VMName\guest.cred.xml",
     [switch]$NoSet
 )

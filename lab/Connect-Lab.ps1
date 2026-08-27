@@ -12,7 +12,7 @@
   redirection and host drive access as a side effect.
 #>
 param(
-    [string]$VMName = 'AppLab',
+    [string]$VMName = 'Home',
     [int]$Width     = 1280,
     [int]$Height    = 1024,
     [switch]$FullScreen,
@@ -24,7 +24,7 @@ $vm = Get-VM -Name $VMName
 if ($vm.State -ne 'Running') { throw "$VMName is not running - run .\Test.ps1 first." }
 $id = $vm.Id.Guid
 
-$rdp = Join-Path $env:LOCALAPPDATA "AppLab\$VMName.rdp"
+$rdp = Join-Path $env:LOCALAPPDATA "Home\$VMName.rdp"
 New-Item -ItemType Directory -Force -Path (Split-Path $rdp) | Out-Null
 
 # ';EnhancedMode=1' on pcb is what asks the VMBus listener for an enhanced session rather

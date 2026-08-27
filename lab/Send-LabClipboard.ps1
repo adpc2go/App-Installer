@@ -6,7 +6,7 @@
   Works in Basic Session, where vmconnect shares no clipboard at all.
 #>
 param(
-    [string]$VMName   = 'AppLab',
+    [string]$VMName   = 'Home',
     [string]$Text,
     [string]$CredPath = "$env:LOCALAPPDATA\$VMName\guest.cred.xml"
 )

@@ -10,7 +10,7 @@
 #>
 [CmdletBinding()]
 param(
-    [string]$VMName   = 'AppLab',
+    [string]$VMName   = 'Home',
     [string]$From     = 'CLEAN',
     [Parameter(Mandatory)] [string]$To,
     [Parameter(Mandatory)] [string]$ApplyFile,

@@ -13,7 +13,7 @@
 #>
 [CmdletBinding()]
 param(
-    [string]$VMName = 'AppLab',
+    [string]$VMName = 'Home',
     [Parameter(Mandatory)] [string]$To,
     [string]$Current = 'CLEAN',
     [switch]$Promote,

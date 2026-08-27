@@ -7140,6 +7140,11 @@ function Start-TweakUndo([object[]]$Sel) {
     $explorerIds = @('taskbarclean', 'startclean', 'rightclickmenu', 'visualeffects', 'widgets',
                      'endtask', 'uisnappy', 'explorerhome', 'explorerprivacy', 'desktopicons', 'windowsai')
     $script:NeedExplorerRestart = [bool]@($Sel | Where-Object { $_.UnArgs -in $explorerIds }).Count
+    # The same rows, plus every preference - all of them write values Windows only re-reads when
+    # it is told to. Undo needs the broadcast exactly as much as apply does, or turning a
+    # preference back off looks just as broken as turning it on did.
+    $script:NeedSettingBroadcast = [bool]@($Sel | Where-Object {
+        ($_.UnArgs -in $explorerIds) -or ($_.Publisher -eq 'Preference') }).Count
     foreach ($s in $Sel) { Set-Status $s 'Queued' 'neutral'; Set-Ring $s 'queued' }
     $script:Pending = @($Sel)
     $script:BatchTab = 'Tweak'
@@ -7230,6 +7235,11 @@ function Start-Tweaks([object[]]$Sel) {
     $explorerIds = @('taskbarclean', 'startclean', 'rightclickmenu', 'visualeffects', 'widgets',
                      'endtask', 'uisnappy', 'explorerhome', 'explorerprivacy', 'desktopicons', 'windowsai')
     $script:NeedExplorerRestart = [bool]@($run | Where-Object { $_.UnArgs -in $explorerIds }).Count
+    # The same rows, plus every preference. Dark Theme was the case that exposed this: it wrote
+    # BOTH of its values correctly, Detect read them back and honestly said "applied", and the
+    # screen stayed light - because nothing ever told Windows. See Send-SettingChange.
+    $script:NeedSettingBroadcast = [bool]@($run | Where-Object {
+        ($_.UnArgs -in $explorerIds) -or ($_.Publisher -eq 'Preference') }).Count
 
     # A restore point is the undo button for everything else here, so if it was selected
     # it is queued FIRST - after the other tweaks have run it would be worthless.
@@ -8936,6 +8946,26 @@ function Set-Reg([string]$Path, [string]$Name, $Value, [string]$Type = 'DWord') 
     if (-not (Test-Path -LiteralPath $p)) { New-Item -Path $p -Force -ErrorAction Stop | Out-Null }
     New-ItemProperty -LiteralPath $p -Name $Name -Value $Value -PropertyType $Type -Force -ErrorAction Stop | Out-Null
 }
+
+<#
+    A write that is allowed to fail without taking the rest of the tweak with it.
+
+    Set-Reg throws, and a tweak is a straight run of writes, so ONE protected value abandoned
+    every write after it. Windows 11 25H2 made that real: TaskbarDa is refused there, and it is
+    the first line of the Widgets row - so Widgets set no policy, removed no package, and
+    reported a bare "Failed" while having done nothing at all. Taskbar Clean Up hit the same
+    value in the middle of its run and stopped half-applied, pins cleared but Copilot and chat
+    buttons still on the taskbar, with nothing on screen saying so.
+
+    Both halves matter. Carrying on means the other seven writes land; recording the refusal
+    means the row can say which value the machine would not accept instead of implying it did
+    everything. $script:RegDenied is reset per tweak by Apply-Tweak.
+#>
+$script:RegDenied = @()
+function Set-RegSoft([string]$Path, [string]$Name, $Value, [string]$Type = 'DWord') {
+    try { Set-Reg $Path $Name $Value $Type; return $true }
+    catch { $script:RegDenied += $Name; return $false }
+}
 # Read-back for the undo collision checks: before clearing a value two tweaks share,
 # the undo needs to know whether the sibling is still applied.
 function Get-WorkerReg([string]$Path, [string]$Name) {
@@ -10432,6 +10462,8 @@ function Apply-Tweak($app) {
     $id = [string]$app.tweak
     Write-Status $app.id 'Applying' ''
     $detail = ''
+    # Per tweak, so one row's refusals are never reported against the next.
+    $script:RegDenied = @()
     switch ($id) {
 
         # ---------------- Essential ----------------
@@ -10613,10 +10645,14 @@ function Apply-Tweak($app) {
             $detail = "$n temp item(s) removed" + $(if ($gain) { " - $gain" } else { '' })
         }
         'widgets' {
-            Set-Reg 'HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced' 'TaskbarDa' 0
+            # ORDER CHANGED DELIBERATELY. The policy and the package are what actually disable
+            # Widgets; TaskbarDa only hides the button, and on 25H2 it is refused - which, as
+            # the first line here, meant the two that matter never ran at all.
             Set-Reg 'HKLM\SOFTWARE\Policies\Microsoft\Dsh' 'AllowNewsAndInterests' 0
             $n = Remove-AppxByName 'MicrosoftWindows.Client.WebExperience'
-            $detail = "widgets hidden and disabled by policy; $n package(s) removed"
+            # Soft: nice to have, never worth losing the policy and the removal for.
+            [void](Set-RegSoft 'HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced' 'TaskbarDa' 0)
+            $detail = "widgets disabled by policy; $n package(s) removed"
         }
         # ---------------- CAUTION ----------------
         'adobeblock' {
@@ -10855,11 +10891,15 @@ function Apply-Tweak($app) {
                     try { Remove-Item -LiteralPath $e.FullName -Force -ErrorAction Stop } catch {}
                 }
             }
-            Set-Reg 'HKCU\Software\Microsoft\Windows\CurrentVersion\Search' 'SearchboxTaskbarMode' 0
-            Set-Reg 'HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced' 'ShowTaskViewButton' 0
-            Set-Reg 'HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced' 'TaskbarDa' 0
-            Set-Reg 'HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced' 'TaskbarMn' 0
-            Set-Reg 'HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced' 'ShowCopilotButton' 0
+            # Every one of these is soft. They are taskbar buttons: a build that refuses one is
+            # not a reason to abandon the others, and TaskbarDa is refused on 25H2 - which used
+            # to stop this row dead in the middle, pins already cleared and the Copilot and chat
+            # buttons still sitting there, with nothing on screen admitting it.
+            [void](Set-RegSoft 'HKCU\Software\Microsoft\Windows\CurrentVersion\Search' 'SearchboxTaskbarMode' 0)
+            [void](Set-RegSoft 'HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced' 'ShowTaskViewButton' 0)
+            [void](Set-RegSoft 'HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced' 'TaskbarDa' 0)
+            [void](Set-RegSoft 'HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced' 'TaskbarMn' 0)
+            [void](Set-RegSoft 'HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced' 'ShowCopilotButton' 0)
             # NOTE (do not guess): the Win11 24H2/25H2 taskbar "Resume" toggle's registry
             # value is unverified - determine it by diffing Advanced + CrossDevice on a
             # live machine before adding it here.
@@ -11077,6 +11117,12 @@ function Apply-Tweak($app) {
         }
 
         default { Write-Status $app.id 'Failed' "unknown tweak id '$id'"; return }
+    }
+    # Said out loud, or it is not reported at all. Everything the row could do, it did - but a
+    # value this build refuses is a difference the technician can SEE on the taskbar, and
+    # "Applied" on its own would be the tool claiming credit for it.
+    if ($script:RegDenied.Count) {
+        $detail = "$detail (this Windows build refused: $((@($script:RegDenied) | Sort-Object -Unique) -join ', '))"
     }
     Write-Status $app.id 'Applied' $detail
 }
@@ -11725,6 +11771,49 @@ $script:ForceMode = $false
 $script:ConfirmAction = $null
 $script:PrefSyncing = $false
 $script:SuspendDash = $false
+<#
+    Tell Windows a setting changed. Without this, writing the value is only half the job.
+
+    Dark Theme was the case that exposed it: the preference wrote BOTH AppsUseLightTheme and
+    SystemUsesLightTheme correctly, Detect read them back and honestly answered "applied", and
+    the screen stayed light - because Windows re-reads the theme when it is TOLD to, not when
+    the registry changes. The Settings app sends exactly this broadcast; nothing in this tool
+    sent anything at all.
+
+    Two signals, because they wake different things:
+      * WM_SETTINGCHANGE / "ImmersiveColorSet" - theme, accent, transparency.
+      * SHChangeNotify(SHCNE_ASSOCCHANGED)     - Explorer's own view flags: hidden files,
+                                                 recent/frequent, Quick Access.
+
+    Called from the GUI, never from the elevated worker - the same rule the Explorer restart
+    below follows, and for the same reason: the GUI runs unelevated as the signed-in user, so
+    the broadcast reaches that person's desktop rather than the elevating admin's.
+#>
+Add-Type -Namespace PC2Go -Name Shell -MemberDefinition @'
+[DllImport("user32.dll", SetLastError = true, CharSet = CharSet.Auto)]
+public static extern IntPtr SendMessageTimeout(IntPtr hWnd, uint Msg, UIntPtr wParam,
+    string lParam, uint fuFlags, uint uTimeout, out UIntPtr lpdwResult);
+[DllImport("shell32.dll")]
+public static extern void SHChangeNotify(int wEventId, uint uFlags, IntPtr dwItem1, IntPtr dwItem2);
+'@ -ErrorAction SilentlyContinue
+
+function Send-SettingChange {
+    # Best effort throughout. A broadcast that does not go out is a setting that needs a sign-out
+    # to show, which is worth a line in the log - never worth failing a batch that already
+    # wrote every value it was asked to.
+    try {
+        $res = [UIntPtr]::Zero
+        # HWND_BROADCAST, WM_SETTINGCHANGE, SMTO_ABORTIFHUNG, 100ms - capped so one wedged
+        # top-level window cannot stall the tool the way a plain SendMessage would.
+        [void][PC2Go.Shell]::SendMessageTimeout([IntPtr]0xFFFF, 0x1A, [UIntPtr]::Zero,
+                                                'ImmersiveColorSet', 0x0002, 100, [ref]$res)
+    } catch { }
+    try { [PC2Go.Shell]::SHChangeNotify(0x08000000, 0x0000, [IntPtr]::Zero, [IntPtr]::Zero) } catch { }
+}
+
+# Set when a batch applied something Windows only notices once it is told - see Send-SettingChange.
+$script:NeedSettingBroadcast = $false
+
 $script:BatchTab = 'Install'   # which tab started the running batch, so only it shows progress
 $script:UserSelecting = $false
 $script:UsersLoaded = $false
@@ -12384,6 +12473,19 @@ function Finish-Batch {
     # (taskbar, Start, desktop icons, context menu). The GUI runs unelevated as the
     # signed-in user, so the desktop comes back owned by the right profile - the elevated
     # worker must never do this itself.
+    # Preferences and the Explorer/theme tweaks write values Windows only re-reads when it is
+    # told to. This is deliberately NOT gated on a tab: a preference applies from the
+    # Preferences tab and the same values are also written by tweak rows, and the broadcast is
+    # cheap and idempotent - so it is driven by what was APPLIED, not by where it was clicked.
+    if ($script:NeedSettingBroadcast) {
+        $script:NeedSettingBroadcast = $false
+        try {
+            Send-SettingChange
+            Add-Log 'Told Windows the display settings changed - theme and Explorer views apply now.'
+        } catch {
+            Add-Log "Could not broadcast the settings change: $($_.Exception.Message) - sign out and back in to see them."
+        }
+    }
     if ($script:BatchTab -eq 'Tweak' -and $script:NeedExplorerRestart) {
         $script:NeedExplorerRestart = $false
         try {
