@@ -186,6 +186,15 @@ foreach ($app in @($catalog.apps)) {
     $sizeOk = $true
     try { $null = [long]$app.sizeBytes } catch { $sizeOk = $false }
     if (-not $sizeOk) { $problems.Add("$($app.id): sizeBytes is not a number ('$($app.sizeBytes)')"); continue }
+    # The installer-family fields are advisory - worth a look, never a reason to hold a publish.
+    $srcVal = [string]$app.silentSource
+    if ($srcVal -and $srcVal -notin 'typed', 'detected') { $softWarn.Add("$($app.id): silentSource '$srcVal' is not 'typed' or 'detected' - the client treats it as undecided") }
+    if ($app.installer -and $app.installer.sha256 -and $app.sha256 -and ([string]$app.installer.sha256 -ne [string]$app.sha256)) {
+        $softWarn.Add("$($app.id): the detected installer family describes hash $(([string]$app.installer.sha256).Substring(0, 12))... but the published file is $(([string]$app.sha256).Substring(0, 12))... - re-fetch in the editor")
+    }
+    if ($app.uninstall -and -not [string]$app.uninstall.command -and -not [string]$app.uninstall.args) {
+        $softWarn.Add("$($app.id): the uninstall block has neither a command nor arguments - it does nothing on a client")
+    }
     $servedApps.Add($app)
     # Everything below is checked only for apps that WILL be served. Validating what actually
     # ships is the point; complaining about a row nobody can see is noise.
@@ -323,6 +332,24 @@ Write-Step 'Preparing AppDeploy.ps1 for shipping'
 $shipDir = Join-Path ([IO.Path]::GetTempPath()) ('pc2go-ship-' + [Guid]::NewGuid().ToString('N').Substring(0, 8))
 New-Item -ItemType Directory -Force -Path $shipDir | Out-Null
 $shipDeploy = Join-Path $shipDir 'AppDeploy.ps1'
+
+# The installer-family detector has ONE source, tools\Installer-Family.ps1, and a verbatim copy
+# inside AppDeploy.ps1 between two marker comments (the client loads exactly one file). A
+# publish that ships a stale copy would make the editor and the client disagree about the same
+# bytes - so the copy is compared here, CRLF-normalised, and a mismatch stops the publish.
+# tools\Sync-InstallerFamily.ps1 re-splices it.
+$famSrc = Join-Path $PSScriptRoot 'Installer-Family.ps1'
+if (Test-Path -LiteralPath $famSrc) {
+    $famText = ([IO.File]::ReadAllText($famSrc) -replace "`r?`n", "`n").TrimEnd()
+    $adText  = ([IO.File]::ReadAllText($appDeploy) -replace "`r?`n", "`n")
+    $m = [regex]::Match($adText, '(?s)# ---- begin tools\\Installer-Family\.ps1[^\n]*\n[^\n]*\n(.*?)# ---- end tools\\Installer-Family\.ps1')
+    if (-not $m.Success -or $m.Groups[1].Value.TrimEnd() -ne $famText) {
+        Write-Warn 'AppDeploy.ps1 carries a copy of tools\Installer-Family.ps1 that differs from the source.'
+        Write-Warn 'Run tools\Sync-InstallerFamily.ps1, re-run the suites, then publish.'
+        if (-not $Force) { exit 1 }
+        Write-Warn 'Publishing anyway (-Force).'
+    } else { Write-Host '  + installer-family detector matches its source' -ForegroundColor DarkGray }
+}
 
 $compressor = Join-Path $PSScriptRoot 'Compress-Script.ps1'
 if (Test-Path -LiteralPath $compressor) {

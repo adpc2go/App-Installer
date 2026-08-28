@@ -1,4 +1,4 @@
-# Handover - 2026-08-27
+﻿# Handover - 2026-08-27
 
 A **field-test session**. The tool ran on real client machines - Windows 11 Home and Pro, both
 25H2 - and the reports came back as symptoms rather than stack traces: *"I used dark theme,
@@ -646,19 +646,30 @@ Nothing is committed. The tree is still on `3b44e68`.
 - **A hashed entry keeps its silent switches and verify path** when its own file is re-fetched.
   They only follow the package when the NAME changes, which is what swapping a product looks like.
 
-## Removed on purpose
+## Rebuilt, differently: installer-family detection
 
-**All silent-switch detection.** `Installer-Detect.ps1`, `installer-families.json`,
-`Test-SilentSwitches.ps1`, the sniffing inside `$FetchWork`, the confidence hints, and the
-`VERIFY` publish gate are gone.
+The first detector (`Installer-Detect.ps1`, `installer-families.json`, the sniffing inside
+`$FetchWork`, the confidence hints, the `VERIFY` gate) was removed on 2026-08-22 because it
+sampled 3 MB of a 1.05 GB installer - 0.28% - found no MSI marker, and concluded there was
+none. A switch that is nearly right does not fail loudly; the installer opens its GUI on a
+machine nobody is sitting at.
 
-It was removed because the answer was never solid enough to act on. The last version sampled
-3 MB of a 1.05 GB installer Ã¢â‚¬â€ 0.28% Ã¢â‚¬â€ found no MSI marker, and concluded there was none. A
-switch that is nearly right does not fail loudly; the installer opens its GUI on a machine
-nobody is sitting at. `silentArgs` stays as a plain text field you fill in, and the installer
-guard is what catches a wrong one.
+The rebuild (2026-08-28) answers the sampling problem by never drawing a conclusion from an
+absence. `tools\Installer-Family.ps1` reads only bounded regions (PE section table, version
+resource, overlay head 1 MB / tail 64 KB, resource leaves, companion names), and reports a
+family **only** on a positive signature at a stated offset - `Confidence` is `signature` or
+`none`, evidence is logged, `BytesRead` is asserted under 4 MB by its harness. Unknown means no
+switch and the guard stands in. The same source is copied verbatim into `AppDeploy.ps1`
+between two marker comments (`tools\Sync-InstallerFamily.ps1` re-splices it; `Publish-Release`
+refuses a stale copy), rendered into the elevated worker at `Start-Worker`. Editor: fetch
+detects, `silentArgs`/`silentSource`/`installer`/(command-less) `uninstall` are written under
+the rule typed-is-never-overwritten, `Use detected` restores. Client: `Install-One` detects when
+the catalog has no switch and `silentSource` is not `typed`; `Get-InstalledPrograms` asks
+`Get-UninstallFamily` for every non-quiet registry row. Harnesses: `Test-InstallerFamily`
+(fixtures via `Get-InstallerFixtures.ps1`), `Test-Push` 11j, `Test-RealUninstall` product D,
+`Test-CatalogEditorGui` 2b, `Test-AfterInstallList` 16.
 
-Do not rebuild this without a reason that answers the sampling problem.
+Second pass not built: Squirrel/Velopack, Advanced Installer, Wise, Setup Factory.
 
 ## BUILT: the batch strip
 

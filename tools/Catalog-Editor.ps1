@@ -85,6 +85,13 @@ if (-not $PackageDir)  { $PackageDir  = Join-Path $script:RepoRoot 'packages' }
 # The S3 transport lives in its own file so the upload runspace and Test-Push.ps1 can reach it
 # without loading a window. Dot-sourced by path, once, here.
 $script:R2Module = Join-Path $script:ToolsDir 'R2-Upload.ps1'
+# The installer-family detector: ONE source file, handed to the fetch runspace as text (a
+# runspace inherits nothing) and dot-sourced here for the labels the drawer paints. It only
+# ever asserts what it found - a signature at an offset - so an installer it does not know
+# gets no switch, and the window guard on the client stands in.
+$script:FamilyModule = Join-Path $script:ToolsDir 'Installer-Family.ps1'
+$script:FamilyText = $(if (Test-Path -LiteralPath $script:FamilyModule) { [IO.File]::ReadAllText($script:FamilyModule) } else { '' })
+if ($script:FamilyText) { try { . $script:FamilyModule } catch { $script:FamilyText = '' } }
 if (Test-Path -LiteralPath $script:R2Module) { . $script:R2Module }
 
 
@@ -210,14 +217,37 @@ function Get-VerifyCandidates([string]$name) {
 # is polled, the same shape the installer itself uses for downloads.
 
 $script:FetchWork = {
-    param($Source, $CacheDir, $ListOnly)
+    param($Source, $CacheDir, $ListOnly, $DetectorText)
 
-    # This used to identify the packager and propose a silent switch. It was taken out on
-    # purpose: the answer was never solid enough to rely on. A switch that is nearly right
-    # does not fail loudly - the installer opens its GUI on a client machine and waits for a
-    # click nobody is there to make - so a blank field a technician fills in deliberately
-    # beats a proposal that is right most of the time. This job now does what its name says:
-    # it lists what is inside the package, and hashes it.
+    # This lists what is inside the package, hashes it, and - when handed the detector's
+    # source - asks the ranked installer which family built it. The first detector was taken
+    # out because it sampled 3 MB of a 1 GB file and concluded from what it did NOT see. This
+    # one asserts only what it found: a signature at a stated offset in a bounded region. No
+    # signature means no switch is proposed, and the client's window guard stands in - a
+    # switch that is nearly right opens a GUI on a client machine and waits for a click nobody
+    # is there to make, so "unknown" is a real answer here, never a guess.
+    function Get-SiblingNames {
+        param($Names, [string]$Top)
+        $dir = Split-Path $Top -Parent
+        if (-not $dir) { return @($Names | Where-Object { $_ -ne $Top }) }
+        return @($Names | Where-Object { $_.StartsWith($dir + '\') -and $_ -ne $Top } |
+                 ForEach-Object { $_.Substring($dir.Length + 1) })
+    }
+    function Get-EntryFamily {
+        param([string]$Path, $Siblings)
+        if (-not $DetectorText) { return $null }
+        try { . ([scriptblock]::Create([string]$DetectorText)) } catch { return @{ error = "the detector could not be loaded - $($_.Exception.Message)" } }
+        try { $f = Get-InstallerFamily -Path $Path -Siblings @($Siblings) } catch { return @{ error = "detection failed - $($_.Exception.Message)" } }
+        $known = ($f.Confidence -eq 'signature' -and $f.Family)
+        return @{ family     = $(if ($known) { [string]$f.Family } else { '' })
+                  label      = $(if ($known) { [string](Get-InstallerFamilyLabel $f.Family) } else { '' })
+                  evidence   = (@($f.Evidence) -join '; ')
+                  confidence = [string]$f.Confidence
+                  silent     = $(if ($known) { [string]$f.InstallArgs } else { '' })
+                  uninstall  = $(if ($known -and $f.UninstallShape) { @{ exePattern = [string]$f.UninstallShape.ExePattern; args = [string]$f.UninstallShape.Args } } else { $null })
+                  notes      = @($f.Notes)
+                  bytesRead  = [long]$f.BytesRead }
+    }
 
     # setup.exe is the near-universal answer and beats a shallower file with a vaguer name;
     # depth only breaks ties. Split on BOTH separators - .NET writes backslashes into entry
@@ -282,6 +312,7 @@ $script:FetchWork = {
         $entries = @()
         $files = @()
         $packager = ''
+        $family = $null
 
         # How the package was opened, kept apart from what the INSTALLER turned out to be.
         # Saying "zip" where the packager belongs is what used to leave the field blank.
@@ -336,6 +367,9 @@ $script:FetchWork = {
                     # with no Joliet extension tar truncates every name to 31 characters, so
                     # the entry could not be found afterwards even if we tried.
                     $entries = @(Get-RankedInstallers $names)
+                    if ($entries.Count -and -not $ListOnly) {
+                        $family = Get-EntryFamily -Path (Join-Path $root ([string]$entries[0])) -Siblings (Get-SiblingNames $names ([string]$entries[0]))
+                    }
                 } catch {
                     return @{ error = "this .iso could not be opened - $($_.Exception.Message)" }
                 } finally {
@@ -382,11 +416,49 @@ $script:FetchWork = {
             $files = @($names | Sort-Object)
             # An .iso ranked and sniffed its own entries while it was still mounted, above.
             if (-not $isIso) { $entries = @(Get-RankedInstallers $names) }
+            # The ranked installer is pulled out on its own - one file, not the package - and
+            # asked what built it, then thrown away. The same codec that listed it extracts it.
+            if (-not $isIso -and $entries.Count -and -not $ListOnly -and $DetectorText) {
+                $top = [string]$entries[0]
+                $tmp = Join-Path $CacheDir ('sniff-' + [IO.Path]::GetRandomFileName())
+                try {
+                    New-Item -ItemType Directory -Force -Path $tmp | Out-Null
+                    $dst = Join-Path $tmp ([IO.Path]::GetFileName($top))
+                    if ($zip) {
+                        # .NET writes backslashes into entry names, the spec says forward slash,
+                        # and GetEntry matches the stored string exactly - so both are tried
+                        $ze = $zip.GetEntry($top)
+                        if (-not $ze) { $ze = $zip.GetEntry(($top -replace '\\', '/')) }
+                        if (-not $ze) { $ze = $zip.Entries | Where-Object { ($_.FullName -replace '/', '\') -eq $top } | Select-Object -First 1 }
+                        if ($ze) { [IO.Compression.ZipFileExtensions]::ExtractToFile($ze, $dst, $true) }
+                    } else {
+                        $tarExe = Join-Path $env:SystemRoot 'System32\tar.exe'
+                        & $tarExe -xf $local -C $tmp ($top -replace '\\', '/') 2>$null | Out-Null
+                        $got = Get-ChildItem -LiteralPath $tmp -File -Recurse -Force -ErrorAction SilentlyContinue |
+                               Where-Object { $_.Name -eq [IO.Path]::GetFileName($top) } | Select-Object -First 1
+                        $dst = $(if ($got) { $got.FullName } else { '' })
+                    }
+                    if ($dst -and (Test-Path -LiteralPath $dst)) { $family = Get-EntryFamily -Path $dst -Siblings (Get-SiblingNames $names $top) }
+                    else { $family = @{ error = "the setup file could not be extracted for inspection" } }
+                } catch { $family = @{ error = "the setup file could not be inspected - $($_.Exception.Message)" } }
+                finally { try { Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction SilentlyContinue } catch { } }
+            }
             if ($zip) { try { $zip.Dispose() } catch {} ; $zip = $null }
+        } elseif (-not $ListOnly -and $DetectorText -and $ext -in '.exe', '.msi', '.msp', '.msix', '.msixbundle', '.appx') {
+            # A bare installer is inspected where it lies. Companion files count only for a file
+            # a person picked from its own folder; the download cache holds unrelated packages.
+            $dirOf = (Split-Path $local -Parent).TrimEnd('\')
+            $sib = @()
+            if ($dirOf -ne ([string]$CacheDir).TrimEnd('\')) {
+                $sib = @(Get-ChildItem -LiteralPath $dirOf -Recurse -Force -ErrorAction SilentlyContinue |
+                         Where-Object { -not $_.PSIsContainer -and $_.FullName -ne $local } |
+                         ForEach-Object { $_.FullName.Substring($dirOf.Length + 1) } | Select-Object -First 4096)
+            }
+            $family = Get-EntryFamily -Path $local -Siblings $sib
         }
 
-        # How the package was OPENED, which is all this reports now. It says the listing can
-        # be trusted; it says nothing about what switch the installer wants.
+        # How the package was OPENED, kept apart from what the installer inside turned out to
+        # be: the first says the listing can be trusted, the second is the family fields below.
         if (-not $packager -and $container) { $packager = $container }
 
         # SHA-256 over a multi-GB package is what makes a fetch slow; reading the archive's own
@@ -401,7 +473,16 @@ $script:FetchWork = {
            entries    = $entries
            files      = $files
            packager   = $packager
-           listOnly   = [bool]$ListOnly }
+           listOnly   = [bool]$ListOnly
+           # what the ranked installer's own bytes say; every field empty when nothing was found
+           family           = $(if ($family -and -not $family.error) { [string]$family.family } else { '' })
+           familyLabel      = $(if ($family -and -not $family.error) { [string]$family.label } else { '' })
+           familyEvidence   = $(if ($family -and -not $family.error) { [string]$family.evidence } else { '' })
+           familyConfidence = $(if ($family -and -not $family.error) { [string]$family.confidence } else { '' })
+           familyError      = $(if ($family -and $family.error) { [string]$family.error } else { '' })
+           silent           = $(if ($family -and -not $family.error) { [string]$family.silent } else { '' })
+           uninstallShape   = $(if ($family -and -not $family.error) { $family.uninstall } else { $null })
+           familyNotes      = @($(if ($family -and -not $family.error) { @($family.notes) } else { @() })) }
     } catch { @{ error = $_.Exception.Message } }
 }
 
@@ -1154,7 +1235,7 @@ function Start-BulkNext {
     # The sidecar (which bulk import writes at add time) is the fallback that survives a save.
     [void]$script:BulkJob.AddScript([string]$script:FetchWork).
            AddArgument([string](Get-LocalFileFor $app)).AddArgument($PackageDir).
-           AddArgument($false)
+           AddArgument($false).AddArgument([string]$script:FamilyText)
     $script:BulkHandle = $script:BulkJob.BeginInvoke()
     Update-List
 }
@@ -1177,6 +1258,17 @@ function Complete-BulkOne {
         Set-PushHashFor $app ([string]$r.sha256) ([long]$r.size)
         # proposed, never forced - the same rule the dialog follows
         if (@($r.entries).Count -and -not (Get-Field $app 'entry')) { Set-Field $app 'entry' (@($r.entries)[0]) }
+        # the installer's own signature, under the drawer's rule: a typed switch is never touched
+        if ([string]$r.family) {
+            Set-Field $app 'installer' ([pscustomobject]@{ family = [string]$r.family; evidence = [string]$r.familyEvidence
+                                                          detectedUtc = [DateTime]::UtcNow.ToString('o'); sha256 = [string]$r.sha256; silent = [string]$r.silent })
+            if ([string]$r.silent -and -not [string](Get-Field $app 'silentArgs') -and [string](Get-Field $app 'silentSource') -ne 'typed') {
+                Set-Field $app 'silentArgs' ([string]$r.silent); Set-Field $app 'silentSource' 'detected'
+            }
+            if ($r.uninstallShape -and [string]$r.uninstallShape.args -and -not (Get-Field $app 'uninstall')) {
+                Set-Field $app 'uninstall' ([pscustomobject]@{ family = [string]$r.family; args = [string]$r.uninstallShape.args; source = 'detected' })
+            }
+        }
         # a verify path only if the product is genuinely on THIS machine; a guess here would be
         # indistinguishable from a checked fact later
         if (-not @(Get-Field $app 'verifyPaths').Count) {
@@ -2710,6 +2802,7 @@ $dialogXaml = @'
           <ComboBox x:Name="DlgEntry" IsEditable="True" Margin="0,0,0,10"/>
           <TextBlock Text="SILENT SWITCHES" Style="{StaticResource FieldLabel}"/>
           <TextBox x:Name="DlgSilent" Margin="0,0,0,3"/>
+          <Button x:Name="DlgSilentUse" Content="Use detected" Style="{StaticResource Btn}" HorizontalAlignment="Left" Visibility="Collapsed" Margin="0,0,0,3"/>
           <TextBlock x:Name="DlgSilentHint" TextWrapping="Wrap" FontSize="11" Margin="0,0,0,10"/>
           <TextBlock Text="VERIFY PATH" Style="{StaticResource FieldLabel}"/>
           <ComboBox x:Name="DlgVerify" IsEditable="True" Margin="0,0,0,3"/>
@@ -2800,8 +2893,11 @@ function Show-AppDialog($App, $Owner, [string]$LocalFile = '') {
     # the runspace ran nothing, returned nothing, raised nothing, and a fetch silently never
     # produced a hash. Captured as a local it is copied by value into every closure below.
     $fetchText = [string]$script:FetchWork
+    # captured as a local like $fetchText: a closure made with GetNewClosure() lives in its own
+    # module, where $script: is that module's EMPTY script scope, not this file's
+    $familyText = [string]$script:FamilyText
     foreach ($n in 'DlgName','DlgUrl','DlgFetch','DlgPickLocal','DlgBusy','DlgHashInfo','DlgEntry',
-                   'DlgSilent','DlgSilentHint','DlgVerify','DlgVerifyHint','DlgRequires',
+                   'DlgSilent','DlgSilentUse','DlgSilentHint','DlgVerify','DlgVerifyHint','DlgRequires',
                    'DlgPostList','DlgPostAdd','DlgPostRemove','DlgPostUp','DlgPostDown','DlgPostEdit',
                    'DlgPostMove','DlgPostRun','DlgPostPs','DlgPostFilePanel','DlgPostPsPanel','DlgPostCmd',
                    'DlgPostFrom','DlgPostDestLabel','DlgPostDest','DlgPostWhere',
@@ -2833,6 +2929,13 @@ function Show-AppDialog($App, $Owner, [string]$LocalFile = '') {
         # the entry ended up labelled Office while carrying AutoCAD's hash. Remembering what we
         # wrote separates "the user chose this" from "we guessed this last time".
         auto   = @{}
+        # What the installer's own bytes said, last time anyone looked: family, evidence, the
+        # documented switch, and the package hash the answer belongs to. $null = nobody looked.
+        detected = $null
+        familyError = ''
+        # 'typed' | 'detected' | '' - where the silent box's text came from, written to the
+        # catalog so the client knows whether a blank box was a decision or an absence
+        silentSource = ''
         # what the fetch actually found inside the package, so a typed `from` can be checked
         # against it. Empty until a fetch happens, and empty means no opinion.
         files  = @()
@@ -2874,8 +2977,18 @@ function Show-AppDialog($App, $Owner, [string]$LocalFile = '') {
     # derived moves together, or the entry ends up half describing one product and half another.
     # A name someone types is still safe: it then differs from what the dialog proposed.
     #
-    # The silent switch is NOT in here. Nothing derives it any more, so there is nothing to
-    # replace - it is whatever a person typed, and it stays that way.
+    # The silent switch is in here ONLY when the catalog says the detector wrote it: a typed
+    # switch is a person's decision and is never the dialog's to replace.
+    $state.silentSource = [string](Get-Field $App 'silentSource')
+    $state.auto['silent'] = $(if ($state.silentSource -eq 'detected') { Get-BoxText $c.DlgSilent } else { '' })
+    $instBlock = Get-Field $App 'installer'
+    if ($instBlock -and [string](Get-Field $instBlock 'family')) {
+        $state.detected = @{ family = [string](Get-Field $instBlock 'family'); evidence = [string](Get-Field $instBlock 'evidence')
+                             sha256 = [string](Get-Field $instBlock 'sha256'); notes = @()
+                             label  = $(if (Get-Command Get-InstallerFamilyLabel -ErrorAction SilentlyContinue) { [string](Get-InstallerFamilyLabel ([string](Get-Field $instBlock 'family'))) } else { [string](Get-Field $instBlock 'family') })
+                             silent = $(if ($state.silentSource -eq 'detected') { Get-BoxText $c.DlgSilent } else { [string](Get-Field $instBlock 'silent') })
+                             uninstall = $null }
+    }
     $state.auto['name']   = Get-BoxText $c.DlgName
     $state.auto['url']    = Get-BoxText $c.DlgUrl
     $state.auto['verify'] = Get-BoxText $c.DlgVerify
@@ -3129,6 +3242,35 @@ function Show-AppDialog($App, $Owner, [string]$LocalFile = '') {
         $state.auto[$key] = $value
     }.GetNewClosure()
 
+    # One neutral colour, and the wording says exactly what was found and what was done with
+    # it. Green used to mean "identified", and an identification that was wrong three times in
+    # ten is not something to paint green.
+    $fn.paintSilentHint = {
+        $d = $state.detected
+        $cur = Get-BoxText $c.DlgSilent
+        $c.DlgSilentHint.Foreground = '#FF9A9AA6'
+        $useVisible = $false
+        if (-not $d -and [string]$state.familyError) {
+            $c.DlgSilentHint.Text = "The installer could not be inspected - $($state.familyError). Type the switch this installer documents, or leave it blank for the guard."
+        } elseif (-not $d) {
+            $c.DlgSilentHint.Text = $(if ($state.sha256) { 'No known installer signature - nothing is proposed. ' } else { 'Fetch and hash to read the installer. ' }) +
+                'Type the switch this installer documents, or leave it blank and the client''s window guard stops it if it opens a window.'
+        } elseif (-not $d.silent) {
+            $c.DlgSilentHint.Text = "Detected: $($d.label) ($($d.evidence)) - this family has no universal silent switch" +
+                $(if (@($d.notes).Count) { ": $(@($d.notes) -join '; ')" } else { '.' }) +
+                ' Type the one this installer documents, or leave it blank for the guard.'
+        } elseif ($cur -eq [string]$d.silent) {
+            $c.DlgSilentHint.Text = "Detected: $($d.label) ($($d.evidence)) - switch applied."
+        } elseif (-not $cur) {
+            $c.DlgSilentHint.Text = "Detected: $($d.label) - cleared by hand, so the installer runs with no switch under the guard. Use detected restores $($d.silent)."
+            $useVisible = $true
+        } else {
+            $c.DlgSilentHint.Text = "Detected: $($d.label) ($($d.evidence)) - your typed switch is kept; the detector would use $($d.silent)."
+            $useVisible = $true
+        }
+        $c.DlgSilentUse.Visibility = $(if ($useVisible) { 'Visible' } else { 'Collapsed' })
+    }.GetNewClosure()
+
     $fn.setBusy = {
         param($on, $msg)
         $c.DlgBusy.Visibility = $(if ($on) { 'Visible' } else { 'Collapsed' })
@@ -3167,7 +3309,7 @@ function Show-AppDialog($App, $Owner, [string]$LocalFile = '') {
         & ($fn.setBusy) $true 'Fetching and hashing - this can take a while on a large package...'
         $state.job = [powershell]::Create()
         [void]$state.job.AddScript($fetchText).AddArgument($source).AddArgument($PackageDir).
-               AddArgument($false)
+               AddArgument($false).AddArgument($familyText)
         $state.handle = $state.job.BeginInvoke()
     }.GetNewClosure()
 
@@ -3258,14 +3400,29 @@ function Show-AppDialog($App, $Owner, [string]$LocalFile = '') {
         # Change the name and they follow the new product, which is what swapping a package is.
         $sameProduct = ($state.settled -and (Get-BoxText $c.DlgName) -eq $state.openName)
 
-        # Nothing is proposed here any more. The editor used to identify the packager and
-        # suggest a switch; the suggestion was never reliable enough to act on, and a wrong
-        # switch does not fail loudly - the installer opens its GUI on a client machine and
-        # waits. What the package IS gets reported, and the switch is left to a person.
-        $c.DlgSilentHint.Foreground = '#FF9A9AA6'
-        $c.DlgSilentHint.Text = $(if ($r.packager) { "Package opened as $($r.packager). " } else { '' }) +
-            'Switches are not guessed at - type the one this installer documents, or leave it blank ' +
-            'and the installer guard will stop it if it opens a window.'
+        # What the installer's own bytes said. The rules: a typed switch is never overwritten;
+        # a detected switch belongs to the bytes, so a different file replaces it (or clears it
+        # when the new file shows nothing); an empty, undecided box is filled; a box someone
+        # cleared on purpose stays empty. Nothing here is a guess - no signature, no proposal.
+        $prevAuto = [string]$state.auto['silent']
+        $cur = Get-BoxText $c.DlgSilent
+        $state.detected = $(if ([string]$r.family) {
+            @{ family = [string]$r.family; label = [string]$r.familyLabel; evidence = [string]$r.familyEvidence
+               silent = [string]$r.silent; notes = @($r.familyNotes); uninstall = $r.uninstallShape; sha256 = [string]$r.sha256 } } else { $null })
+        $typedOnPurpose = ($state.silentSource -eq 'typed')
+        $wasOurs = ($cur -eq $prevAuto)          # blank-and-undecided, or the last detection
+        if ($state.detected -and $state.detected.silent) {
+            if (-not $typedOnPurpose -and $wasOurs) {
+                & ($fn.setAuto) $c.DlgSilent 'silent' ([string]$state.detected.silent)
+                $state.silentSource = 'detected'
+            }
+        } elseif ($wasOurs -and $prevAuto -and -not $typedOnPurpose) {
+            # the previous file's detected switch, and this file shows nothing: cleared, not kept
+            & ($fn.setAuto) $c.DlgSilent 'silent' ''
+            $state.silentSource = ''
+        }
+        $state.familyError = [string]$r.familyError
+        & ($fn.paintSilentHint)
         $cands = @(Get-VerifyCandidates (Get-BoxText $c.DlgName))
         $state.loading = $true
         try { $c.DlgVerify.Items.Clear(); foreach ($cd in $cands) { [void]$c.DlgVerify.Items.Add($cd) } }
@@ -3433,7 +3590,43 @@ function Show-AppDialog($App, $Owner, [string]$LocalFile = '') {
             Set-Field $App 'sha256' $state.sha256
             Set-Field $App 'sizeBytes' $state.size
         }
-        Set-Field $App 'silentArgs' (Get-BoxText $c.DlgSilent)
+        $silentText = Get-BoxText $c.DlgSilent
+        Set-Field $App 'silentArgs' $silentText
+        # Where that text came from, so the client knows what a blank means: 'detected' when it
+        # is exactly what the installer's bytes proposed; 'typed' for anything a person wrote,
+        # INCLUDING clearing a proposed switch on purpose; nothing at all when nobody has
+        # decided and nothing was found - the client may then read the file itself.
+        $d = $state.detected
+        $src = $(if ($d -and $d.silent -and $silentText -eq [string]$d.silent) { 'detected' }
+                 elseif ($silentText) { 'typed' }
+                 elseif ($d -and $d.silent) { 'typed' }
+                 elseif ($state.silentSource -eq 'typed') { 'typed' }   # cleared on purpose earlier; a later file that shows nothing does not undo that
+                 else { '' })
+        $state.silentSource = $src
+        if ($src) { Set-Field $App 'silentSource' $src } else { Remove-Field $App 'silentSource' }
+        if ($d -and $d.family) {
+            $prevInst = Get-Field $App 'installer'
+            $prevUtc = $(if ($prevInst -and [string](Get-Field $prevInst 'sha256') -eq [string]$d.sha256) { [string](Get-Field $prevInst 'detectedUtc') } else { '' })
+            Set-Field $App 'installer' ([pscustomobject]@{
+                family = [string]$d.family; evidence = [string]$d.evidence
+                detectedUtc = $(if ($prevUtc) { $prevUtc } else { [DateTime]::UtcNow.ToString('o') })
+                sha256 = [string]$d.sha256; silent = [string]$d.silent })
+            # An uninstall shape is written only where the entry has none of its own, and it
+            # never carries a command or a detect path - the client's registry row does that.
+            $prevUn = Get-Field $App 'uninstall'
+            $unOurs = (-not $prevUn) -or ([string](Get-Field $prevUn 'source') -eq 'detected')
+            if ($unOurs) {
+                if ($d.uninstall -and [string]$d.uninstall.args) {
+                    Set-Field $App 'uninstall' ([pscustomobject]@{ family = [string]$d.family; args = [string]$d.uninstall.args; source = 'detected' })
+                } elseif ($prevUn) { Remove-Field $App 'uninstall' }
+            }
+        } elseif ($state.sha256 -and (Get-Field $App 'installer') -and
+                  [string](Get-Field (Get-Field $App 'installer') 'sha256') -ne $state.sha256) {
+            # a fetch of a different file found nothing: the old detection no longer describes these bytes
+            Remove-Field $App 'installer'
+            $prevUn = Get-Field $App 'uninstall'
+            if ($prevUn -and [string](Get-Field $prevUn 'source') -eq 'detected') { Remove-Field $App 'uninstall' }
+        }
         # Merge, never replace: the combo edits only the FIRST verify path, and an app can
         # carry several (hand-curated). Writing back a one-element array here silently threw
         # the rest away - the app then "verified" on its weakest path alone.
@@ -3588,6 +3781,15 @@ function Show-AppDialog($App, $Owner, [string]$LocalFile = '') {
     foreach ($box in @($c.DlgName, $c.DlgUrl, $c.DlgSilent, $c.DlgRequires, $c.DlgId)) {
         $box.Add_TextChanged({ if (-not $state.loading) { & ($fn.apply) } }.GetNewClosure())
     }
+    # the silent hint follows every keystroke: typed / cleared / detected are told apart by the text
+    $c.DlgSilent.Add_TextChanged({ if (-not $state.loading) { & ($fn.paintSilentHint) } }.GetNewClosure())
+    $c.DlgSilentUse.Add_Click({
+        if ($state.detected -and $state.detected.silent) {
+            $c.DlgSilent.Text = [string]$state.detected.silent   # TextChanged applies and repaints
+            $state.auto['silent'] = [string]$state.detected.silent
+        }
+    }.GetNewClosure())
+    & ($fn.paintSilentHint)
     foreach ($cmb in @($c.DlgEntry, $c.DlgVerify)) {
         $cmb.Add_SelectionChanged({ if (-not $state.loading) { & ($fn.apply) } }.GetNewClosure())
         $cmb.AddHandler([Windows.Controls.Primitives.TextBoxBase]::TextChangedEvent,

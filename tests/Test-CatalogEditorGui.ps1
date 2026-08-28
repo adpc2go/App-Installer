@@ -158,6 +158,13 @@ try {
         -CatalogPath $catPath -PackageDir (Join-Path $sandbox 'packages') -BaseUrl "http://127.0.0.1:$port" `
         -PushStatePath (Join-Path $sandbox '.push-state.json') `
         -R2CredentialPath (Join-Path $sandbox 'r2-credentials.xml')
+    # The same empty $PSScriptRoot leaves the editor looking for its detector in the current
+    # directory; it lives beside the editor in the repository, so load it from there.
+    if (-not $script:FamilyText) {
+        $script:FamilyModule = Join-Path $repo 'tools\Installer-Family.ps1'
+        $script:FamilyText = [IO.File]::ReadAllText($script:FamilyModule)
+        . $script:FamilyModule
+    }
 
     Assert-True  'the editor window was built'   ($null -ne $window)
     Assert-Equal 'the catalog imported two apps' 2 @($script:Catalog.apps).Count
@@ -333,10 +340,47 @@ try {
     Assert-Equal 'and recorded the real size'        $zipSize $r.size
     Assert-True  'it read the archive contents'      (@($r.files).Count -ge 2)
     Assert-Equal 'and ranked setup.exe as the entry' 'inner\setup.exe' (@($r.entries)[0])
-    # The fetch identifies NOTHING about the installer any more, deliberately. It lists what is
-    # in the package and hashes it; the silent switch is a person's decision, because a switch
-    # that is nearly right opens a GUI on a client machine instead of failing.
-    Assert-Equal 'the fetch proposes no switch at all' '' ([string]$r.silent)
+    # A setup.exe with no known signature earns NOTHING: no family, no switch. The detector
+    # asserts only what it finds; an absence is never turned into a proposal.
+    Assert-Equal 'a setup.exe with no known signature gets no switch' '' ([string]$r.silent)
+    Assert-Equal 'and names no family'                               '' ([string]$r.family)
+    Assert-True  'and reports why nothing came back'                (-not [string]$r.familyError)
+
+    # ============================================================== 2b. the fetch names the family
+    Write-Section '2b. The fetch names the installer family from its signature, and only then'
+    Assert-True 'the editor loaded the detector source' ([bool]$script:FamilyText)
+    $famRoot = Join-Path $sandbox 'family'
+    New-Item -ItemType Directory -Force -Path (Join-Path $famRoot 'nsis\inner') | Out-Null
+    [void](New-InstallerFamilyFixture -Family nsis -Path (Join-Path $famRoot 'nsis\inner\setup.exe'))
+    Set-Content -LiteralPath (Join-Path $famRoot 'nsis\inner\readme.txt') -Value 'x' -Encoding ASCII
+    $nsisZip = Join-Path $famRoot 'nsis.zip'
+    [IO.Compression.ZipFile]::CreateFromDirectory((Join-Path $famRoot 'nsis'), $nsisZip)
+    $innoExe = Join-Path $famRoot 'inno-setup.exe'
+    [void](New-InstallerFamilyFixture -Family inno -Path $innoExe)
+    $plainExe = Join-Path $famRoot 'plain.exe'
+    Copy-Item (Join-Path $env:SystemRoot 'System32\where.exe') $plainExe -Force
+    $famCases = @(
+        @{ src = $nsisZip;  family = 'nsis'; silent = '/S';                                       label = 'an NSIS setup.exe inside a zip' },
+        @{ src = $innoExe;  family = 'inno'; silent = '/VERYSILENT /SUPPRESSMSGBOXES /NORESTART'; label = 'a bare Inno Setup installer' },
+        @{ src = $plainExe; family = '';     silent = '';                                          label = 'an exe with no installer signature' })
+    foreach ($fc in $famCases) {
+        $ps = [powershell]::Create()
+        [void]$ps.AddScript($script:FetchWork).AddArgument($fc.src).AddArgument((Join-Path $sandbox 'packages')).
+                     AddArgument($false).AddArgument([string]$script:FamilyText)
+        $fr = $ps.Invoke() | Select-Object -Last 1
+        $ps.Dispose()
+        Assert-True  "$($fc.label): fetched without error"  (-not $fr.error)
+        Assert-Equal "$($fc.label): family"                 $fc.family ([string]$fr.family)
+        Assert-Equal "$($fc.label): proposed switch"        $fc.silent ([string]$fr.silent)
+        if ($fc.family) {
+            Assert-True "$($fc.label): the evidence names an offset or a marker" ([string]$fr.familyEvidence -match '0x[0-9A-F]+|signature|firstheader|RCDATA')
+            Assert-True "$($fc.label): carries a label for the drawer"          ([bool][string]$fr.familyLabel)
+        } else {
+            Assert-Equal "$($fc.label): no label is invented"            '' ([string]$fr.familyLabel)
+            Assert-True  "$($fc.label): the evidence says nothing was found, not what it might be" ([string]$fr.familyEvidence -match 'no known installer signature')
+        }
+    }
+    Assert-True 'nothing was left behind in the package cache' (-not @(Get-ChildItem -LiteralPath (Join-Path $sandbox 'packages') -Directory -Filter 'sniff-*' -ErrorAction SilentlyContinue).Count)
 
     # Listing and hashing are all this job does now, so they had better keep working when it is
     # handed nothing extra at all.
@@ -382,6 +426,19 @@ try {
     }
     $good = [pscustomobject]@{ id = 'good'; name = 'Good'; url = 'https://x.invalid/a.zip'
         sha256 = ('C' * 64); sizeBytes = 10; entry = 'inner\setup.exe' }
+
+    # The installer-family fields are advisory: a strange silentSource, a detection that
+    # describes a different file, or an empty uninstall block are said out loud and never hold
+    # a publish.
+    $oddFam = [pscustomobject]@{ id = 'fam'; name = 'Fam'; url = 'https://x.invalid/fam.zip'
+        sha256 = ('D' * 64); sizeBytes = 10; entry = 'setup.exe'; silentArgs = '/S'; silentSource = 'guess'
+        installer = [pscustomobject]@{ family = 'nsis'; evidence = 'NSIS firstheader'; sha256 = ('E' * 64) }
+        uninstall = [pscustomobject]@{ family = 'nsis'; source = 'detected' } }
+    $oFam = Test-Publish 'family' @($oddFam)
+    Assert-True 'an unknown silentSource is a soft warning'            ($oFam -match "silentSource 'guess'")
+    Assert-True 'a detection for a different hash is a soft warning'   ($oFam -match 'describes hash EEEEEEEEEEEE')
+    Assert-True 'an uninstall block with nothing to run is a soft warning' ($oFam -match 'neither a command nor arguments')
+    Assert-True 'and none of them holds the publish'                   ($oFam -match 'not a reason to hold' -and $oFam -notmatch 'issue\(s\) in apps that WOULD be served')
 
     # The rule here changed deliberately when the Worker began filtering the catalog it serves.
     # A placeholder hash is no longer an error, because no client ever sees that app - and it

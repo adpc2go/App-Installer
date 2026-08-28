@@ -250,8 +250,8 @@ try {
     (& $g 'DlgSilent').Text   = '--silent'
     (& $g 'DlgHashInfo').Text = '13.87 GB   sha256 9F2C41A8B77E0D34...'
     (& $g 'DlgHashInfo').Foreground = '#FF9AE6B4'
-    (& $g 'DlgSilentHint').Text = 'Installer identified as Autodesk (ODIS).'
-    (& $g 'DlgSilentHint').Foreground = '#FF9AE6B4'
+    (& $g 'DlgSilentHint').Text = 'Detected: Autodesk ODIS (Autodesk Setup.exe with image\Installer.exe beside it) - switch applied.'
+    (& $g 'DlgSilentHint').Foreground = '#FF9A9AA6'
     foreach ($e in 'Build\setup.exe', 'Installer\install.exe') { [void](& $g 'DlgEntry').Items.Add($e) }
     (& $g 'DlgEntry').Text = 'Build\setup.exe'
     [void](& $g 'DlgVerify').Items.Add('%ProgramFiles%\Autodesk\Revit 2026\Revit.exe')

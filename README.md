@@ -1081,12 +1081,22 @@ steps rebuilt instead of edited, the package guard disabled, the null-`Text` cra
 the row list made fixed-size). Every one is caught — five by the scenario harness, all seven once
 `Test-AfterInstallList.ps1` runs too.
 
-Silent switches are typed by hand, deliberately. The editor used to identify the packager and
-propose one; the proposal was right often enough to be trusted and wrong often enough to reach a
-client, and a wrong switch does not fail loudly - the installer opens its GUI on a machine nobody
-is sitting at. What catches it now is the thing that always did the real work: the installer
-guard stops a window that opens, bounds it with a timeout, and names the switch as the likely
-cause.
+Silent switches come from the installer itself, on both sides. `tools\Installer-Family.ps1`
+reads bounded regions of the ranked setup file - the PE section table, the version resource, the
+first megabyte and last 64 KB of the overlay, the resource leaves, the file names beside it - and
+names the family **only from a positive signature at a stated offset** (MSI, Inno Setup, NSIS,
+WiX Burn, 7-Zip and WinRAR SFX, InstallShield, Autodesk ODIS, Adobe Admin Console, Office ODT,
+Acrobat, MSIX). A family it does not recognise gets no switch; nothing is ever inferred from what
+was not seen, which is what sank the first detector (it sampled 3 MB of a 1 GB file). The editor
+runs it at fetch time and writes `silentArgs` + `silentSource: detected` + an `installer` block
+(family, evidence, the hash the answer belongs to); a switch you type is `typed` and is never
+overwritten, and clearing the box is itself a decision. The client runs the same code (a
+verbatim copy inside `AppDeploy.ps1`, gated for equality at publish) on the downloaded file when
+the catalog carries no switch, and on the Uninstall tab for every registry uninstaller that is
+not already quiet - an Inno `unins000.exe` gets `/VERYSILENT /SUPPRESSMSGBOXES /NORESTART`, NSIS
+gets `/S _?=<folder>`, Burn gets `/uninstall /quiet /norestart`. Every decision is written to
+the activity log with the evidence. The installer guard is unchanged and still the safety net: a
+window that opens is stopped, bounded by a timeout, and the switch and its origin are named.
 
 `Publish-Release.ps1` refuses to publish a catalog whose **servable** apps carry a
 `postInstall` `run` step with no `sha256`, the same installer under two ids, or an
@@ -1127,13 +1137,15 @@ PowerShell. Those environments need a signed compiled exe instead.
 Honest list of what is not finished. Nothing here has been run end-to-end against a real
 installer yet.
 
-1. **Silent-install switches are typed by hand, and unconfirmed.** Nothing detects or proposes
-   them: that was tried and removed, because a proposal that is right most of the time is
-   indistinguishable from a checked fact by the time it reaches a client. Set `silentArgs`
-   from the vendor's own documentation and confirm it on a VM. A wrong one does not fail
-   loudly - the installer opens its GUI and waits - so what catches it is the installer guard,
-   which stops a window that opens, bounds it with a timeout, and names the switch as the
-   likely cause.
+1. **Detected silent switches are documented, not yet confirmed per product.** The family
+   detector applies each family's documented switch only on a positive signature, and the
+   core families are proven against real pinned installers (Notepad++ = NSIS, Git = Inno,
+   vc_redist = Burn) and synthesised fixtures. What is not done: a VM run of every catalog
+   entry with `silentArgs` cleared, to confirm the family's switch is the one *this* vendor
+   honours (InstallShield in particular proposes nothing unless a `.msi` or `.iss` sits beside
+   `setup.exe`). Squirrel/Velopack, Advanced Installer, Wise and Setup Factory are not
+   recognised yet. The installer guard remains the catch for a wrong switch: it stops a window
+   that opens, bounds it with a timeout, and names the switch and where it came from.
 2. **FloorGenerator has no installer.** It ships as a `.dlm` plugin copied into the 3ds Max
    plugins folder. Either wrap it in a self-extractor, or add a `copy` action to the tool
    (cleaner, and reusable for any future plugin).

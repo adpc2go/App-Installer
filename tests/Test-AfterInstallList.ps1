@@ -140,6 +140,11 @@ try {
                   'ConvertFrom-PackageFileName',
                   'Get-PostRows', 'ConvertTo-PostStep', 'Set-PostRows'
     foreach ($n in $fromEditor) { . ([scriptblock]::Create((Get-FunctionText $editorAst $n 'Catalog-Editor.ps1'))) }
+    # The editor's top-level statements are not lifted, so the detector it hands its fetch
+    # runspace is loaded here the way the editor itself does it: one source file, as text.
+    $script:FamilyModule = Join-Path $repo 'tools\Installer-Family.ps1'
+    $script:FamilyText = [IO.File]::ReadAllText($script:FamilyModule)
+    . $script:FamilyModule
 
     # Invoke-PostStep is the half of the contract the editor writes FOR. Taking it verbatim is
     # the only way this can fail when the two drift apart.
@@ -1008,8 +1013,61 @@ try {
 
         Assert-Equal 'the verify path survives a re-fetch' `
                      '%ProgramFiles%\Microsoft Office\root\Office16\WINWORD.EXE' (Get-BoxText $c.DlgVerify)
-        Assert-Equal 'and the silent switches stay empty rather than becoming a guess' `
+        Assert-Equal 'and the silent switches stay empty - OfficeSetup.exe carries no signature, so nothing is guessed' `
                      '' (Get-BoxText $c.DlgSilent)
+        Assert-Equal 'no source is recorded for an undecided switch' '' ([string](Get-Field $App 'silentSource'))
+
+        # ========================================================== 16. a detected switch
+        Write-Section '16. A detected switch: applied when undecided, never over a typed one, restored on request'
+        $famDir = Join-Path $curDir 'family'
+        New-Item -ItemType Directory -Force -Path (Join-Path $famDir 'nsis\inner') | Out-Null
+        [void](New-InstallerFamilyFixture -Family nsis -Path (Join-Path $famDir 'nsis\inner\setup.exe'))
+        $nsisZip = Join-Path $famDir 'nsis.zip'
+        [IO.Compression.ZipFile]::CreateFromDirectory((Join-Path $famDir 'nsis'), $nsisZip)
+        New-Item -ItemType Directory -Force -Path (Join-Path $famDir 'inno\inner') | Out-Null
+        [void](New-InstallerFamilyFixture -Family inno -Path (Join-Path $famDir 'inno\inner\setup.exe'))
+        $innoZip = Join-Path $famDir 'inno.zip'
+        [IO.Compression.ZipFile]::CreateFromDirectory((Join-Path $famDir 'inno'), $innoZip)
+        $fetchAndWait = { param($src) & ($dlg.Tag.Fn.startFetch) $src; $w = 0; while ($state.job -and $w -lt 30000) { Wait-Dispatcher 200; $w += 200 } }
+
+        & $fetchAndWait $nsisZip
+        Assert-Equal 'the detector ran inside the fetch without error'   '' ([string]$state.familyError)
+        Assert-True  'and the drawer was handed the detector source'     ([bool][string]$script:FamilyText)
+        Assert-Equal 'an undecided box takes the detected NSIS switch'   '/S' (Get-BoxText $c.DlgSilent)
+        Assert-Equal 'and the catalog says where it came from'           'detected' ([string](Get-Field $App 'silentSource'))
+        Assert-Equal 'the installer block names the family'              'nsis' ([string](Get-Field (Get-Field $App 'installer') 'family'))
+        Assert-Equal 'and the hash it belongs to'                        $state.sha256 ([string](Get-Field (Get-Field $App 'installer') 'sha256'))
+        Assert-True  'the hint says applied'                             ($c.DlgSilentHint.Text -match 'switch applied')
+        Assert-Equal 'a detected uninstall shape is written, command-less' 'nsis' ([string](Get-Field (Get-Field $App 'uninstall') 'family'))
+        Assert-True  'and carries no command'                            (-not [string](Get-Field (Get-Field $App 'uninstall') 'command'))
+        Assert-Equal 'the Use detected button is hidden while applied'  'Collapsed' ([string]$c.DlgSilentUse.Visibility)
+
+        & $fetchAndWait $innoZip
+        Assert-Equal 'a different file replaces a detected switch'        '/VERYSILENT /SUPPRESSMSGBOXES /NORESTART' (Get-BoxText $c.DlgSilent)
+        Assert-Equal 'and the family with it'                             'inno' ([string](Get-Field (Get-Field $App 'installer') 'family'))
+
+        $c.DlgSilent.Text = '/X'
+        Assert-Equal 'a typed switch is recorded as typed'                'typed' ([string](Get-Field $App 'silentSource'))
+        Assert-True  'and the hint says it is kept'                       ($c.DlgSilentHint.Text -match 'typed switch is kept')
+        Assert-Equal 'with Use detected offered'                          'Visible' ([string]$c.DlgSilentUse.Visibility)
+        & $fetchAndWait $nsisZip
+        Assert-Equal 'a re-fetch never overwrites a typed switch'         '/X' (Get-BoxText $c.DlgSilent)
+        Assert-Equal 'though the installer block follows the file'        'nsis' ([string](Get-Field (Get-Field $App 'installer') 'family'))
+
+        $c.DlgSilentUse.RaiseEvent((New-Object Windows.RoutedEventArgs ([Windows.Controls.Button]::ClickEvent)))
+        Assert-Equal 'Use detected restores the detected switch'          '/S' (Get-BoxText $c.DlgSilent)
+        Assert-Equal 'and the source flips back to detected'              'detected' ([string](Get-Field $App 'silentSource'))
+
+        $c.DlgSilent.Text = ''
+        Assert-Equal 'clearing the box by hand is a decision: typed, empty' 'typed' ([string](Get-Field $App 'silentSource'))
+        Assert-Equal 'and the switch is empty'                            '' ([string](Get-Field $App 'silentArgs'))
+        Assert-True  'the hint says cleared by hand'                      ($c.DlgSilentHint.Text -match 'cleared by hand')
+
+        & $fetchAndWait $odtZip
+        Assert-Equal 'a file with no signature leaves a cleared box alone' '' (Get-BoxText $c.DlgSilent)
+        Assert-Equal 'and the decision stands'                            'typed' ([string](Get-Field $App 'silentSource'))
+        Assert-Equal 'while the stale installer block is dropped'         '' ([string](Get-Field $App 'installer'))
+        Assert-Equal 'and the detected uninstall shape with it'           '' ([string](Get-Field $App 'uninstall'))
         # what IS a property of the file still follows the file, or swapping a package would
         # leave an entry half describing one product and half another
         Assert-Equal 'the setup file inside the package still follows' 'inner\OfficeSetup.exe' (Get-BoxText $c.DlgEntry)
