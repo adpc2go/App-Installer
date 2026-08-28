@@ -6489,6 +6489,48 @@ function Test-NvSetting([uint32]$SettingId, [int]$Expected) {
 # Every package pattern absent for the current user = the row is applied. Runs unelevated
 # in the GUI, so it reads the technician's own package list - the same one the worker's
 # -AllUsers removal covers.
+# One source of truth for the six grouped Store-debloat rows: the GUI's detection probes
+# and the worker's apply branches must agree on the SAME patterns, or "Detect Applied"
+# lies about what a batch actually removed. Matched with a trailing * because package
+# identities carry publisher suffixes and vary by build.
+# Count for reporting: 22 apps, not 24 - XboxApp/GamingApp and MSTeams/MicrosoftTeams are
+# old and new generations of the same two apps.
+#
+# These two tables and their injection into the worker were deleted along with the
+# Preferences tab (ef07a49) while every reader of them stayed: all six "- Remove" rows then
+# failed with "Cannot index into a null array" - $null['debloatweb'] - on every machine,
+# and the OEM-bloat probe matched nothing. Restored here and shipped to the worker through
+# Get-SharedTablesSource, the same way the NVAPI source travels.
+$script:DebloatPacks = @{
+    debloatweb    = @('Microsoft.BingSearch', 'Microsoft.BingNews', 'Microsoft.BingWeather', 'Microsoft.StartExperiencesApp')
+    debloatdev    = @('Microsoft.Windows.DevHome', 'Microsoft.PowerAutomateDesktop')
+    debloatxbox   = @('Microsoft.MicrosoftSolitaireCollection', 'Microsoft.GamingApp', 'Microsoft.XboxApp',
+                      'Microsoft.XboxGamingOverlay', 'Microsoft.XboxIdentityProvider',
+                      'Microsoft.XboxSpeechToTextOverlay', 'Microsoft.Xbox.TCUI')
+    debloatmsapps = @('Microsoft.WindowsFeedbackHub', 'Microsoft.GetHelp', 'MSTeams', 'MicrosoftTeams', 'Microsoft.OutlookForWindows')
+    debloatmobile = @('MicrosoftWindows.CrossDevice', 'Microsoft.YourPhone')
+    debloatutil   = @('Microsoft.WindowsAlarms', 'Clipchamp.Clipchamp', 'MicrosoftCorporationII.QuickAssist', 'Microsoft.Todos')
+}
+
+# OEM updater services and logon tasks are matched by pattern because the names vary by
+# vendor. Shared for the same reason as the debloat packs: probe and apply must agree.
+$script:OemBloatPatterns = @('HP*', 'Dell*', 'SupportAssist*', 'Lenovo*', 'Acer*', 'ASUS*',
+                             'Nahimic*', 'Killer*', 'AdobeUpdate*', 'GoogleUpdate*', 'jusched*')
+
+# The two tables above rendered as PowerShell source, for Start-Worker to paste over the
+# worker's #__SHAREDTABLES__ line. Rendered rather than duplicated so there is exactly one
+# copy to edit; single-quoted literals, so a pattern can never be interpreted.
+function Get-SharedTablesSource {
+    $q = { param($s) "'" + ('' + $s).Replace("'", "''") + "'" }
+    $lines = @('$script:DebloatPacks = @{')
+    foreach ($k in @($script:DebloatPacks.Keys | Sort-Object)) {
+        $lines += "    $k = @(" + ((@($script:DebloatPacks[$k]) | ForEach-Object { & $q $_ }) -join ', ') + ')'
+    }
+    $lines += '}'
+    $lines += '$script:OemBloatPatterns = @(' + ((@($script:OemBloatPatterns) | ForEach-Object { & $q $_ }) -join ', ') + ')'
+    return ($lines -join [Environment]::NewLine)
+}
+
 function Test-AppxAbsent([string[]]$Patterns) {
     foreach ($p in $Patterns) {
         if (@(Get-AppxPackage -Name "$p*" -ErrorAction SilentlyContinue).Count) { return $false }
@@ -10698,6 +10740,10 @@ function Get-InterruptKey([string]$PnpId) {
 # worker here-string). Writes need admin; a non-elevated SaveSettings surfaces as a
 # non-zero return, which the caller reports.
 #__NVAPISOURCE__
+# The debloat package table and the OEM-bloat patterns, pasted in from the GUI's single copy
+# by Start-Worker (Get-SharedTablesSource). Every Apply-Tweak/Undo-Tweak branch that reads
+# $script:DebloatPacks or $script:OemBloatPatterns depends on this line being substituted.
+#__SHAREDTABLES__
 $script:NvReady = $null
 function Initialize-NvApi {
     if ($null -ne $script:NvReady) { return $script:NvReady }
@@ -12205,7 +12251,7 @@ function Start-Worker {
     # NVAPI source is injected as a here-string ASSIGNMENT ($NvApiSrc = @'...'@) built here -
     # it only exists after substitution, so it is never nested inside the worker here-string.
     $nvAssign = "`$NvApiSrc = @'" + [Environment]::NewLine + $script:NvApiSource + [Environment]::NewLine + "'@"
-    $built = $workerScript.Replace('#__NVAPISOURCE__', $nvAssign)
+    $built = $workerScript.Replace('#__NVAPISOURCE__', $nvAssign).Replace('#__SHAREDTABLES__', (Get-SharedTablesSource))
     Set-Content -Path $script:WorkerPath -Value $built -Encoding UTF8
     Remove-Item -LiteralPath $script:StatusPath, $script:CancelPath -ErrorAction SilentlyContinue
     $script:StatusOffset = 0

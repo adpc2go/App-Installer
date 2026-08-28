@@ -107,6 +107,7 @@ function Remove-Artefacts {
     try { if (Get-Service -Name $svcName -ErrorAction SilentlyContinue) {
             Stop-Service -Name $svcName -Force -ErrorAction SilentlyContinue
             & "$env:SystemRoot\System32\sc.exe" delete $svcName | Out-Null } } catch {}
+    try { Remove-Item -LiteralPath (Join-Path $env:ProgramData "PC2GoTestSvc$tag") -Recurse -Force -ErrorAction SilentlyContinue } catch {}
     try { Unregister-ScheduledTask -TaskName $taskName -TaskPath $taskPath -Confirm:$false -ErrorAction SilentlyContinue } catch {}
     try { if (Test-Path -LiteralPath $hklmKey) { Remove-Item -LiteralPath $hklmKey -Recurse -Force -ErrorAction SilentlyContinue } } catch {}
     foreach ($d in @($progDir, $otherProf, $sandbox)) {
@@ -298,7 +299,13 @@ try {
         Assert-Equal 'the hosts line is in place' 1 @(Get-Content -LiteralPath $hostsFile | Where-Object { $_.Trim() -eq $hostsLine }).Count
 
         # ---- a service
-        & "$env:SystemRoot\System32\sc.exe" create $svcName binPath= "$env:SystemRoot\System32\cmd.exe /c exit" DisplayName= "$token Helper" | Out-Null
+        # From its OWN folder, like a vendor service. The worker refuses to delete a service
+        # whose binary runs from the Windows folder - a token match on "Update" must never take
+        # a Windows service with it - so a fake registered on System32\cmd.exe is refused too.
+        $svcDir = Join-Path $env:ProgramData "PC2GoTestSvc$tag"
+        New-Item -ItemType Directory -Force -Path $svcDir | Out-Null
+        Copy-Item -LiteralPath "$env:SystemRoot\System32\cmd.exe" -Destination (Join-Path $svcDir 'helper.exe') -Force
+        & "$env:SystemRoot\System32\sc.exe" create $svcName binPath= "$(Join-Path $svcDir 'helper.exe') /c exit" DisplayName= "$token Helper" | Out-Null
         Assert-True 'the test service exists' ($null -ne (Get-Service -Name $svcName -ErrorAction SilentlyContinue))
 
         # ---- a scheduled task
