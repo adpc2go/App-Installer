@@ -73,6 +73,13 @@ param(
 $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName System.IO.Compression.FileSystem
 
+# Absolute, against PowerShell's OWN current location. .NET's ZipFile resolves a relative
+# path against the process working directory, which is not $PWD after a Push-Location - so
+# `-Destination out.zip` was written into one directory and then verified (or worse, an old
+# out.zip verified) in another. Same for the work folder.
+if ($Destination) { $Destination = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($Destination) }
+if ($WorkDir)     { $WorkDir     = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($WorkDir) }
+
 function Write-Step([string]$T) { Write-Host "==> $T" -ForegroundColor Cyan }
 function Write-Ok  ([string]$T) { Write-Host "  + $T" -ForegroundColor Green }
 function Write-Warn([string]$T) { Write-Host "  ! $T" -ForegroundColor Yellow }

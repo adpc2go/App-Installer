@@ -339,7 +339,7 @@ try {
     Assert-True 'an after-install file with no package to take it out of is not publishable' `
                 ((@(Test-App $noPkg) -join ' ') -like '*need a package*')
     $withPkg = [pscustomobject]@{
-        name = 'With Package'; url = 'https://example.invalid/app.zip'
+        id = 'with-package'; name = 'With Package'; url = 'https://example.invalid/app.zip'
         sha256 = ('A' * 64); sizeBytes = 1000; entry = 'Build\setup.exe'
         postInstall = @([pscustomobject]@{ type = 'copy'; name = 'Copy x'; from = 'p\x.dat'; dest = 'C:\B\' })
     }

@@ -376,7 +376,7 @@ try {
         $pub  = Join-Path $root 'tools\Publish-Release.ps1'
         Start-Process -FilePath (Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe') `
             -Wait -WindowStyle Hidden -ArgumentList (
-            "-NoProfile -ExecutionPolicy Bypass -Command `"& '$pub' *> '$logf'`"") | Out-Null
+            "-NoProfile -ExecutionPolicy Bypass -Command `"& '$pub' -ValidateOnly *> '$logf'`"") | Out-Null
         if (-not (Test-Path -LiteralPath $logf)) { return '' }
         return (Get-Content -LiteralPath $logf -Raw)
     }

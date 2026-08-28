@@ -55,7 +55,18 @@ $ErrorActionPreference = 'Stop'
 # Every failure in here is a throw, and what exit code a throw produces depends on how the
 # script was invoked. Push runs this as a child process and reads the exit code to decide
 # whether the catalog is live, so the contract is made explicit instead of inherited.
-trap { Write-Host "ERROR: $($_.Exception.Message)" -ForegroundColor Red; exit 1 }
+trap {
+    Write-Host "ERROR: $($_.Exception.Message)" -ForegroundColor Red
+    # The one failure that breaks every client: the new tool is in R2 but the edge still pins
+    # the old hash, so go.ps1 refuses to start with "failed integrity check". Say so at the
+    # moment it happens, whatever threw, rather than leaving it to be inferred from a log.
+    if ($script:UploadedDeploy) {
+        Write-Host ("ERROR: AppDeploy.ps1 was ALREADY UPLOADED to R2 but the edge still pins the old hash - " +
+                    "every fresh client will refuse to start until `wrangler deploy` succeeds in $cfDir") -ForegroundColor Red
+    }
+    exit 1
+}
+$script:UploadedDeploy = $false
 
 # $RepoRoot exists so this can be pointed at a staging copy - or at a fixture - instead of only
 # ever validating the repo it happens to sit in. Without it, the validation logic could not be
@@ -154,10 +165,27 @@ foreach ($app in @($catalog.apps)) {
         }
         continue
     }
-    if (-not $sha -or $sha -match 'REPLACE|PLACEHOLDER' -or $sha.Length -ne 64) {
+    # The SAME test the edge applies (worker.js: 64 hex characters AND a url), or "N ready to
+    # serve" counts an entry the Worker then drops - and, when it is the only one, this script
+    # ships exactly the empty catalog the check below exists to refuse.
+    if (-not $sha -or $sha -match 'REPLACE|PLACEHOLDER' -or $sha -notmatch '^(?i)[0-9a-f]{64}$') {
         $notServed.Add("$($app.id): no real hash yet")
         continue
     }
+    if (-not ('' + $app.url).Trim()) {
+        $notServed.Add("$($app.id): hashed but has no url")
+        continue
+    }
+    # Two served entries sharing an id: the client keeps the first and silently drops the other.
+    if (-not $script:SeenIds) { $script:SeenIds = @{} }
+    $idKey = ('' + $app.id).Trim()
+    if (-not $idKey) { $problems.Add("an app has no id (name '$($app.name)')"); continue }
+    if ($script:SeenIds.ContainsKey($idKey)) { $problems.Add("two apps share the id '$idKey' - the client would keep only the first"); continue }
+    $script:SeenIds[$idKey] = $true
+    # the client does [long]$a.sizeBytes; a non-number there skips the entry at load
+    $sizeOk = $true
+    try { $null = [long]$app.sizeBytes } catch { $sizeOk = $false }
+    if (-not $sizeOk) { $problems.Add("$($app.id): sizeBytes is not a number ('$($app.sizeBytes)')"); continue }
     $servedApps.Add($app)
     # Everything below is checked only for apps that WILL be served. Validating what actually
     # ships is the point; complaining about a row nobody can see is noise.
@@ -269,11 +297,12 @@ if ($problems.Count -gt 0) {
            'would be empty and every client would report a catalog failure. Push at least one ' +
            'installer to R2 first.')
 } else {
-    Write-Ok "$serving of $(@($catalog.apps).Count) app(s) ready to serve, no unverified switches"
+    Write-Ok "$serving of $(@($catalog.apps).Count) app(s) ready to serve"
 }
 
-# Push calls this before it uploads a single byte. Discovering a VERIFY marker or a missing
-# step hash AFTER a four-hour upload is a bad day, and this is the only copy of those rules.
+# Push runs this (-ValidateOnly) before it uploads a single byte. Discovering a missing step
+# hash or a duplicate AFTER a four-hour upload is a bad day, and this is the only copy of
+# those rules.
 if ($ValidateOnly) {
     Write-Ok 'Validation only - nothing uploaded, pinned or deployed.'
     exit 0
@@ -305,7 +334,12 @@ if (Test-Path -LiteralPath $compressor) {
     if (-not (Test-ScriptTokensMatch -Original $rawSrc -Stripped $shipped)) {
         throw 'Stripping AppDeploy.ps1 changed its code, not just its comments. Refusing to publish.'
     }
-    [IO.File]::WriteAllText($shipDeploy, $shipped, (New-Object Text.UTF8Encoding $false))
+    # WITH a byte-order mark. Windows PowerShell 5.1 reads a BOM-less .ps1 as ANSI, not UTF-8:
+    # the source is pure ASCII today, so nothing was broken yet - but the first em dash or
+    # arrow in a UI string would pass the token check (both sides decoded in memory), pass the
+    # client's hash (bytes match), and then fail to PARSE on every client, in a hidden window.
+    # The hash is computed over the bytes written here, so the pin stays consistent.
+    [IO.File]::WriteAllText($shipDeploy, $shipped, (New-Object Text.UTF8Encoding $true))
     $saved = [math]::Round((1 - ($shipped.Length / [double]$rawSrc.Length)) * 100, 1)
     Write-Ok ("{0:N0} KB -> {1:N0} KB  ({2}% smaller, identical tokens)" -f ($rawSrc.Length / 1KB), ($shipped.Length / 1KB), $saved)
 } else {
@@ -326,11 +360,22 @@ Write-Ok "$hash  ($sizeKb KB)"
 # Resolve-Wrangler accepts npx as well as a global install, so this is a check that wrangler is
 # REACHABLE rather than that it is on PATH. The old test rejected a machine whose only route to
 # wrangler was npx - which is the machine the OAuth login here was made on.
+# the friendly message the header promises, rather than a raw "not recognized"
+if (-not (Get-Command Resolve-Wrangler -ErrorAction SilentlyContinue)) {
+    throw ("R2-Upload.ps1 is missing from $PSScriptRoot. It holds the wrangler lookup this script " +
+           'needs to upload and deploy; restore it from the repository.')
+}
 $null = Resolve-Wrangler
 
 $tomlRaw = Get-Content -LiteralPath $wranglerToml -Raw
 $bucket  = ([regex]::Match($tomlRaw, 'bucket_name\s*=\s*"([^"]+)"')).Groups[1].Value
 if (-not $bucket) { throw "Could not read bucket_name from $wranglerToml" }
+# BEFORE anything is uploaded. This used to be discovered at step 4, after AppDeploy.ps1 was
+# already in the bucket - which put every fresh client into "failed integrity check" for a
+# missing line in a toml file.
+if ($tomlRaw -notmatch '(?m)^APPDEPLOY_SHA256\s*=') {
+    throw "No APPDEPLOY_SHA256 line in $wranglerToml to pin the hash into - nothing was uploaded."
+}
 
 # Preflight. Both of these fail deep inside an object-put with a raw API error that reads
 # like a bug in this script, so check them up front and say what to actually do.
@@ -386,6 +431,7 @@ foreach ($u in $uploads) {
         'r2', 'object', 'put', "$bucket/$($u.Key)",
         '--file', $u.Local, '--content-type', $u.Type, '--remote'
     )
+    if ($u.Key -eq 'AppDeploy.ps1') { $script:UploadedDeploy = $true }   # see the trap
     Write-Ok $u.Key
 }
 
@@ -404,7 +450,8 @@ Write-Ok 'wrangler.toml updated'
 # ------------------------------------------------------------------ 5. deploy
 
 if ($SkipDeploy) {
-    Write-Warn 'Skipping deploy (-SkipDeploy). The live Worker still serves the OLD pin.'
+    Write-Warn ('Skipping deploy (-SkipDeploy). R2 now holds the NEW AppDeploy.ps1 but the live Worker ' +
+                'still pins the OLD hash - fresh clients will refuse to start until `wrangler deploy` runs.')
     exit 0
 }
 

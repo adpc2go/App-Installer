@@ -598,7 +598,8 @@ function Remove-R2Upload {
 
     The /9000 term is headroom against the 10,000-part cap rather than a real constraint - at
     a fixed 64 MiB the ceiling is already 625 GB. It exists so a hypothetical 700 GB entry
-    raises the part size instead of failing with InvalidPart on Complete after eight hours.
+    raises the part size instead of being refused at part 10,001 (InvalidArgument) after
+    eight hours of uploading the first 10,000.
 #>
 function Get-R2PartSize {
     param([Parameter(Mandatory = $true)][long]$SizeBytes, [long]$MinPartBytes = 64MB)
@@ -631,7 +632,8 @@ function Get-R2PartCount {
     corrupted part and a completed object, so a mismatch fails this attempt.
 
     Cancel is checked every buffer - roughly every megabyte - rather than only between parts,
-    so Stop lands in about a second instead of after 64 MiB.
+    so Stop lands in about a second instead of after 64 MiB. (On the -SignPayload fallback the
+    whole part is read and hashed first, so there Stop lands between parts.)
 #>
 function Send-R2Part {
     param(
@@ -708,8 +710,12 @@ function Send-R2Part {
             # is the single most common real-world failure this code exists to survive.
             # Hand back the bytes already counted so the caller can wind the progress total
             # back before retrying, or a re-sent part is counted twice and the bar passes 100%.
+            # A read-side fault ("the file ended N bytes early", a Seek that failed) is not a
+            # network fault, and looked like one: StatusCode 0 is retried five times, ~30 s of
+            # backoff, for a file that will be exactly as short on every attempt.
+            $local = ("$($_.Exception.Message)" -match '^Part \d+:')
             return [pscustomobject]@{
-                Ok = $false; ETag = ''; StatusCode = 0; ErrorCode = ''
+                Ok = $false; ETag = ''; StatusCode = 0; ErrorCode = $(if ($local) { 'LocalRead' } else { '' })
                 Message = $_.Exception.Message; BytesSent = $sent
             }
         }
@@ -752,11 +758,12 @@ function Send-R2Part {
 
     403 and the other 4xx are deliberately NOT retried: a bad key, a read-only token or a
     wrong signature fails identically five times, and the delay only hides the real message.
-    NoSuchUpload is handled a level up, by discarding the uploadId, because retrying the part
-    cannot help.
+    NoSuchUpload on a part is a 4xx too, so it ends this push; the NEXT push lists the parts,
+    finds the upload gone, and starts a fresh one - that is where it is actually handled.
 #>
 function Test-R2Retryable {
     param($Result)
+    if ($Result.ErrorCode -eq 'LocalRead') { return $false }   # the file is short; the network is fine
     if ($Result.StatusCode -eq 0)   { return $true }      # reset socket, timeout, DNS
     if ($Result.StatusCode -ge 500) { return $true }
     if ($Result.StatusCode -eq 429) { return $true }
@@ -854,20 +861,54 @@ function Invoke-R2Upload {
             $why = "the file is now $length bytes, not $($State.sizeBytes)"
         } elseif ([string]$State.mtimeUtc -ne $mtime) {
             $why = 'the file was modified since that upload started'
+        } elseif ([string]$State.key -and [string]$State.key -ne $Key) {
+            # An uploadId belongs to ONE key. A renamed id or re-pathed file yields a new key,
+            # and listing the old upload under it answered NoSuchUpload - so the old upload was
+            # never aborted, just forgotten, and stayed billable in the bucket for ever.
+            $why = "the R2 key changed from $($State.key) to $Key"
         }
         if ($why) {
-            try { [void](Remove-R2Upload -Credential $Credential -Key $Key -UploadId $uploadId) } catch { }
+            $oldKey = $(if ([string]$State.key) { [string]$State.key } else { $Key })
+            $aborted = $false
+            try { $aborted = [bool](Remove-R2Upload -Credential $Credential -Key $oldKey -UploadId $uploadId) } catch { $aborted = $false }
+            if (-not $aborted -and $Progress -and $Progress.Log) {
+                # not silent: an upload that could not be aborted is still costing money
+                [void]$Progress.Log.Add("${oldKey}: the previous multipart upload ($uploadId) could not be aborted - abort it from the R2 dashboard")
+            }
             $uploadId = ''
             $State.upload = $null
             & $persist
             if ($Progress -and $Progress.Log) { [void]$Progress.Log.Add("$Key restarted: $why") }
         } else {
             $remote = $null
+            $listFailed = ''
             try { $remote = Get-R2UploadParts -Credential $Credential -Key $Key -UploadId $uploadId }
-            catch { $remote = $null }
+            catch { $remote = $null; $listFailed = $_.Exception.Message }
+            if ($listFailed) {
+                # A 5xx, a 429 or a dropped socket on the LISTING is not "R2 has forgotten it".
+                # Treating it that way discarded the uploadId, orphaned every part already up
+                # (billable, never aborted) and sent the whole file again. Keep the state, fail
+                # this push, and the next one resumes exactly where this one would have.
+                return [pscustomobject]@{ Ok = $false; Cancelled = $false; ETag = ''
+                                          Message = "could not check which parts are already uploaded - $listFailed. Nothing was discarded; push again to resume."
+                                          Uploaded = 0; Skipped = 0 }
+            }
             if ($null -eq $remote) {
-                # R2 has forgotten it - expired, aborted, or never existed. Retrying the parts
-                # cannot help; only a new uploadId can.
+                # R2 has forgotten it - expired, aborted, or never existed. Or: it was COMPLETED
+                # and the completion's response never arrived, which looks identical from here.
+                # If the object is already there at the right size, that is what happened, and
+                # re-uploading the whole file to prove it would be the wrong answer.
+                $obj = $null
+                try { $obj = Get-R2ObjectInfo -Credential $Credential -Key $Key } catch { $obj = $null }
+                if ($obj -and $obj.Exists -and [long]$obj.Size -eq $length) {
+                    $State.upload = $null
+                    $State.remote = @{ verifiedUtc = ([datetime]::UtcNow.ToString('o')); sizeBytes = $length
+                                       etag = [string]$obj.ETag; sha256 = [string]$State.sha256 }
+                    & $persist
+                    if ($Progress -and $Progress.Log) { [void]$Progress.Log.Add("${Key}: the previous upload had already completed - nothing to send") }
+                    return [pscustomobject]@{ Ok = $true; Cancelled = $false; ETag = [string]$obj.ETag; Message = ''
+                                              Uploaded = 0; Skipped = $count }
+                }
                 $uploadId = ''
                 $State.upload = $null
                 & $persist
@@ -990,7 +1031,37 @@ function Invoke-R2Upload {
     } finally { $fs.Dispose() }
 
     # ------------------------------------------------------------ complete
-    $etag = Complete-R2Upload -Credential $Credential -Key $Key -UploadId $uploadId -Parts $done
+    # Retried like a part for transient faults - a single 5xx after a four-hour upload used to
+    # end the push with an exception. A PERMANENT refusal (InvalidPart, EntityTooSmall,
+    # InvalidPartOrder, any other 4xx) is different: the next push would list the same parts,
+    # find them all present, call Complete again and fail identically, for ever, with the
+    # upload dangling - so that upload is aborted and the state cleared, and the push says so.
+    $etag = ''
+    $completeErr = ''
+    for ($attempt = 1; $attempt -le 3; $attempt++) {
+        try { $etag = Complete-R2Upload -Credential $Credential -Key $Key -UploadId $uploadId -Parts $done; $completeErr = ''; break }
+        catch { $completeErr = $_.Exception.Message }
+        if ($completeErr -match 'HTTP 4\d\d|InvalidPart|EntityTooSmall|InvalidPartOrder|NoSuchUpload') { break }
+        if ($attempt -lt 3) {
+            $wait = Get-R2BackoffSeconds -Attempt $attempt -BaseSeconds $BackoffBaseSeconds
+            if ($Progress -and $Progress.Log) { [void]$Progress.Log.Add("$Key complete attempt $attempt failed ($completeErr); retrying in ${wait}s") }
+            Start-Sleep -Seconds ([int][Math]::Ceiling($wait))
+        }
+    }
+    if ($completeErr) {
+        if ($completeErr -match 'HTTP 4\d\d|InvalidPart|EntityTooSmall|InvalidPartOrder|NoSuchUpload') {
+            try { [void](Remove-R2Upload -Credential $Credential -Key $Key -UploadId $uploadId) } catch { }
+            $State.upload = $null
+            & $persist
+            return [pscustomobject]@{ Ok = $false; Cancelled = $false; ETag = ''
+                                      Message = "R2 would not assemble the parts ($completeErr). That upload was abandoned; push again to send the file afresh."
+                                      Uploaded = $uploaded; Skipped = $skipped }
+        }
+        # transient and still failing: the parts stay, the next push resumes at Complete
+        return [pscustomobject]@{ Ok = $false; Cancelled = $false; ETag = ''
+                                  Message = "every part is uploaded but the completion failed ($completeErr). Push again to finish it."
+                                  Uploaded = $uploaded; Skipped = $skipped }
+    }
 
     $State.upload = $null
     $State.remote = @{ verifiedUtc = ([datetime]::UtcNow.ToString('o')); sizeBytes = $length
@@ -1209,6 +1280,11 @@ function Stop-WranglerWatched {
     $Watch.Verdict = $Verdict
     Remove-SecretTempFile $Watch.InPath
     $Watch.InPath = ''
+    # the stdout/stderr capture files too - only the natural-exit path removed them, so every
+    # Stop, stall and timeout left a pair of pc2go-wrangler-*.out/.err behind in %TEMP%
+    try { Remove-Item -LiteralPath $Watch.OutPath, $Watch.ErrPath -Force -ErrorAction SilentlyContinue } catch { }
+    # the Process object is deliberately NOT disposed: callers (and the harness) still read
+    # HasExited/ExitCode off it after a Stop, and a disposed handle answers those with a throw
 }
 
 <#

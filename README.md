@@ -779,7 +779,7 @@ after a publish. To compare properly, strip first:
 ```powershell
 . tools\Compress-Script.ps1
 $ship = ConvertTo-ShippableScript -Source (Get-Content server\AppDeploy.ps1 -Raw)
-[IO.File]::WriteAllText("$env:TEMP\ship.ps1", $ship, (New-Object Text.UTF8Encoding $false))
+[IO.File]::WriteAllText("$env:TEMP\ship.ps1", $ship, (New-Object Text.UTF8Encoding $true))   # WITH a BOM - 5.1 reads a BOM-less .ps1 as ANSI
 (Get-FileHash "$env:TEMP\ship.ps1" -Algorithm SHA256).Hash    # compare with APPDEPLOY_SHA256
 ```
 

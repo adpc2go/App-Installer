@@ -511,9 +511,20 @@ $script:PushWork = {
             }
 
             # Ask the bucket first. An object already there at the right size is not worth
-            # re-sending 15 GB to prove - see the note on the skip rule in Start-PushConfirm.
+            # re-sending 15 GB to prove - PROVIDED the sidecar says these exact bytes are what
+            # went up. Size alone matched a same-size object left by an earlier different file
+            # (a re-keyed entry, a Duplicate renamed onto an old id), and the catalog then named
+            # a sha256 the bucket did not hold: every client downloaded it and refused it.
             $info = Get-R2ObjectInfo -Credential $Cred -Key ([string]$item.key)
-            if ($info.Exists -and [long]$info.Size -eq [long]$item.sizeBytes) {
+            # An object the sidecar knows NOTHING about (uploaded by an earlier run, by rclone)
+            # is still trusted on size - that is the skip rule as designed. What is refused is
+            # a sidecar that positively records DIFFERENT bytes under this key: the re-keyed
+            # entry, the Duplicate renamed onto an old id. Those go up again.
+            $known = $(if ($doc.apps.ContainsKey([string]$item.id)) { $doc.apps[[string]$item.id] } else { $null })
+            $conflict = ($known -and $known.remote -and ('' + $known.remote.sha256) -and
+                         ('' + $known.remote.sha256).ToUpper() -ne ('' + $item.sha256).ToUpper())
+            if ($conflict) { [void]$Progress.Log.Add("$($item.name): the bucket holds different bytes under $($item.key) - uploading again") }
+            if ($info.Exists -and [long]$info.Size -eq [long]$item.sizeBytes -and -not $conflict) {
                 [void]$Progress.Skipped.Add(@{ id = [string]$item.id; name = [string]$item.name
                                                certain = [bool]$item.remoteVerified })
                 $Progress.DoneBytes = [long]$Progress.DoneBytes + [long]$item.sizeBytes
@@ -576,6 +587,10 @@ function Test-App($a) {
     # what stops THIS app from being published, in words a person can act on
     $out = @()
     if (-not (Get-Field $a 'name')) { $out += 'no name' }
+    # The client skips an entry with no id outright ("Catalog entry skipped - no id"), and a
+    # rename that collided with another app used to leave a NEW app's id empty for ever with
+    # nothing said - counted as ready to publish, dropped on every client.
+    if (-not ('' + (Get-Field $a 'id')).Trim()) { $out += 'no id' }
     # An uninstall-only entry ships removal knowledge for a product we never install - it HAS
     # no url, hash or size, and the edge serves it anyway (worker.js makes the same exception).
     # Holding it to installer standards kept a permanent amber warning on every save.
@@ -673,7 +688,13 @@ $script:SaveFailed = $false
 
 function Request-Save {
     if ($null -eq $script:DirtySince) { $script:DirtySince = Get-Date }
-    if ($script:SaveTimer) { $script:SaveTimer.Stop(); $script:SaveTimer.Start() }
+    if (-not $script:SaveTimer) { return }
+    # The ceiling, for real. Stop+Start on every keystroke pushed the tick out indefinitely
+    # under sustained typing, and the "-lt 1.0" check that used to sit in Complete-Save could
+    # never be true at tick time. Once the oldest unsaved edit is five seconds old the pending
+    # tick is left alone, so it fires on schedule whatever is still being typed.
+    if (((Get-Date) - $script:DirtySince).TotalSeconds -ge 5 -and $script:SaveTimer.IsEnabled) { return }
+    $script:SaveTimer.Stop(); $script:SaveTimer.Start()
 }
 
 function Set-CatalogDirty { $script:Dirty = $true; Request-Save }
@@ -691,13 +712,7 @@ function Complete-Save([switch]$Force) {
         if ($script:SaveTimer) { $script:SaveTimer.Start() }
         return $false
     }
-    # The ceiling: while typing continues the timer keeps being pushed out, so once the oldest
-    # unsaved edit is 5s old the write happens regardless.
-    if (-not $Force -and $script:DirtySince -and
-        ((Get-Date) - $script:DirtySince).TotalSeconds -lt 1.0) {
-        if ($script:SaveTimer) { $script:SaveTimer.Start() }
-        return $false
-    }
+    # (the 5-second ceiling lives in Request-Save, where the timer is armed)
     # Before the write, so the catalog and the icons directory agree the moment the file lands.
     try { Complete-IconMoves } catch { }
     try {
@@ -706,8 +721,11 @@ function Complete-Save([switch]$Force) {
             $script:SaveFailed = $false
             $script:DirtySince = $null
             # Level 1 deliberately: an autosave is ambient, and must never be the thing that
-            # wipes the confirmation of what the person actually just did.
-            Show-Activity 'Saved.' '#FFB6B6C0' 1 2500
+            # wipes the confirmation of what the person actually just did. It does carry the
+            # count Export-Catalog computed and used to throw away - "says what is not ready".
+            $nBad = @($script:LastSaveWarnings).Count
+            if ($nBad) { Show-Activity "Saved. $nBad application(s) not ready to publish - see the amber chips." '#FFFBBF24' 1 4000 }
+            else { Show-Activity 'Saved.' '#FFB6B6C0' 1 2500 }
         }
         return $ok
     } catch {
@@ -799,6 +817,9 @@ function Remove-Category([string]$Name, [string]$MoveTo = '', [switch]$DeleteApp
     $apps = @(Get-AppsInCategory $Name)
     if ($apps.Count) {
         if ($DeleteApps) {
+            # the same hygiene Remove-App does: an icon left under a deleted id is inherited
+            # by the next app to take that id
+            foreach ($a in $apps) { try { Hide-AppIcon ([string](Get-Field $a 'id')) } catch { } }
             $script:Catalog.apps = @(@($script:Catalog.apps) |
                 Where-Object { [string](Get-Field $_ 'category') -ne $Name })
         } else {
@@ -879,6 +900,7 @@ function Export-Catalog {
         $p = Test-App $a
         if ($p.Count) { $bad += "$([string](Get-Field $a 'name')) - $($p -join ', ')" }
     }
+    $script:LastSaveWarnings = $bad     # Complete-Save reports the count; this list was computed and dropped
     # A catalog is half-finished for most of its life, which is exactly why saving warns and
     # only publishing refuses. It used to ASK - a modal "save anyway?" on every save of a
     # work-in-progress catalog, which is the friction the warn/refuse split exists to avoid,
@@ -962,6 +984,11 @@ function Get-PushState {
 }
 
 function Save-PushState {
+    # One writer during a push. The runspace owns the sidecar for the duration; a write from
+    # the drawer (a Fetch, a picked file) landed the UI's pre-push copy over the runspace's,
+    # the runspace's next write put it back, and the drawer's record was silently gone. The
+    # UI-side change is kept in memory and replayed by Complete-Push once the file is free.
+    if ($script:PushJob) { $script:PushStatePending = $true; return }
     $st = Get-PushState
     $st.updatedUtc = [datetime]::UtcNow.ToString('o')
     $st.catalog    = $CatalogPath
@@ -1341,7 +1368,12 @@ function Show-CategoryRemove([string]$Name) {
         Show-Confirm 'Remove this category?' (
             "'$Name' holds no applications.`r`n`r`n" +
             'The catalog as it was when you opened the editor is kept as apps.json.bak.'
-        ) 'Remove' ({ if (Remove-Category $Name) { Complete-CategoryChange "Removed $Name." } }.GetNewClosure())
+        ) 'Remove' ({
+            # the rail must not stay filtered on a category that no longer exists - the grid
+            # went empty under an "All applications" highlight and new apps were filed into
+            # the removed name, which the category list then resurrected
+            if (Remove-Category $Name) { Set-SelectedCategory ''; Complete-CategoryChange "Removed $Name." }
+        }.GetNewClosure())
         return
     }
     # Nowhere to move them to means the choice is not a choice, and offering an empty dropdown
@@ -1371,6 +1403,8 @@ function Show-CategoryRemove([string]$Name) {
         $del = [bool]$ChkCatDeleteApps.IsChecked
         $ok = $(if ($del) { Remove-Category $Name -DeleteApps } else { Remove-Category $Name -MoveTo $target })
         if ($ok) {
+            # follow the apps to where they went, or to "all" if they are gone
+            Set-SelectedCategory $(if ($del) { '' } else { $target })
             Complete-CategoryChange $(if ($del) {
                 "Removed $Name and its $($apps.Count) application(s)."
             } else {
@@ -1456,7 +1490,10 @@ function Set-AccessCode {
         Show-Confirm 'Remove the access code?' (
             'The tool and the catalog become reachable by anyone who has the link. Only do ' +
             'this if the link itself is not shared outside your team.') 'Remove the gate' {
-            Invoke-Wrangler @('secret', 'delete', 'ACCESS_CODE', '--force') '' 'Access code removed - the gate is off.'
+            # No --force: wrangler 4.x is strict about flags and answered "Unknown argument:
+            # force", exit 1, so Remove could never succeed. Non-interactive stdin already
+            # auto-confirms the delete.
+            Invoke-Wrangler @('secret', 'delete', 'ACCESS_CODE') '' 'Access code removed - the gate is off.'
         }
         return
     }
@@ -1690,22 +1727,25 @@ function Complete-LiveCheck {
     catch { $r = @{ ok = $false; error = $_.Exception.Message } }
     try { $script:LiveJob.Dispose() } catch { }
     $script:LiveJob = $null; $script:LiveHandle = $null
+    # A result from a check that was already in flight when the publish started describes the
+    # catalog BEFORE it - discard it, or an unchanged catalog reads as "published" instantly.
+    if ($script:LiveDiscard) {
+        $script:LiveDiscard = $false
+        Update-List
+        return
+    }
     if ($r -and $r.ok) {
         $script:LiveApps  = $r.apps
         $script:LiveError = ''
-        # A publish is finished when the EDGE says so, not when a process handle does.
-        #
-        # Completion used to be inferred from Process.HasExited, and that is a proxy: if it never
-        # came back true - for any reason at all - the window sat at 0% for ever with no second
-        # opinion, while the catalog had in fact gone live minutes earlier. Watching the outcome
-        # instead makes the report true by construction, and it cannot hang waiting on a signal,
-        # because the thing being asked is the thing that actually matters.
+        # The edge agreeing with the local catalog is INFORMATION during a publish, not the end
+        # of it. It used to end the publish - and when only the tool had changed and the catalog
+        # had not, the very first poll (about three seconds in) found the edge "already serving
+        # this catalog" and reported Published while Publish-Release.ps1 was still uploading
+        # AppDeploy.ps1; the exit code was never read, so a failed deploy after that upload -
+        # the one failure that breaks every client - was never reported at all. The process
+        # exit is the verdict (Complete-Publish); this only narrates.
         if ($script:PublishProc -and (Test-CatalogIsLive)) {
-            $script:PublishProc = $null
-            $script:PublishStarted = $null
-            Stop-PushUi
-            try { $window.TaskbarItemInfo.ProgressState = 'None' } catch { }
-            Set-StatusText 'Published. The edge is now serving this catalog.' '#FF34D399'
+            $TxtPushDetail.Text = 'The edge is serving this catalog; waiting for the Worker deploy to finish...'
         }
     } else {
         # Unknown is NOT "nothing is live". Saying so would send somebody re-uploading 60 GB
@@ -2131,7 +2171,11 @@ function Update-List {
                 if ($rows[$ri].App -eq $selApp) { $ListApps.SelectedIndex = $ri; $restored = $true; break }
             }
         }
-        if (-not $restored) {
+        # Identity or nothing when an app WAS selected. Falling back to the same slot while a
+        # search is active handed the drawer to whichever app now sat there - renaming an app
+        # out of the search results swapped the drawer mid-keystroke and destroyed the box
+        # being typed in. The index fallback is only for "nothing was selected".
+        if (-not $restored -and -not $selApp) {
             if ($sel -ge 0 -and $sel -lt $rows.Count) { $ListApps.SelectedIndex = $sel }
             elseif ($rows.Count) { $ListApps.SelectedIndex = 0 }
         }
@@ -2992,6 +3036,10 @@ function Show-AppDialog($App, $Owner, [string]$LocalFile = '') {
             $c.DlgPostList.SelectedIndex = $i
         } finally { $state.loading = $false }
         & ($fn.syncWhere)
+        # Written to the entry NOW, like every other field. These edits used to reach the
+        # catalog only when some unrelated field changed afterwards: add a step, fill it in,
+        # click another app - and the step was gone, with nothing saved and nothing said.
+        & ($fn.apply)
     }.GetNewClosure()
 
     $fn.moveRow = {
@@ -3003,6 +3051,7 @@ function Show-AppDialog($App, $Owner, [string]$LocalFile = '') {
         $state.rows.RemoveAt($i)
         $state.rows.Insert($j, $row)
         & ($fn.refreshRows) $j
+        & ($fn.apply)      # the order IS the behaviour, and it was not being written either
     }.GetNewClosure()
 
     & ($fn.syncHash)
@@ -3049,6 +3098,7 @@ function Show-AppDialog($App, $Owner, [string]$LocalFile = '') {
         if ([string]$row.Kind -ne 'other') {
             $state.rows.RemoveAt($i)
             & ($fn.refreshRows) ([Math]::Min($i, $state.rows.Count - 1))
+            & ($fn.apply)      # a removal that is not written comes back on the next open
             $c.DlgStatus.Foreground = '#FF9A9AA6'
             $c.DlgStatus.Text = "Removed: $what"
             return
@@ -3061,6 +3111,7 @@ function Show-AppDialog($App, $Owner, [string]$LocalFile = '') {
         ) 'Remove' ({
             $state.rows.RemoveAt($i)
             & ($fn.refreshRows) ([Math]::Min($i, $state.rows.Count - 1))
+            & ($fn.apply)
             $c.DlgStatus.Foreground = '#FF9A9AA6'
             $c.DlgStatus.Text = "Removed: $what"
         }.GetNewClosure())
@@ -3187,8 +3238,13 @@ function Show-AppDialog($App, $Owner, [string]$LocalFile = '') {
         $state.size   = [long]$r.size
         $state.files  = @($r.files)
         & ($fn.syncHash)
-        $c.DlgEntry.Items.Clear()
-        foreach ($e in @($r.entries)) { [void]$c.DlgEntry.Items.Add($e) }
+        # suspended like every other repopulation: Items.Clear() blanks the text, and the apply
+        # that fires on it transiently removed `entry` and withheld the steps
+        $state.loading = $true
+        try {
+            $c.DlgEntry.Items.Clear()
+            foreach ($e in @($r.entries)) { [void]$c.DlgEntry.Items.Add($e) }
+        } finally { $state.loading = $false }
         # Repopulating an editable ComboBox blanks its Text, and that text is live-bound to the
         # selected after-install row - so row edits are suspended across it, and the row's own
         # values are pushed back afterwards by the $fn.syncPostEditor at the end of this tick.
@@ -3332,7 +3388,25 @@ function Show-AppDialog($App, $Owner, [string]$LocalFile = '') {
             # Move-AppIcon would otherwise quietly hand this app the other one's artwork).
             if (@(@($script:Catalog.apps) | Where-Object { $_ -ne $App -and
                     [string](Get-Field $_ 'id') -eq $wantId }).Count) {
-                $wantId = $haveId
+                # Said, not silently swallowed. And a NEW app has no old id to keep: it used
+                # to be left with "" for good - Test-App now flags that, but better still is a
+                # free id of the same shape, so naming a second "AutoCAD" gives autocad-2.
+                $taken = $wantId
+                if ($haveId) {
+                    $wantId = $haveId
+                } else {
+                    $n = 2
+                    while (@(@($script:Catalog.apps) | Where-Object { $_ -ne $App -and
+                            [string](Get-Field $_ 'id') -eq "$taken-$n" }).Count) { $n++ }
+                    $wantId = "$taken-$n"
+                }
+                $c.DlgStatus.Foreground = '#FFFBBF24'
+                $c.DlgStatus.Text = "The id '$taken' belongs to another application - kept '$wantId'."
+                if ($wantId -ne $haveId) {
+                    Set-Field $App 'id' $wantId
+                    $state.loading = $true
+                    try { $c.DlgId.Text = $wantId } finally { $state.loading = $false }
+                }
             } else {
                 # Recorded rather than done. This runs on every keystroke of the id box, and the
                 # file only needs to move once - see Request-IconMove.
@@ -4818,6 +4892,11 @@ function Set-AppIconFromFile($App, $Panel) {
     $d.Filter = 'Images|*.png;*.jpg;*.jpeg;*.bmp;*.gif;*.tif;*.tiff;*.ico;*.webp|All files|*.*'
     if ($d.ShowDialog() -ne [Windows.Forms.DialogResult]::OK) { return }
     $dest = Join-Path $script:IconDir "$id.png"
+    # An icon already there is set aside, not overwritten: picking the wrong file used to cost
+    # the tile that was working, with nothing to put back.
+    if (Test-Path -LiteralPath $dest) {
+        try { Copy-Item -LiteralPath $dest -Destination "$dest.previous" -Force -ErrorAction Stop } catch { }
+    }
     # Converted, not copied: whatever you picked becomes a 256x256 PNG, so a 3000px JPEG
     # screenshot and a 48px bitmap both end up as the same kind of tile.
     $why = Convert-ImageToIcon $d.FileName $dest
@@ -5391,6 +5470,30 @@ function Save-PromptedCredential {
 }
 
 function Start-PushConfirm {
+    # The real validation, BEFORE a byte goes up. Publish-Release.ps1's rules (duplicate hashes,
+    # unhashed step files, a served catalog that would be empty) used to be met only after the
+    # whole upload, as "Publishing failed". It is a two-second child process; run it here.
+    $pubScript = Join-Path $script:ToolsDir 'Publish-Release.ps1'
+    if (Test-Path -LiteralPath $pubScript) {
+        Show-Busy 'Checking the catalog before uploading...'
+        $vLog = Join-Path $env:TEMP "pc2go-validate-$([Guid]::NewGuid().ToString('N').Substring(0, 8)).log"
+        $psExe = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+        $vp = Start-Process -FilePath $psExe -PassThru -WindowStyle Hidden -Wait -ArgumentList (
+            "-NoProfile -ExecutionPolicy Bypass -Command `"& '$pubScript' -RepoRoot '$($script:RepoRoot)' -ValidateOnly *> '$vLog'`"")
+        $vCode = $null
+        try { $vCode = $vp.ExitCode } catch { $vCode = $null }
+        $vText = ''
+        try { $vText = Get-Content -LiteralPath $vLog -Raw -ErrorAction Stop } catch { $vText = '' }
+        try { Remove-Item -LiteralPath $vLog -Force -ErrorAction SilentlyContinue } catch { }
+        if (-not (($vCode -is [int]) -and $vCode -eq 0)) {
+            $why = (@(($vText -split "`r?`n") | Where-Object { $_ -match '^\s*(-|ERROR|!)' }) | Select-Object -First 8) -join "`r`n"
+            Show-Notice 'The catalog would be refused at publish' (
+                "Nothing was uploaded. Publish-Release.ps1 would refuse this catalog:`r`n`r`n$why`r`n`r`n" +
+                'Fix these in the drawer and push again.')
+            Set-StatusText 'Not pushed: the catalog would be refused at publish.' '#FFF87171'
+            return
+        }
+    }
     $plan = New-PushPlan
     if (-not $plan.Items.Count) {
         # Everything ready is already in the bucket. That is not "nothing to do" - the catalog
@@ -5452,7 +5555,9 @@ function Start-PublishOnly {
     $PushBar.Visibility = 'Visible'
     $BtnPush.IsEnabled = $false; $BtnSettings.IsEnabled = $false
     $BtnPushCancel.IsEnabled = $false     # a deploy in flight cannot be half-stopped
+    # indeterminate, as Invoke-Wrangler does: a bar sitting at 0% for a whole deploy reads as frozen
     $PushProgressBar.Value = 0
+    $PushProgressBar.IsIndeterminate = $true
     Start-Publish
 }
 
@@ -5465,6 +5570,9 @@ function Start-Push {
     $script:PushProgress.Done.Clear(); $script:PushProgress.Skipped.Clear()
     $script:PushProgress.Failed.Clear(); $script:PushProgress.Log.Clear()
     $script:PushProgress.Converted.Clear()
+    # Icons too. Left over from the previous push, every earlier icon record was re-applied -
+    # restoring an iconUrl for an icon set aside in between, which clients then cached as a 404.
+    if ($script:PushProgress.Icons) { $script:PushProgress.Icons.Clear() }
     $script:PushSamples.Clear()
 
     $PushBar.Visibility = 'Visible'
@@ -5541,11 +5649,13 @@ $script:PushTimer.Add_Tick({ Invoke-Guarded {
         # cancelled - it may yet finish - but the window stops pretending to know.
         # Last resort only. By here neither the process NOR the edge has reported in ten minutes,
         # which means the publish genuinely has not landed - not merely that one signal was lost.
-        if ($script:PublishProc -and $script:PublishStarted -and
+        # Said ONCE, and the process is NOT let go of: nulling PublishProc here released the
+        # lock while Publish-Release.ps1 was still running, so autosave resumed under a
+        # wrangler that was reading apps.json and a second Push could start alongside it.
+        # Complete-Publish still ends it properly when the process finally exits.
+        if ($script:PublishProc -and $script:PublishStarted -and -not $script:PublishWarned -and
             ((Get-Date) - $script:PublishStarted).TotalMinutes -ge 10) {
-            $script:PublishProc = $null
-            $script:PublishStarted = $null
-            Stop-PushUi
+            $script:PublishWarned = $true
             Show-Notice 'The publish has not landed' (
                 "Ten minutes, and the edge is still not serving this catalog.`r`n`r`n" +
                 'wrangler may be waiting on a Cloudflare sign-in - it opens its own window, and ' +
@@ -5602,11 +5712,40 @@ function Complete-Push {
     try { $script:PushJob.Dispose() } catch { }
     $script:PushJob = $null; $script:PushHandle = $null
     $script:PushState = $null          # the runspace owned it on disk; re-read what it wrote
+    # Replay what the drawer recorded while the runspace owned the file (Save-PushState held
+    # it back): every app's local file and real hash, re-derived from memory onto the sidecar
+    # the runspace just wrote, so neither side's record is lost.
+    if ($script:PushStatePending) {
+        $script:PushStatePending = $false
+        foreach ($a in @($script:Catalog.apps)) {
+            try {
+                $lf = [string](Get-Field $a '_localFile')
+                if ($lf) { Set-LocalFileFor $a $lf -KeepRemote }
+                $sh = [string](Get-Field $a 'sha256')
+                if ((Test-RealHash $sh) -and [long](Get-Field $a 'sizeBytes') -gt 0) { Set-PushHashFor $a $sh ([long](Get-Field $a 'sizeBytes')) }
+            } catch { }
+        }
+        try { Save-PushState } catch { }
+    }
 
     $p = $script:PushProgress
     $okCount   = @($p.Done).Count
     $skipCount = @($p.Skipped).Count
     $failed    = @($p.Failed)
+
+    # A .rar converted to .zip is a fact on disk whatever happened afterwards, and the runspace
+    # has already rewritten the sidecar entry to the .zip. Applying it only on success left a
+    # cancelled or failed push with a sidecar naming the .zip and a catalog naming the .rar -
+    # after a restart the plan compared the two sizes and blamed the operator ("file changed
+    # since it was hashed"). The sidecar first, always, before any verdict.
+    $convCount = 0
+    foreach ($cv in @($p.Converted)) {
+        $item = @($script:PushPlan | Where-Object { [string]$_.id -eq [string]$cv.id }) | Select-Object -First 1
+        if (-not $item) { continue }
+        Set-LocalFileFor $item.App ([string]$cv.path) -KeepRemote
+        Set-PushHashFor  $item.App ([string]$cv.sha256) ([long]$cv.sizeBytes)
+        $convCount++
+    }
 
     if ($p.Phase -eq 'cancelled' -or $p.Cancel) {
         Stop-PushUi
@@ -5632,17 +5771,7 @@ function Complete-Push {
     }
 
     try { $window.TaskbarItemInfo.ProgressState = 'None' } catch { }
-    # The sidecar first, and always - it is what the editor re-derives url, hash and size FROM,
-    # so a sidecar still naming the .rar makes the next save quietly undo the whole conversion.
-    # That has happened once already; it is not a theoretical ordering concern.
-    $convCount = 0
-    foreach ($cv in @($p.Converted)) {
-        $item = @($script:PushPlan | Where-Object { [string]$_.id -eq [string]$cv.id }) | Select-Object -First 1
-        if (-not $item) { continue }
-        Set-LocalFileFor $item.App ([string]$cv.path) -KeepRemote
-        Set-PushHashFor  $item.App ([string]$cv.sha256) ([long]$cv.sizeBytes)
-        $convCount++
-    }
+    # (conversions were applied to the sidecar above, before any verdict)
     $changed = Update-CatalogFromPush
     # Export-Catalog THROWS on failure rather than returning $false, and a throw here escaped
     # into the timer with Stop-PushUi never run - Save and Push stayed disabled forever over a
@@ -5720,6 +5849,12 @@ function Start-Publish {
     $psExe = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
     $script:PublishProc = Start-Process -FilePath $psExe -PassThru -WindowStyle Minimized -ArgumentList (
         "-NoProfile -ExecutionPolicy Bypass -Command `"& '$pub' -RepoRoot '$($script:RepoRoot)' *> '$($script:PublishLog)'`"")
+    # Touch the handle NOW, or ExitCode reads $null later - the same measured .NET behaviour
+    # R2-Upload.ps1's wrangler runner documents. A real success then compared as "not 0" and
+    # was reported as 'Publishing failed ... exited with code ' (blank).
+    try { [void]$script:PublishProc.Handle } catch { }
+    # a live check already in flight answers for the catalog BEFORE this publish
+    if ($script:LiveJob) { $script:LiveDiscard = $true }
     $TxtPushApp.Text = 'Publishing the catalog and deploying the Worker...'
     $TxtPushDetail.Text = 'Publish-Release.ps1 is running in its own window.'
     # When it started, so a bar that has not moved can be told apart from work that is simply
@@ -5735,17 +5870,21 @@ function Start-Publish {
 
 function Complete-Publish {
     if (-not $script:PublishProc.HasExited) { return }
-    $code = $script:PublishProc.ExitCode
+    $code = $null
+    try { $code = $script:PublishProc.ExitCode } catch { $code = $null }
     $proc = $script:PublishProc
     $script:PublishProc = $null
+    $script:PublishStarted = $null
+    $script:PublishWarned = $false
     Stop-PushUi
+    try { $window.TaskbarItemInfo.ProgressState = 'None' } catch { }
 
     $log = ''
     if ($script:PublishLog -and (Test-Path -LiteralPath $script:PublishLog)) {
         try { $log = Get-Content -LiteralPath $script:PublishLog -Raw } catch { }
     }
 
-    if ($code -eq 0) {
+    if (($code -is [int]) -and $code -eq 0) {
         Set-StatusText 'Pushed, published and deployed.' '#FF34D399'
         # Ask the edge again. Without this the live dots keep describing whatever was true when
         # the editor opened - wrong at exactly the moment they matter most, which is right after
@@ -5760,7 +5899,11 @@ function Complete-Publish {
     # still pins the old hash for - and go.ps1 then refuses to start on every client, with a
     # message that reads exactly like a compromise. Push cannot close that window; it can only
     # say precisely what happened and how to end it.
-    if ($log -match 'Uploading to R2' -and $log -match 'Deploying Worker') {
+    # Keyed on the tool having been UPLOADED ("+ AppDeploy.ps1" is Publish-Release's own
+    # confirmation line), not on the deploy having started: a throw at the pin step sits
+    # between the two, and it used to be reported as "nothing was published" while every
+    # client was already refusing to start.
+    if ($log -match '(?m)^\s*\+\s*AppDeploy\.ps1\s*$' -or ($log -match 'Uploading to R2' -and $log -match 'Deploying Worker')) {
         Show-Notice 'The Worker deploy failed AFTER the files were uploaded' (
             "Every client will now refuse to start with 'AppDeploy.ps1 failed integrity check' " +
             "until this is fixed. The new tool is in R2, but the edge still pins the old one.`r`n`r`n" +
@@ -5889,7 +6032,11 @@ $window.Add_Closing({
         Show-Confirm 'A push is still running' (
             'Closing now kills the upload mid-file. Stop is the safe way out - it lets the ' +
             'current part finish so the resume record stays honest.'
-        ) 'Close anyway' { $script:ForceClose = $true; $window.Close() }
+        ) 'Close anyway' {
+            # what the body text promises: the current part is allowed to finish
+            try { $script:PushProgress.Cancel = $true } catch { }
+            $script:ForceClose = $true; $window.Close()
+        }
         return
     }
     # A save that FAILED is the only unsaved-work question worth asking now - everything else
@@ -5907,7 +6054,10 @@ $window.Add_Closing({
     # Merely pending: do not ask a question the window can answer. Save, then close.
     if ($script:Dirty -and -not $script:ForceClose) {
         $e.Cancel = $true
-        [void](Complete-Save -Force)
+        # If that save FAILS the edits exist only in memory, and closing regardless threw them
+        # away with a 20-second Show-Fail the closing window took with it. Stay open; the next
+        # Close attempt then lands on the SaveFailed question above, which is the right one.
+        if (-not (Complete-Save -Force)) { return }
         $script:ForceClose = $true
         $window.Close()
     }

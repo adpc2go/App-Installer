@@ -72,6 +72,13 @@ function Test-Credential($Cred) {
         Write-Ok "signature accepted (HTTP $($r.StatusCode) from $($Cred.Bucket))"
         return $true
     }
+    if ($r.StatusCode -eq 0) {
+        # Invoke-R2Request does not throw on a transport fault - it answers StatusCode 0 with the
+        # reason in Message. That used to print "R2 refused the request (HTTP 0)" and hide it.
+        Write-Bad "could not reach $($Cred.Endpoint)"
+        Write-Note $r.Message
+        return $false
+    }
     $body = ''
     if ($r.PSObject.Properties['Body'] -and $r.Body) {
         $body = if ($r.Body -is [byte[]]) { [Text.Encoding]::UTF8.GetString($r.Body) } else { [string]$r.Body }

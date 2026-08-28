@@ -111,7 +111,8 @@ async function serveBootstrap(env, url) {
     text = text.replace(/^(\s*\$PinnedHash\s*=\s*)'[^']*'/m, `$1'${pin}'`);
   }
   // If no valid pin is configured the placeholder survives and go.ps1 skips the check,
-  // which is its documented behaviour. /health reports this so it is not silent.
+  // which is its documented behaviour. Nothing at the edge reports that state; go.ps1
+  // warns on the client when it finds the placeholder.
 
   return new Response(text, {
     headers: {
