@@ -223,14 +223,24 @@ try {
     # still in restore mode: the drive holding the fake backup is the system drive's parent of
     # %TEMP%, so the backup made above is NOT at a drive root and must not be listed - but a real
     # one at a root must be. Plant one, pick the drive, see it.
-    $rootBk = Join-Path ($env:SystemDrive + '\') "PC2Go Backup - FAKEPC - rootuser-$tag"
-    New-Item -ItemType Directory -Force -Path (Join-Path $rootBk 'Music') | Out-Null
-    Copy-Item -LiteralPath (Join-Path $bk 'pc2go-backup.json') -Destination (Join-Path $rootBk 'pc2go-backup.json')
+    # The drive Windows is on is never offered - a backup onto the disk that holds the profile is
+    # not a backup - so the fake root backup goes on the first OTHER fixed drive. No other drive
+    # means this part cannot run here; it says so rather than pretending.
+    Assert-Equal 'the system drive is NOT offered'              0 @($script:Targets | Where-Object { $_.RegKey -eq 'drive' -and $_.UnArgs -eq ($env:SystemDrive + '\') }).Count
+    Assert-Equal 'no "another PC" or "folder" rows - those are buttons' 0 @($script:Targets | Where-Object { $_.RegKey -in 'net', 'pick' }).Count
+    Assert-Equal 'Choose folder... is a visible button'         'Visible' "$($BtnFolderPick.Visibility)"
+    Assert-Equal 'and so is Find a PC...'                        'Visible' "$($BtnNetFind.Visibility)"
+    Set-BackupFolder '' '' ''
+    Assert-Equal 'nothing chosen: the path line is hidden'       'Collapsed' "$($TxtFolderPath.Visibility)"
+    $other = @($script:Targets | Where-Object { $_.RegKey -eq 'drive' })[0]
+    $rootBk = $(if ($other) { Join-Path $other.UnArgs "PC2Go Backup - FAKEPC - rootuser-$tag" } else { '' })
+    if (-not $other) { Write-Host '  (no second fixed drive on this PC - the open-a-drive checks are skipped)' -ForegroundColor DarkGray }
     try {
-        Assert-True  'the list has the system drive'          ([bool]@($script:Targets | Where-Object { $_.RegKey -eq 'drive' -and $_.UnArgs -eq ($env:SystemDrive + '\') }).Count)
-        Assert-True  'and the two other ways in'               (@($script:Targets | Where-Object { $_.RegKey -in 'net', 'pick' }).Count -eq 2)
+      if ($other) {
+        New-Item -ItemType Directory -Force -Path (Join-Path $rootBk 'Music') | Out-Null
+        Copy-Item -LiteralPath (Join-Path $bk 'pc2go-backup.json') -Destination (Join-Path $rootBk 'pc2go-backup.json')
         Assert-Equal 'no backups are listed before a drive is opened' 0 @($script:Targets | Where-Object { $_.RegKey -eq 'backup' }).Count
-        $drv = @($script:Targets | Where-Object { $_.RegKey -eq 'drive' -and $_.UnArgs -eq ($env:SystemDrive + '\') })[0]
+        $drv = $other
         $drv.IsSelected = $true
         $found = @($script:Targets | Where-Object { $_.RegKey -eq 'backup' })
         Assert-True  'opening the drive lists the backup at its root' ([bool]@($found | Where-Object { $_.UnArgs -eq $rootBk }).Count)
@@ -242,17 +252,28 @@ try {
         Assert-Equal 'and its folder is offered'               'Music' "$($script:MigrateItems[0].Name)"
         $pick.IsSelected = $false
         Assert-Equal 'unticking it clears the source'          '' "$($script:FolderPath)"
-    } finally { Remove-Item -LiteralPath $rootBk -Recurse -Force -ErrorAction SilentlyContinue }
+        Assert-Equal 'and hides the path line again'           'Collapsed' "$($TxtFolderPath.Visibility)"
+      }
+    } finally { if ($rootBk) { Remove-Item -LiteralPath $rootBk -Recurse -Force -ErrorAction SilentlyContinue } }
 
     Select-BackupMode 'folder'
     Assert-Equal 'Backup mode rebuilt the list with drives'    0 @($script:Targets | Where-Object { $_.RegKey -eq 'backup' }).Count
     $drv = @($script:Targets | Where-Object { $_.RegKey -eq 'drive' })[0]
-    $drv.IsSelected = $true
-    Assert-Equal 'ticking a drive makes it the target'         $drv.UnArgs "$($script:FolderPath)"
-    Assert-True  'the path line shows where the backup will land' ($TxtFolderPath.Text -like 'Back up into:*PC2Go Backup - *')
-    $drv.IsSelected = $false
-    Assert-Equal 'unticking it clears the target'              '' "$($script:FolderPath)"
-    Assert-Equal 'a cancelled folder pick leaves nothing ticked' 0 @($script:Targets | Where-Object { $_.IsSelected }).Count
+    if ($drv) {
+        $drv.IsSelected = $true
+        Assert-Equal 'ticking a drive makes it the target'     $drv.UnArgs "$($script:FolderPath)"
+        Assert-True  'the path line shows where the backup will land' ($TxtFolderPath.Text -like 'Back up into:*PC2Go Backup - *')
+        Assert-Equal 'and is shown'                            'Visible' "$($TxtFolderPath.Visibility)"
+        $drv.IsSelected = $false
+        Assert-Equal 'unticking it clears the target'          '' "$($script:FolderPath)"
+        # a folder chosen through the dialog is not a drive row: no row stays ticked for it
+        $drv.IsSelected = $true
+        Set-BackupFolder $sandbox '' ''
+        Assert-Equal 'a folder chosen by dialog unticks the drive row' 0 @($script:Targets | Where-Object { $_.IsSelected }).Count
+        Assert-Equal 'and becomes the target'                  $sandbox "$($script:FolderPath)"
+    } else {
+        Assert-True  'with no other drive, the list says so'   ([bool]@($script:Targets | Where-Object { $_.RegKey -eq 'none' }).Count)
+    }
 
     # ================================================================== 2. drive/USB refusals
     Write-Section '2. Drive/USB mode: the loops are refused before measuring'
@@ -470,7 +491,9 @@ try {
         Invoke-Click $BtnShareStop
         Assert-Equal 'the Stop confirm opened'             'Stop sharing?' (Get-OverlayTitle)
         Invoke-Click $BtnOverlayOk
-        Assert-True  'the Stop batch settled'              (Wait-For { $script:Phase -in 'Done', 'Idle' } 180000)
+        # Turning the ~50 File and Printer Sharing rules off one by one is slow unelevated; it
+        # overran 180 s once on this host with every row already Applied.
+        Assert-True  'the Stop batch settled'              (Wait-For { $script:Phase -in 'Done', 'Idle' } 420000)
         foreach ($p in @($script:Pending)) { Write-Host "  row: $($p.Name): $($p.Status) - $($p.StatusDetail)" -ForegroundColor DarkGray }
         Assert-True  'the share was removed'               ($script:Pending[0].Status -like 'Applied*')
         Assert-Equal 'and nothing of ours is left'         $mineBefore @(Get-PC2GoShares).Count

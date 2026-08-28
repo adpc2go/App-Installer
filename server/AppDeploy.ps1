@@ -2001,12 +2001,13 @@ $xaml = @'
                     </ItemsControl.ItemTemplate>
                   </ItemsControl>
                 </ScrollViewer>
-                <TextBlock x:Name="TxtFolderPath" Text="No folder chosen yet" FontSize="11" Foreground="{StaticResource Ink}"
-                           TextWrapping="Wrap" Margin="8,7,8,0"/>
+                <!-- Only shown once something IS chosen: a line that says "nothing chosen yet" is
+                     a placeholder, and the empty tick boxes above already say it. -->
+                <TextBlock x:Name="TxtFolderPath" Text="" FontSize="11" Foreground="{StaticResource Ink}"
+                           TextWrapping="Wrap" Margin="8,7,8,0" Visibility="Collapsed"/>
                 <WrapPanel Orientation="Horizontal" Margin="8,8,8,0">
-                  <!-- Reached through the two rows above; kept as buttons so the handlers stay simple. -->
-                  <Button x:Name="BtnFolderPick" Content="Choose folder..." Style="{StaticResource GhostBtn}" Margin="0,0,6,6" Visibility="Collapsed"/>
-                  <Button x:Name="BtnNetFind" Content="Find a PC..." Style="{StaticResource GhostBtn}" Margin="0,0,6,6" Visibility="Collapsed"/>
+                  <Button x:Name="BtnFolderPick" Content="Choose folder..." Style="{StaticResource GhostBtn}" Margin="0,0,6,6"/>
+                  <Button x:Name="BtnNetFind" Content="Find a PC..." Style="{StaticResource GhostBtn}" Margin="0,0,6,6"/>
                   <!-- Run on the PC that RECEIVES the backup: turns on file sharing and shares what is
                        ticked, so the other PC's Find a PC... can see it. Stop only appears while this
                        tool has shares of its own to remove. -->
@@ -6953,8 +6954,8 @@ function Update-UserEmptyStates {
         $EmptyMigrate.Text = $(if ($script:SrcPick) {
                 "Nothing to copy from `"$($script:SrcPick)`" - none of the usual data folders exist in that profile."
             } else { $(switch ($script:BackupMode) {
-                          'restore' { "Pick the drive the backup is on, then the backup, on the left.`n`nWhat it contains appears here." }
-                          default   { "Pick a profile on the left.`n`nIts folders appear here once selected." } }) })
+                          'restore' { 'Pick the backup on the left.' }
+                          default   { 'Pick an account on the left.' } }) })
         $EmptyMigrate.Visibility = 'Visible'
     }
 
@@ -17105,15 +17106,13 @@ function Sync-BackupMode {
 
     switch ($script:BackupMode) {
         'folder' {
-            $TxtFolderWhat.Text = 'Back up to this drive:'
-            $TxtFolderNote.Text = 'Running this again later copies only what has changed; nothing already on the drive is deleted.'
-            $TxtFolderNote.Foreground = $window.FindResource('Dim')
+            $TxtFolderWhat.Text = 'Back up to:'
+            $TxtFolderNote.Text = ''
             $BtnMigrate.Content = 'Back Up Data'
         }
         'restore' {
-            $TxtFolderWhat.Text = 'Restore from this drive:'
-            $TxtFolderNote.Text = 'Pick the drive the backup is on. The backups this tool wrote there are listed underneath it.'
-            $TxtFolderNote.Foreground = $window.FindResource('Dim')
+            $TxtFolderWhat.Text = 'Restore from:'
+            $TxtFolderNote.Text = ''
             $BtnMigrate.Content = 'Restore Data'
         }
         default {
@@ -17124,16 +17123,16 @@ function Sync-BackupMode {
     # profile', they describe a USB stick as an account and a restore backwards.
     switch ($script:BackupMode) {
         'folder' {
-            $TxtFromTitle.Text = 'Back up FROM'; $TxtFromWhat.Text = 'this account'
-            $TxtToTitle.Text   = 'Back up TO';   $TxtToWhat.Text   = 'a drive, a USB stick or another PC'
+            $TxtFromTitle.Text = 'Back up FROM'; $TxtFromWhat.Text = ''
+            $TxtToTitle.Text   = 'Back up TO';   $TxtToWhat.Text   = ''
         }
         'restore' {
-            $TxtFromTitle.Text = 'Restore FROM'; $TxtFromWhat.Text = 'a drive, a USB stick or another PC'
-            $TxtToTitle.Text   = 'Restore INTO'; $TxtToWhat.Text   = 'this account'
+            $TxtFromTitle.Text = 'Restore FROM'; $TxtFromWhat.Text = ''
+            $TxtToTitle.Text   = 'Restore INTO'; $TxtToWhat.Text   = ''
         }
         default {
-            $TxtFromTitle.Text = 'Copy FROM'; $TxtFromWhat.Text = 'this account'
-            $TxtToTitle.Text   = 'Copy TO';   $TxtToWhat.Text   = 'this other account'
+            $TxtFromTitle.Text = 'Copy FROM'; $TxtFromWhat.Text = ''
+            $TxtToTitle.Text   = 'Copy TO';   $TxtToWhat.Text   = ''
         }
     }
     if ($script:BackupMode -ne 'profile' -and (Get-Command Build-TargetList -ErrorAction SilentlyContinue)) { Build-TargetList }
@@ -17170,7 +17169,8 @@ function Select-BackupMode([string]$Which) {
     # "back up to a drive" into "restore" pointed the restore at a folder that never held a
     # manifest, with the note under it still describing free space. Chosen again, on purpose.
     $script:FolderPath = ''
-    $TxtFolderPath.Text = 'Nothing chosen yet'
+    $TxtFolderPath.Text = ''
+    $TxtFolderPath.Visibility = 'Collapsed'
     # The item list is built from whatever the SOURCE is, and restore reads its list out of the
     # backup rather than off a profile, so ticks carried over from the previous mode mean nothing.
     Sync-BackupMode
@@ -17562,16 +17562,21 @@ function Set-BackupFolder([string]$Path, [string]$User, [string]$Password) {
     $script:NetUser     = [string]$User
     $script:NetPassword = [string]$Password
     if (-not $script:FolderPath) {
-        # unticked, or a picker that was cancelled: back to nothing chosen, with the mode's own note
-        $TxtFolderPath.Text = 'Nothing chosen yet'
-        $TxtFolderNote.Text = $(if ($script:BackupMode -eq 'restore') { 'Pick the drive the backup is on. The backups this tool wrote there are listed underneath it.' }
-                                else { 'Running this again later copies only what has changed; nothing already on the drive is deleted.' })
-        $TxtFolderNote.Foreground = $window.FindResource('Dim')
+        # unticked, or a picker that was cancelled: back to nothing chosen, and nothing said about it
+        $TxtFolderPath.Text = ''
+        $TxtFolderPath.Visibility = 'Collapsed'
+        $TxtFolderNote.Text = ''
         Build-MigrateList
         Update-Dash
         return
     }
     $TxtFolderPath.Text = $(if ($script:BackupMode -eq 'restore') { "Restore from:  $($script:FolderPath)" } else { "Back up into:  $($script:FolderPath)\$(Get-BackupFolderName $(if ($script:SrcPick) { $script:SrcPick } else { '<account>' }))" })
+    $TxtFolderPath.Visibility = 'Visible'
+    # a folder or a PC chosen through the buttons is not a drive row: no row stays ticked for it
+    if (-not @($script:Targets | Where-Object { $_.IsSelected -and (Get-ShareKey $_.UnArgs) -eq (Get-ShareKey $script:FolderPath) }).Count) {
+        $script:TargetBusy = $true
+        try { foreach ($x in $script:Targets) { if ($x.IsSelected) { $x.IsSelected = $false } } } finally { $script:TargetBusy = $false }
+    }
 
     # Say what is actually there, NOW, rather than letting the technician find out after the
     # confirm. A restore especially: a folder without a manifest is refused by the worker anyway,
@@ -17893,6 +17898,9 @@ function Build-TargetList([string]$OpenDrive = '') {
         foreach ($d in @([IO.DriveInfo]::GetDrives())) {
             try {
                 if (-not $d.IsReady -or "$($d.DriveType)" -notin 'Fixed', 'Removable') { continue }
+                # Never the drive Windows is on. A backup onto the disk that holds the profile is
+                # not a backup - the one failure it exists for takes both copies with it.
+                if ((Get-ShareKey $d.Name) -eq (Get-ShareKey ($env:SystemDrive + [string][char]92))) { continue }
                 $letter = $d.Name.TrimEnd([char]92)
                 $label = $(if ($d.VolumeLabel) { $d.VolumeLabel } else { $(if ("$($d.DriveType)" -eq 'Removable') { 'USB drive' } else { 'Local Disk' }) })
                 $sub = "$(Format-Size $d.AvailableFreeSpace) free of $(Format-Size $d.TotalSize)"
@@ -17905,7 +17913,7 @@ function Build-TargetList([string]$OpenDrive = '') {
                     $found = @(Get-ChildItem -LiteralPath $d.Name -Directory -Filter 'PC2Go Backup - *' -ErrorAction SilentlyContinue |
                                Where-Object { Test-Path -LiteralPath (Join-Path $_.FullName 'pc2go-backup.json') } | Sort-Object LastWriteTime -Descending)
                     if (-not $found.Count) {
-                        $script:Targets.Add((New-TargetRow "tgt-none-$letter" 'No backups from this tool on this drive' 'Pick another drive, another PC, or a folder below' '' 'none' '#FF4A4A52' '-'))
+                        $script:Targets.Add((New-TargetRow "tgt-none-$letter" 'No backups from this tool on this drive' 'Try another drive, or Choose folder... / Find a PC... below' '' 'none' '#FF4A4A52' '-'))
                     }
                     foreach ($f in $found) {
                         $when = ''
@@ -17916,8 +17924,12 @@ function Build-TargetList([string]$OpenDrive = '') {
                 }
             } catch { }
         }
-        $script:Targets.Add((New-TargetRow 'tgt-net' 'Another PC on the network...' $(if ($restore) { 'A PC that holds the backup - it must be sharing a folder' } else { 'A PC running this tool with Share this PC pressed, or any shared folder' }) '' 'net' '#FF8A6A32' 'PC'))
-        $script:Targets.Add((New-TargetRow 'tgt-pick' 'A folder I choose...' $(if ($restore) { 'The backup folder itself, anywhere' } else { 'Any folder outside the profile being backed up' }) '' 'pick' '#FF64748B' '..'))
+        # No drive besides the one Windows is on: say so once, in the list, and leave the buttons
+        # under it to do the rest. Another PC and a chosen folder are BUTTONS, not rows - one way
+        # to each, next to the drives rather than mixed in with them.
+        if (-not $script:Targets.Count) {
+            $script:Targets.Add((New-TargetRow 'tgt-none' 'No other drive on this PC' 'Plug in a USB drive, or use Choose folder... / Find a PC... below' '' 'none' '#FF4A4A52' '-'))
+        }
         $ListTargets.ItemsSource = $script:Targets
     } finally { $script:TargetBusy = $false }
 }
