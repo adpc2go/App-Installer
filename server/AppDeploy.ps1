@@ -7051,7 +7051,11 @@ function Start-UserBatch([string]$Action, [hashtable]$Data) {
     $row.Id = "user-$Action"
     $row.Name = switch ($Action) {
         'newuser'       { "Create account `"$($Data.username)`"" }
-        'migrate'       { "Back up data to `"$($Data.dstUser)`"" }
+        # Named for the job. A drive/USB backup has no destination ACCOUNT, so this read
+        # 'Back up data to ""' on the card, in the log and in the run record.
+        'migrate'       { $(if ([string]$Data.srcKind -eq 'folder') { "Restore backup into `"$($Data.dstUser)`"" }
+                            elseif ([string]$Data.dstKind -eq 'folder') { "Back up data to $($Data.dstPath)" }
+                            else { "Copy profile data to `"$($Data.dstUser)`"" }) }
         'setadmin'      { $(if ($Data.admin) { "Promote `"$($Data.username)`" to Administrator" } else { "Demote `"$($Data.username)`" to Standard" }) }
         'setpassword'   { "Set password for `"$($Data.username)`"" }
         'toggleacct'    { $(if ($Data.enable) { "Enable `"$($Data.username)`"" } else { "Disable `"$($Data.username)`"" }) }
