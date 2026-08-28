@@ -9637,6 +9637,30 @@ function New-LocalAdmin($app) {
         catch { & "$env:SystemRoot\System32\net.exe" user $name /fullname:"$full" 2>&1 | Out-Null }
     }
 
+    # INTO THE USERS GROUP FIRST, always. New-LocalUser creates an account that belongs to NO
+    # group - unlike `net user /add`, which puts it in Users - and an account in no group is
+    # invisible: Get-LocalUser lists it, the profile folder gets built, and yet Control Panel
+    # does not show it and the sign-in screen has no tile for it. MEASURED on 25H2: "member
+    # of: []" straight after New-LocalUser. A standard user created here was therefore an
+    # account nobody could sign into. Windows' own Settings page adds every new account to
+    # Users, administrators included, so this does the same.
+    $usersGrp = 'Users'
+    try { $usersGrp = ((New-Object Security.Principal.SecurityIdentifier 'S-1-5-32-545').Translate([Security.Principal.NTAccount]).Value -replace '^.*\\', '') } catch { }
+    $inUsers = $false
+    try { Add-LocalGroupMember -SID 'S-1-5-32-545' -Member $name -ErrorAction Stop; $inUsers = $true }
+    catch {
+        # 'already a member' is a success; anything else falls back to net.exe
+        if ($_.Exception.Message -match 'already a member') { $inUsers = $true }
+        else {
+            & "$env:SystemRoot\System32\net.exe" localgroup $usersGrp $name /add 2>&1 | Out-Null
+            $inUsers = ($LASTEXITCODE -eq 0)
+        }
+    }
+    if (-not $inUsers) {
+        Write-Status $app.id 'Failed' "account created but could not be added to the $usersGrp group - it would not appear on the sign-in screen"
+        return
+    }
+
     # the Add Account dialog can create a standard user too, so only promote when asked
     $wantAdmin = $true
     if ($null -ne $app.admin) { $wantAdmin = [bool]$app.admin }
@@ -9670,7 +9694,7 @@ function New-LocalAdmin($app) {
         elseif ($threw) { $profileNote = "profile folder not created ($threw) - sign in once before copying data" }
         else { $profileNote = ('profile folder not created (CreateProfile returned 0x{0:X8}) - sign in once before copying data' -f $hr) }
     }
-    $role = $(if ($wantAdmin) { "a member of $grp" } else { 'a standard user' })
+    $role = $(if ($wantAdmin) { "a member of $usersGrp and $grp" } else { "a standard user (member of $usersGrp)" })
     Write-Status $app.id 'Applied' "$name created as $role; $profileNote"
 }
 
@@ -9720,6 +9744,20 @@ function Set-AccountAdmin($app) {
         if ($why) { Write-Status $app.id 'Failed' "refused: $why"; return }
     }
     $grp = Get-AdminGroupName
+    # A demotion must leave the account in Users, or it is in NO group - and an account in no
+    # group has no sign-in tile and no Control Panel entry (see New-LocalAdmin). An account
+    # created by an older build of this tool as an admin was never put in Users at all, so
+    # demoting it would make it vanish. 'already a member' is the normal outcome and fine.
+    if (-not $makeAdmin) {
+        try { Add-LocalGroupMember -SID 'S-1-5-32-545' -Member $name -ErrorAction Stop }
+        catch {
+            if ($_.Exception.Message -notmatch 'already a member') {
+                $ug = 'Users'
+                try { $ug = ((New-Object Security.Principal.SecurityIdentifier 'S-1-5-32-545').Translate([Security.Principal.NTAccount]).Value -replace '^.*\\', '') } catch { }
+                & "$env:SystemRoot\System32\net.exe" localgroup $ug $name /add 2>&1 | Out-Null
+            }
+        }
+    }
     try {
         if ($makeAdmin) { Add-LocalGroupMember -SID 'S-1-5-32-544' -Member $name -ErrorAction Stop }
         else { Remove-LocalGroupMember -SID 'S-1-5-32-544' -Member $name -ErrorAction Stop }

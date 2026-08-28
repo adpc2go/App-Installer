@@ -81,7 +81,9 @@ try {
     Select-Tab 'Users'
     Invoke-Click $BtnNewAccount
     $TxtNewUser.Text = $probe; $TxtNewFull.Text = 'PC2Go Probe'; $TxtNewPw.Text = $pw
-    $ChkNewAdmin.IsChecked = $true
+    # A STANDARD user: the case that was invisible. New-LocalUser puts an account in no group,
+    # and only the admin path ever added one - so a standard user had no sign-in tile.
+    $ChkNewAdmin.IsChecked = $false
     Invoke-Click $BtnNewUserOk
     Assert-Equal 'the confirm sheet opened' 'Create this account?' ('' + $TxtOverlayTitle.Text)
     Write-Host '  clicking Continue - approve the UAC prompt...' -ForegroundColor Yellow
@@ -100,7 +102,11 @@ try {
         $sidAtEnd = '' + $u.SID.Value
         Assert-True 'it is enabled' ([bool]$u.Enabled)
         $admins = @(Get-LocalGroupMember -SID 'S-1-5-32-544' -ErrorAction SilentlyContinue | ForEach-Object { '' + $_.SID.Value })
-        Assert-True 'it is in Administrators' ($admins -contains $sidAtEnd)
+        $users  = @(Get-LocalGroupMember -SID 'S-1-5-32-545' -ErrorAction SilentlyContinue | ForEach-Object { '' + $_.SID.Value })
+        Assert-True 'it is NOT in Administrators (a standard user was asked for)' (-not ($admins -contains $sidAtEnd))
+        # This is the one that puts it on the sign-in screen and in Control Panel.
+        Assert-True 'it IS in Users - so it has a sign-in tile'                    ($users -contains $sidAtEnd)
+        Assert-True 'net user agrees it is in a local group' ((& "$env:SystemRoot\System32\net.exe" user $probe 2>$null | Select-String 'Local Group Memberships') -match '\*')
         $pl = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList\$sidAtEnd"
         Assert-True 'its profile folder was created' ((Test-Path -LiteralPath $pl) -and (Test-Path -LiteralPath (Get-ItemProperty -LiteralPath $pl).ProfileImagePath))
         Assert-True 'the tab lists it after the batch' (@($script:AccountItems | Where-Object { $_.Name -eq $probe }).Count -eq 1)
