@@ -408,6 +408,9 @@ public class AppItem : INotifyPropertyChanged {
     // entry for a long time; nothing ever put them there, so the documented knobs were dead.
     public int InstallTimeoutSec;        // 0 = the worker's default (90 min)
     public bool AllowUi;                 // the installer shows a window even when silent
+    // Where the silent switch came from ('typed' | 'detected' | ''), the family the editor
+    // detected, and - on an uninstall row - the family whose quiet flags were appended.
+    public string SilentSource; public string InstallerFamily; public string UnFamily;
     // Real logo (extracted from the exe, or downloaded from the catalog); when present the
     // vector category glyph is hidden and the coloured tile turns transparent.
     // This MUST raise PropertyChanged: the icon pump assigns it after the row is already
@@ -5640,6 +5643,8 @@ function Load-Catalog {
             # the two per-app knobs Install-One reads - see the AppItem fields for why
             $item.InstallTimeoutSec = [int]$(if ($a.installTimeoutSec) { $a.installTimeoutSec } else { 0 })
             $item.AllowUi = [bool]$a.allowUi
+            $item.SilentSource = [string]$a.silentSource
+            $item.InstallerFamily = [string]$(if ($a.installer) { $a.installer.family } else { '' })
         } catch {
             $skipped += "$(if ($a.name) { $a.name } else { $id }): $($_.Exception.Message)"
             continue
@@ -9413,9 +9418,39 @@ function Install-One($app) {
     }
 
     Write-Status $app.id 'Installing' ''
-    Write-Activity $app.id 'install' 'Started' "$([IO.Path]::GetFileName($runFile)) $($app.silentArgs)"
-
     $ext = [IO.Path]::GetExtension($runFile).ToLower()
+
+    # The switch, and where it came from. The catalog's own value always wins. Only when the
+    # catalog has NONE - and nobody typed "none" on purpose (silentSource 'typed') - is the
+    # downloaded file itself asked which installer built it, and only a positive signature
+    # match with a documented switch is applied. Unknown means the installer runs bare and the
+    # window guard below stands in, exactly as before. Every branch is written to the activity
+    # log, so a wrong family is diagnosable from the record rather than from a hung window.
+    $launchArgs = [string]$app.silentArgs
+    $argSource = 'catalog'
+    if ([string]::IsNullOrWhiteSpace($launchArgs) -and $ext -ne '.msi' -and ('' + $app.silentSource) -ne 'typed' -and
+        (Get-Command Get-InstallerFamily -ErrorAction SilentlyContinue)) {
+        $sib = @()
+        if ($workDir) {
+            try { $sib = @(Get-ChildItem -LiteralPath $workDir -Recurse -File -ErrorAction SilentlyContinue | Select-Object -First 400 | ForEach-Object { $_.FullName.Substring($workDir.Length + 1) }) } catch { $sib = @() }
+        }
+        $fam = $null
+        try { $fam = Get-InstallerFamily -Path $runFile -Siblings $sib }
+        catch { Write-Activity $app.id 'install' 'Detected' "detector failed: $($_.Exception.Message) - no switch applied" }
+        if ($fam -and $fam.Confidence -eq 'signature' -and $fam.InstallArgs) {
+            $launchArgs = [string]$fam.InstallArgs
+            $argSource = "detected: $(Get-InstallerFamilyLabel $fam.Family)"
+            Write-Activity $app.id 'install' 'Detected' "family: $(Get-InstallerFamilyLabel $fam.Family); evidence: $($fam.Evidence -join '; '); switch: $launchArgs"
+        } elseif ($fam -and $fam.Confidence -eq 'signature') {
+            Write-Activity $app.id 'install' 'Detected' "family: $(Get-InstallerFamilyLabel $fam.Family) ($($fam.SubType)) - no universal silent switch: $($fam.Notes -join '; '). Running bare; the window guard stands in"
+        } else {
+            Write-Activity $app.id 'install' 'Detected' "family: unknown$(if ($fam -and $fam.Evidence) { " ($($fam.Evidence -join '; '))" }) - no switch applied; the window guard stands in"
+        }
+        if ($fam -and $app.installerFamily -and $fam.Family -and $fam.Family -ne [string]$app.installerFamily) {
+            Write-Activity $app.id 'install' 'Detected' "the catalog says $(Get-InstallerFamilyLabel $app.installerFamily), the downloaded file says $(Get-InstallerFamilyLabel $fam.Family) - the file wins"
+        }
+    }
+    Write-Activity $app.id 'install' 'Started' "$([IO.Path]::GetFileName($runFile)) $launchArgs ($argSource)"
     $maxTries = 3
     $v = $null
     $mins = 0
@@ -9441,14 +9476,14 @@ function Install-One($app) {
 
         if ($ext -eq '.msi') {
             $msiArgs = "/i `"$runFile`" /qn /norestart"
-            if ($app.silentArgs) { $msiArgs += " $($app.silentArgs)" }
+            if ($launchArgs) { $msiArgs += " $launchArgs" }
             # the full path, as every other system binary the worker launches: a bare name is
             # resolved through PATH, and this process is elevated
             $p = Start-InstallerWatched -FilePath (Join-Path $env:SystemRoot 'System32\msiexec.exe') -ArgumentList @($msiArgs) @watch
-        } elseif ([string]::IsNullOrWhiteSpace($app.silentArgs)) {
+        } elseif ([string]::IsNullOrWhiteSpace($launchArgs)) {
             $p = Start-InstallerWatched -FilePath $runFile @watch
         } else {
-            $p = Start-InstallerWatched -FilePath $runFile -ArgumentList @($app.silentArgs) @watch
+            $p = Start-InstallerWatched -FilePath $runFile -ArgumentList @($launchArgs) @watch
         }
         $mins = [math]::Round(((Get-Date) - $t0).TotalMinutes, 1)
 
@@ -9457,7 +9492,7 @@ function Install-One($app) {
         if ($p.ShowedUi -or $p.TimedOut) {
             $created = Get-CreatedDirs $before
             $why = $(if ($p.ShowedUi) {
-                        "the installer opened a window instead of installing silently, so it was stopped after $mins min - the silent switch '$($app.silentArgs)' is probably wrong for this installer"
+                        "the installer opened a window instead of installing silently, so it was stopped after $mins min - the silent switch '$launchArgs' ($argSource) is probably wrong for this installer"
                      } else {
                         "the installer was still running after $mins min and was stopped - raise installTimeoutSec for this app if it genuinely takes longer"
                      })
@@ -13488,6 +13523,9 @@ function Enqueue-Install([object]$Item) {
         # the per-app knobs Install-One reads off this entry - they were documented there
         # and never sent, so every installer got the 90-minute default and the window guard
         installTimeoutSec = [int]$Item.InstallTimeoutSec; allowUi = [bool]$Item.AllowUi
+        # 'typed' + empty means "run it bare and do NOT detect"; the family lets the worker say
+        # when the downloaded file disagrees with what the editor saw
+        silentSource = [string]$Item.SilentSource; installerFamily = [string]$Item.InstallerFamily
         # the worker's own sequencing flags: `chain` on a base install whose way was cleared
         # by a remove-first step; `after` on a reinstall, naming the removal it depends on
         chain = [bool]$Item.Chain

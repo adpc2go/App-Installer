@@ -1764,6 +1764,56 @@ function Invoke-R2Upload {
         Assert-True "the '$f' field is copied into the queue" ($copied -contains $f)
     }
 
+    Write-Section '11j. The worker applies a detected family switch only when the catalog has none'
+    Assert-True 'the worker carries the detector placeholder'      ($depAll -match '(?m)^#__INSTALLERFAMILY__\s*$')
+    Assert-True 'Start-Worker substitutes the detector'            ($depAll -match "Replace\('#__INSTALLERFAMILY__', \(Get-InstallerFamilySource\)\)")
+    foreach ($fld in 'silentSource', 'installerFamily') { Assert-True "Enqueue-Install sends $fld" ($depAll -match ([regex]::Escape($fld) + '\s*=\s*\[string\]\$Item\.')) }
+    # Functional: the worker's own Install-One, lifted from the here-string, against a launcher
+    # stub that records what it was handed. The detector comes from its single source file.
+    $wsStart = $depAll.IndexOf("`$workerScript = @'"); $wsEnd = $depAll.IndexOf("`n'@", $wsStart)
+    $wText = $depAll.Substring($wsStart + 18, $wsEnd - $wsStart - 18)
+    $wAst = [System.Management.Automation.Language.Parser]::ParseInput($wText, [ref]$null, [ref]$null)
+    foreach ($fnName in 'Install-One', 'Get-InstallVerdict', 'Resolve-PackageEntry') {
+        $fd = $wAst.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq $fnName }, $true) | Select-Object -First 1
+        Assert-True "the worker defines $fnName" ($null -ne $fd)
+        if ($fd) { . ([scriptblock]::Create($fd.Extent.Text)) }
+    }
+    . (Join-Path $repo 'tools\Installer-Family.ps1')
+    $script:Launched = @(); $script:Activity = @()
+    function Write-Status { param($Id, $State, $Detail, $Dirty, $Created) }
+    function Write-Activity { param($Id, $Phase, $State, $Detail) $script:Activity += "$State|$Detail" }
+    function Resolve-WatchRoots { param($Sid) }
+    function Get-DirSnapshot { return @{} }
+    function Get-CreatedDirs { param($Before) return @() }
+    function Invoke-PostInstall { param($App) return @() }
+    function Remove-Unpacked { }
+    function Start-InstallerWatched { param($FilePath, $ArgumentList, $Extra, $TimeoutSec, $UiGraceSec, [switch]$AllowUi) $script:Launched += ,@($ArgumentList); return [pscustomobject]@{ ExitCode = 0; ShowedUi = $false; TimedOut = $false } }
+    $famDir = Join-Path $sandbox 'family'; New-Item -ItemType Directory -Force -Path $famDir | Out-Null
+    $nsisSetup = Join-Path $famDir 'setup.exe'
+    [void](New-InstallerFamilyFixture -Family nsis -Path $nsisSetup)
+    $nsisHash = (Get-FileHash -LiteralPath $nsisSetup -Algorithm SHA256).Hash
+    $mk = { param($silent, $source) [pscustomobject]@{ id = 'fam'; file = $nsisSetup; sha256 = $nsisHash; silentArgs = $silent; silentSource = $source; installerFamily = ''
+                                                       verifyPaths = @($nsisSetup); entry = ''; postInstall = @(); userSid = ''; chain = $false; after = @() } }
+    $script:Launched = @(); $script:Activity = @()
+    Install-One (& $mk '' '')
+    Assert-Equal 'an empty switch on an NSIS file becomes /S'         '/S' ('' + @($script:Launched[0]) -join ' ')
+    Assert-True  'and the activity log names the family and evidence' (($script:Activity -join "`n") -match 'Detected\|family: NSIS; evidence: NSIS firstheader')
+    Assert-True  'and the Started line says where the switch came from' (($script:Activity -join "`n") -match 'Started\|setup\.exe /S \(detected: NSIS\)')
+    $script:Launched = @(); $script:Activity = @()
+    Install-One (& $mk '' 'typed')
+    Assert-Equal 'an empty switch typed on purpose runs bare'          '' ('' + @($script:Launched[0]) -join ' ')
+    Assert-True  'and nothing was detected'                            (-not (($script:Activity -join "`n") -match 'Detected\|'))
+    $script:Launched = @(); $script:Activity = @()
+    Install-One (& $mk '/X' '')
+    Assert-Equal 'a catalog switch is used as given'                   '/X' ('' + @($script:Launched[0]) -join ' ')
+    Assert-True  'and the file is not consulted'                       (-not (($script:Activity -join "`n") -match 'Detected\|'))
+    $plain = Join-Path $famDir 'plain.exe'; Copy-Item "$env:SystemRoot\System32\where.exe" $plain -Force
+    $script:Launched = @(); $script:Activity = @()
+    $app2 = & $mk '' ''; $app2.file = $plain; $app2.sha256 = (Get-FileHash -LiteralPath $plain -Algorithm SHA256).Hash; $app2.verifyPaths = @($plain)
+    Install-One $app2
+    Assert-Equal 'an unknown installer runs bare'                     '' ('' + @($script:Launched[0]) -join ' ')
+    Assert-True  'and the log says unknown, guard stands in'          (($script:Activity -join "`n") -match 'family: unknown.*guard stands in')
+
     # And a batch that installed something must never call it cancelled.
     Assert-True 'a Skipped item is reported as a warning, not as cancelled' `
         ($depAll -match 'hadWarnings -gt 0.*with warnings')
