@@ -7655,7 +7655,11 @@ function Invoke-SegmentedDownload([object]$Item, [string]$Dest, [int]$Streams = 
                         # there was pure dead time (measured: at 40% cut responses, sixteen workers
                         # took 44 s where eight took 25 s, all of it waiting). Backoff is for the
                         # other case: a reconnect that yields NOTHING, which is an outage.
-                        $Shared.Faults = [int]$Shared.Faults + 1
+                        # Faults drive the worker throttle, so they must mean "the link is not
+                        # delivering", not "a socket was cut". Measured: 15% cut responses on a
+                        # healthy 40 Mbps line throttled eight workers down to two and halved the
+                        # download - the cuts were counted, the link was fine the whole time.
+                        if ($gotThisAttempt -le 0) { $Shared.Faults = [int]$Shared.Faults + 1 }
                         if ($gotThisAttempt -gt 0) { $attempt = 0 }
                         $wait = $(if ($attempt -eq 0) { 0.25 } else { [Math]::Min(30, [Math]::Pow(2, [Math]::Min($attempt, 5))) })
                         [void]$Shared.Log.Add("chunk $idx attempt $attempt failed ($msg) - retrying in ${wait}s")
