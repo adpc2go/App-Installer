@@ -3325,6 +3325,17 @@ function Format-Eta([long]$Remaining, [double]$BytesPerSec) {
     return "$($h)h $($m % 60)m left"
 }
 
+# How long it HAS been, for the jobs that run for a while and have no byte count to count down
+# from - an account action that is waiting on the elevated worker, a profile copy between folders.
+function Format-Elapsed([int]$Secs) {
+    if ($Secs -lt 0) { $Secs = 0 }
+    if ($Secs -lt 60) { return "$($Secs)s" }
+    $m = [int][math]::Floor($Secs / 60)
+    if ($m -lt 60) { return "$($m)m $($Secs % 60)s" }
+    $h = [int][math]::Floor($m / 60)
+    return "$($h)h $($m % 60)m"
+}
+
 # The card gets the verdict; the Activity tab gets the sentence.
 #
 # A settled row - ok, fail, warn - used to carry the worker's entire explanation on the card:
@@ -3884,12 +3895,17 @@ $script:IconHandle = $script:IconPS.BeginInvoke()
 # Registry paths arrive in two shapes: short (HKLM\...) from the catalog and long
 # (HKEY_LOCAL_MACHINE\...) from PSPath. Normalise both to PowerShell drive syntax.
 function ConvertTo-PSRegPath([string]$Path) {
+    # HKCR and HKU go through the Registry:: provider path: no HKCR:/HKU: drive exists unless
+    # something creates one, and nothing here does - so "HKCR:\..." was a path Test-Path always
+    # answered $false for, which read as "already gone" on a wipe and "uninstalled" on a detect.
     return ($Path -replace '^HKEY_LOCAL_MACHINE\\', 'HKLM:\' `
                   -replace '^HKEY_CURRENT_USER\\', 'HKCU:\' `
-                  -replace '^HKEY_CLASSES_ROOT\\', 'HKCR:\' `
+                  -replace '^HKEY_CLASSES_ROOT\\', 'Registry::HKEY_CLASSES_ROOT\' `
+                  -replace '^HKEY_USERS\\', 'Registry::HKEY_USERS\' `
                   -replace '^HKLM\\', 'HKLM:\' `
                   -replace '^HKCU\\', 'HKCU:\' `
-                  -replace '^HKCR\\', 'HKCR:\')
+                  -replace '^HKCR\\', 'Registry::HKEY_CLASSES_ROOT\' `
+                  -replace '^HKU\\', 'Registry::HKEY_USERS\')
 }
 
 # $Tick is called every so often with the running total, so a caller on the UI thread can keep
@@ -3905,8 +3921,15 @@ function Get-FolderSize([string]$Path, [scriptblock]$Tick = $null) {
     while ($stack.Count -gt 0) {
         $dir = $stack.Pop()
         # every 200 directories, not every file: the callback pumps the dispatcher and doing
-        # that per file would cost more than the walk itself
-        if ($Tick -and ((++$seen % 200) -eq 0)) { try { & $Tick $sum } catch { } }
+        # that per file would cost more than the walk itself.
+        # A tick that comes back $false is a stop - the same idiom Find-NetworkHosts uses, and
+        # type-guarded for the same reason: a callback that emits anything else must not read
+        # as one. The walk ends where it is and the caller gets the partial sum.
+        if ($Tick -and ((++$seen % 200) -eq 0)) {
+            $go = $true
+            try { $go = & $Tick $sum } catch { }
+            if ($go -is [bool] -and -not $go) { break }
+        }
         try {
             foreach ($f in [IO.Directory]::EnumerateFiles($dir)) {
                 try { $sum += (New-Object IO.FileInfo $f).Length } catch {}
@@ -3966,7 +3989,11 @@ function Test-ProtectedPath([string]$Path) {
     if (-not $Path) { return $true }
     $full = ''
     try { $full = [IO.Path]::GetFullPath([Environment]::ExpandEnvironmentVariables($Path)) } catch { return $false }
-    return ($script:ProtectedPaths -contains $full.TrimEnd('\').ToLower())
+    $t = $full.TrimEnd('\')
+    # a drive root - installers do register InstallLocation = "C:\" - is never a leftover, and
+    # sizing it walked the whole disk inside the scan with no way to stop it
+    if ($t.Length -le 3) { return $true }
+    return ($script:ProtectedPaths -contains $t.ToLower())
 }
 
 # Components deliberately shared between products of the same suite. Autodesk leaves
@@ -4314,9 +4341,15 @@ function Show-Confirm([string]$Title, [string]$Message, [scriptblock]$OnConfirm)
 function Test-BatchBusy {
     if ($script:Phase -notin 'Download', 'Install') { return $false }
     $what = switch ($script:BatchTab) {
-        'Un'    { 'A removal batch is still running.' }
-        'Tweak' { 'A tweak batch is still running.' }
-        default { 'Apps are still downloading or installing.' }
+        'Un'      { 'A removal batch is still running.' }
+        'Tweak'   { 'A tweak batch is still running.' }
+        # Named, or an account change refused itself with "apps are still downloading" -
+        # a sentence about a tab the technician was not on, describing work nobody started.
+        'Users'   { 'An account change is still running.' }
+        'Migrate' { 'A backup or restore is still copying.' }
+        'Fw'      { 'A firewall batch is still running.' }
+        'Tools'   { 'A repair is still running.' }
+        default   { 'Apps are still downloading or installing.' }
     }
     Show-Overlay 'Still busy' ("$what`n`n" +
         "One elevated worker handles the whole queue, so a second batch cannot start until this one finishes - " +
@@ -4687,7 +4720,7 @@ function Get-StoreApps {
             $disp = Clean-DisplayName ($disp -creplace '(?<=[a-z0-9])(?=[A-Z])', ' ')
         }
         # internal plumbing rather than anything a technician would uninstall
-        if ($disp -match '(?i)winget.*source|^Desktop App Installer$|VCLibs|WindowsAppRuntime|\.NET Native') { continue }
+        if ($disp -match '(?i)winget.*source|^(Desktop )?App Installer$|VCLibs|WindowsAppRuntime|\.NET Native') { continue }
         [void]$out.Add([pscustomobject]@{
             Name        = (Clean-DisplayName $disp)
             Version     = (AsText $p.Version)
@@ -4718,6 +4751,11 @@ function Select-UnTab([string]$Which) {
     $BtnSubDesktop.Style = $window.FindResource($(if ($store) { 'TabIdle' } else { 'TabActive' }))
     $BtnSubStore.Style   = $window.FindResource($(if ($store) { 'TabActive' } else { 'TabIdle' }))
     if ($script:Phase -in 'Download', 'Install' -and $script:BatchTab -ne 'Install') { return }
+    # The scan pumps the dispatcher to keep its spinner alive, and the pump dispatches clicks:
+    # Rescan or the other pill pressed mid-scan re-entered this function, cleared the list the
+    # outer scan was still filling, and the outer loop then appended its rows on top - every
+    # program twice, or the Store list under a lit Desktop pill. One scan at a time.
+    if ($script:UnScanning) { return }
 
     $dirty = $(if ($store) { $script:StoreDirty } else { $script:UnDirty })
     if (-not $dirty) {
@@ -4727,7 +4765,7 @@ function Select-UnTab([string]$Which) {
         Update-SearchCount
         return
     }
-    if ($store) { $script:StoreDirty = $false } else { $script:UnDirty = $false }
+    $script:UnScanning = $true
     $ListUn.Visibility = 'Collapsed'
     $LoadUn.Visibility = 'Visible'
     $TxtLoadUn.Text = $(if ($store) { 'Scanning Microsoft Store apps...' } else { 'Scanning installed programs...' })
@@ -4735,6 +4773,9 @@ function Select-UnTab([string]$Which) {
     Update-UI
     try {
         if ($store) { Refresh-UnStore } else { Refresh-UnList $script:LastManifest }
+        # clean only once a scan has actually succeeded - a throw used to leave a partial
+        # list flagged fresh, so the next visit showed it as if it were complete
+        if ($store) { $script:StoreDirty = $false } else { $script:UnDirty = $false }
     } catch {
         # surface the real reason instead of taking the window down with us
         $msg = "$($_.Exception.Message)`n`nat $($_.InvocationInfo.ScriptLineNumber): $($_.InvocationInfo.Line.Trim())"
@@ -4744,11 +4785,13 @@ function Select-UnTab([string]$Which) {
         if ($store) { $ListUn.ItemsSource = $script:StoreView } else { $ListUn.ItemsSource = $script:UnView }
         Show-Overlay 'Could not scan installed programs' $msg
     } finally {
+        $script:UnScanning = $false
         $LoadUn.Visibility = 'Collapsed'
         $ListUn.Visibility = 'Visible'
         Update-SearchCount   # a freshly scanned list must honour the sticky query
     }
 }
+$script:UnScanning = $false
 
 # Autodesk ODIS names each product's uninstall manifest at INSTALL time, under a per-product
 # folder in ProgramData - a path no catalog written in advance can carry. The catalog writes
@@ -4874,6 +4917,13 @@ function Refresh-UnList([object]$Manifest) {
                 }
             }
         }
+        # A registry InstallLocation is a claim, not a curated target: Office's language packs
+        # all name "...\Microsoft Office", Intel's components share "...\Intel". Pre-ticking it
+        # offered a sibling product's folder for deletion with one uninstall. PreExisting turns
+        # the scan's pre-check OFF for this row's curated paths - they are still listed, and a
+        # folder the uninstaller emptied is graded EMPTY on its own. A catalog-upgraded row
+        # keeps the pre-tick: its cleanup paths were written for that product on purpose.
+        $u.PreExisting = -not [bool]$cat
         $script:UnItems.Add($u)
     }
     $ListUn.ItemsSource = $script:UnView    # reattach the filtered view, never the raw collection
@@ -4906,10 +4956,12 @@ function Refresh-UnStore {
         $u.IconBg = '#FF7A5CFF'
         # logo asset read off-thread by the icon pump; manifest was already parsed above
         if ($s.Location -and $s.Logo) { Request-Icon $u 'store' @{ Location = $s.Location; Logo = $s.Logo } }
-        # Store packages are self-contained; their folder is removed by the platform
+        # Store packages are self-contained; their folder is removed by the platform. No name
+        # tokens either: "Xbox" matched XblAuthManager and XboxNetApiSvc as STRONG findings and
+        # "Microsoft Store" matched InstallService - Windows services, offered for deletion.
         $u.CleanPaths = @()
         $u.CleanReg = @()
-        $u.CleanTokens = @($s.Name)
+        $u.CleanTokens = @()
         $script:UnStore.Add($u)
     }
     $ListUn.ItemsSource = $script:StoreView
@@ -6196,8 +6248,6 @@ function Update-UserEmptyStates {
 
     $EmptyAccounts.Visibility = $(if ($script:AccountItems.Count) { 'Collapsed' } else { 'Visible' })
     if (-not $script:AccountItems.Count) { $EmptyAccounts.Text = 'No local accounts found on this machine.' }
-    # one button, two meanings - it must always say what it will actually do
-    $selAcct = Get-SelectedAccount
 
     # the migrate list is empty for two very different reasons - say which
     $EmptyMigrate.Visibility = 'Collapsed'
@@ -7017,6 +7067,11 @@ function Start-UserBatch([string]$Action, [hashtable]$Data) {
     # null, so every migration ever run was recorded as having taken 0 seconds.
     $script:RunStarted = Get-Date
     $script:Pending = @($row)
+    # Reset here, as Start-Batch does. Update-Overall computes the bar from DlIndex, which a
+    # user batch never advances - so it kept whatever the LAST install batch left it at, and a
+    # profile copy after a three-app install opened with the overall bar already pinned at 100%.
+    $script:DlIndex = 0
+    $script:LastLogKey = @{}
     # 'Migrate' when the job IS a migration, or Update-Dash decides this batch belongs to the
     # Users panel, sees the Migrate panel on screen instead, and hides RowProgress - the
     # progress row was hidden on the one tab that most needed it.
@@ -7044,7 +7099,19 @@ function Start-UserBatch([string]$Action, [hashtable]$Data) {
     $TxtNow.Text = $row.Name
     $DotNow.Fill = '#FF4C8DFF'
     $RowNow.Visibility = 'Visible'
-    $TxtStatus.Text = $(if ($Action -eq 'newuser') { 'Creating account...' } else { 'Copying profile data...' })
+    # One line per job. Every account action used to read 'Copying profile data...' - a
+    # password reset, a demotion, a delete - because only 'newuser' had its own wording.
+    $TxtStatus.Text = switch ($Action) {
+        'newuser'       { 'Creating the account...' }
+        'migrate'       { $(switch ([string]$Data.srcKind) { 'folder' { 'Restoring the backup...' }
+                                   default { $(if ([string]$Data.dstKind -eq 'folder') { 'Backing up profile data...' }
+                                               else { 'Copying profile data...' }) } }) }
+        'setadmin'      { $(if ($Data.admin) { 'Adding to Administrators...' } else { 'Removing from Administrators...' }) }
+        'setpassword'   { 'Setting the password...' }
+        'toggleacct'    { $(if ($Data.enable) { 'Enabling the account...' } else { 'Disabling the account...' }) }
+        'deleteaccount' { 'Deleting the account...' }
+        default         { 'Working...' }
+    }
     Add-Log "$($row.Name) - started."
 }
 
@@ -7112,6 +7179,11 @@ function Start-UserChain([object[]]$Steps) {
     }
     $script:Pending = $rows
     $script:BatchTab = 'Users'
+    # Same three as Start-UserBatch, for the same reasons: the run record read 0 seconds without
+    # RunStarted, and the overall bar inherited the previous install batch's DlIndex.
+    $script:RunStarted = Get-Date
+    $script:DlIndex = 0
+    $script:LastLogKey = @{}
     $script:HadFailures = $false
     $script:WorkerStarted = $false
     $script:EndQueued = $false
@@ -7474,7 +7546,15 @@ function Invoke-SegmentedDownload([object]$Item, [string]$Dest, [int]$Streams = 
             $txt = "Downloading $pct%"
             if ($spTxt)  { $txt += "  $spTxt" }
             if ($etaTxt) { $txt += "  -  $etaTxt" }
-            Set-Status $Item $txt 'active'
+            # Not over a verdict. Update-UI below is where a Remove or Cancel click runs, and it
+            # sets 'Removed from batch' / 'Cancelled' on this row; the ranges are still mid-read
+            # so the loop comes round once more, and this line rewrote that to "Downloading 43%".
+            # The pump's catch then read the row, saw no 'Removed', and started a full BITS
+            # download of the app the technician had just taken out.
+            if (-not $shared.Cancel -and -not $shared.Pause -and
+                $Item.Status -notlike 'Removed*' -and $Item.Status -notlike 'Cancelled*') {
+                Set-Status $Item $txt 'active'
+            }
             $Item.ProgressVis = 'Visible'
             $Item.Progress = $pct
             Update-Overall $pct
@@ -7490,7 +7570,7 @@ function Invoke-SegmentedDownload([object]$Item, [string]$Dest, [int]$Streams = 
                 $lastJournal = $now
             }
 
-            if ($script:CancelPath -and (Test-Path -LiteralPath $script:CancelPath)) { $shared.Cancel = $true }
+            if ((Test-CancelRequested)) { $shared.Cancel = $true }
             # Pause was previously unreachable here at all: the button returned early unless a
             # BITS job was in flight, and a segmented download has none - so the one control
             # that mattered on a 15 GB package did nothing at all when pressed.
@@ -7573,7 +7653,7 @@ function Invoke-ResumableDownload([object]$Item, [string]$Dest) {
                         # until the whole file had come down - on a 15 GB package, an hour of
                         # a technician watching a button they had already pressed. Stopping
                         # here keeps the .part file, so a resume picks up where it left off.
-                        if ($script:CancelPath -and (Test-Path -LiteralPath $script:CancelPath)) {
+                        if ((Test-CancelRequested)) {
                             throw 'the batch was cancelled'
                         }
                         if ($Item.Status -like 'Removed*') { throw 'removed from the batch' }
@@ -7613,7 +7693,7 @@ function Invoke-ResumableDownload([object]$Item, [string]$Dest) {
             # Neither of these is a transport fault, so the retry ladder below must not run:
             # five attempts with exponential backoff on a download nobody wants any more is
             # about a minute of the batch refusing to end.
-            if ($script:CancelPath -and (Test-Path -LiteralPath $script:CancelPath)) { throw }
+            if ((Test-CancelRequested)) { throw }
             if ($Item.Status -like 'Removed*') { throw }
             $we = $_.Exception
             while ($we -and -not ($we -is [Net.WebException])) { $we = $we.InnerException }
@@ -7647,7 +7727,10 @@ function Update-Overall([int]$CurrentPct) {
     $total = $script:Pending.Count
     if ($total -eq 0) { return }
     $BarOverall.Value = [math]::Min(100, (($script:DlIndex * 100) + $CurrentPct) / $total)
-    $TxtOverall.Text = "$([math]::Floor($BarOverall.Value))%   -   app $([math]::Min($script:DlIndex + 1, $total)) of $total"
+    # 'app' only when the rows ARE apps. A profile copy read "app 1 of 1" under a progress bar
+    # on the Backup tab.
+    $noun = $(if ($script:BatchTab -in 'Install', 'Un') { 'app' } else { 'step' })
+    $TxtOverall.Text = "$([math]::Floor($BarOverall.Value))%   -   $noun $([math]::Min($script:DlIndex + 1, $total)) of $total"
 }
 
 # ---------- elevated worker (single UAC prompt, pipelined with downloads) ----------
@@ -7658,7 +7741,7 @@ function Update-Overall([int]$CurrentPct) {
 # without weakening integrity checking.
 $workerScript = @'
 param([string]$QueueFile, [string]$StatusFile, [string]$CancelFile, [string]$SkipFile,
-      [string]$TestWatchRoots)
+      [string]$TestWatchRoots, [int]$ParentPid = 0)
 $ErrorActionPreference = 'Continue'
 
 # One JSON line per event, appended and never rewritten. It lives beside the status file
@@ -7952,12 +8035,17 @@ function Remove-Stubborn([string]$Path) {
     return 'failed'
 }
 function ConvertTo-PSRegPath([string]$Path) {
+    # HKCR and HKU go through the Registry:: provider path: no HKCR:/HKU: drive exists unless
+    # something creates one, and nothing here does - so "HKCR:\..." was a path Test-Path always
+    # answered $false for, which read as "already gone" on a wipe and "uninstalled" on a detect.
     return ($Path -replace '^HKEY_LOCAL_MACHINE\\', 'HKLM:\' `
                   -replace '^HKEY_CURRENT_USER\\', 'HKCU:\' `
-                  -replace '^HKEY_CLASSES_ROOT\\', 'HKCR:\' `
+                  -replace '^HKEY_CLASSES_ROOT\\', 'Registry::HKEY_CLASSES_ROOT\' `
+                  -replace '^HKEY_USERS\\', 'Registry::HKEY_USERS\' `
                   -replace '^HKLM\\', 'HKLM:\' `
                   -replace '^HKCU\\', 'HKCU:\' `
-                  -replace '^HKCR\\', 'HKCR:\')
+                  -replace '^HKCR\\', 'Registry::HKEY_CLASSES_ROOT\' `
+                  -replace '^HKU\\', 'Registry::HKEY_USERS\')
 }
 # $Pct/$Bytes/$Total/$Rate/$Elapsed are how a long-running action reports NUMBERS, not just a
 # sentence. Until now this record carried none: {id,state,detail,dirty} and nothing else, so the
@@ -8018,7 +8106,11 @@ function Invoke-PostStep($step, [string]$appId, [int]$n, [int]$total) {
                 if (-not $script:UnpackedDir) {
                     return "step $n ($label): 'from' needs a .zip package - this app is a single installer"
                 }
-                $f = Join-Path $script:UnpackedDir ([string]$step.from)
+                # the same gate `entry` passes: a `from` of "..\..\x" would name an unverified
+                # file OUTSIDE the package, and this branch skips the hash on the strength of
+                # the package's own - which only holds for bytes that came out of it
+                $f = Resolve-PackageEntry $script:UnpackedDir ([string]$step.from)
+                if (-not $f) { return "step $n ($label): 'from' points outside the package - refused" }
             }
             if (-not $f -or -not (Test-Path -LiteralPath $f)) { return "step $n ($label): file missing" }
             if ($fromPkg) {
@@ -8048,7 +8140,9 @@ function Invoke-PostStep($step, [string]$appId, [int]$n, [int]$total) {
                 }
             } catch { return "step $n ($label): could not start - $($_.Exception.Message)" }
             if (-not $proc.WaitForExit($secs * 1000)) {
-                try { $proc.Kill() } catch {}
+                # the tree, not the parent: a .bat runs under cmd.exe and the tool it launched
+                # is what is actually stuck - killing cmd alone leaves it running
+                Stop-ProcessTree $proc.Id
                 return "step $n ($label): TIMED OUT after $secs s and was killed - it may be waiting on a hidden prompt"
             }
             if ($proc.ExitCode -ne 0 -and $proc.ExitCode -ne 3010) { return "step $n ($label): exit code $($proc.ExitCode)" }
@@ -8076,7 +8170,7 @@ function Invoke-PostStep($step, [string]$appId, [int]$n, [int]$total) {
             # time-boxed like every other step: a command that waits on input would otherwise
             # hold the whole batch open for ever
             if (-not $proc.WaitForExit($secs * 1000)) {
-                try { $proc.Kill() } catch {}
+                Stop-ProcessTree $proc.Id      # and whatever the command itself started
                 return "step $n ($label): TIMED OUT after $secs s and was killed - it may be waiting on input"
             }
             if ($proc.ExitCode -ne 0) { return "step $n ($label): exit code $($proc.ExitCode)" }
@@ -8126,7 +8220,11 @@ function Invoke-PostStep($step, [string]$appId, [int]$n, [int]$total) {
                 if (-not $script:UnpackedDir) {
                     return "step $n ($label): 'from' needs a .zip package - this app is a single installer"
                 }
-                $f = Join-Path $script:UnpackedDir ([string]$step.from)
+                # the same gate `entry` passes: a `from` of "..\..\x" would name an unverified
+                # file OUTSIDE the package, and this branch skips the hash on the strength of
+                # the package's own - which only holds for bytes that came out of it
+                $f = Resolve-PackageEntry $script:UnpackedDir ([string]$step.from)
+                if (-not $f) { return "step $n ($label): 'from' points outside the package - refused" }
             }
             $dest = [Environment]::ExpandEnvironmentVariables([string]$step.dest)
             if (-not $f -or -not (Test-Path -LiteralPath $f)) { return "step $n ($label): source file missing" }
@@ -8531,6 +8629,9 @@ function Install-One($app) {
             }
         } catch {
             Write-Status $app.id 'Failed' "could not unpack the package - $($_.Exception.Message)"
+            # $script:UnpackedDir is not set yet on this path, so nothing downstream removes a
+            # half-extracted, possibly multi-GB folder - and the cache is kept after a failure
+            try { Remove-Item -LiteralPath $unpacked -Recurse -Force -ErrorAction Stop } catch { }
             return
         }
         $runFile = Resolve-PackageEntry $unpacked ([string]$app.entry)
@@ -8678,7 +8779,7 @@ function Install-One($app) {
             $where = @(@($created) | Select-Object -First 2) -join ', '
             if (@($created).Count -gt 2) { $where += ", +$(@($created).Count - 2) more" }
             Write-Status $app.id 'Failed' (
-                "installed but could not be verified - the installer created $where, " +
+                "installed but could not be verified - the installer created $(@($created).Count) folder(s) ($where), " +
                 "yet none of this app's verifyPaths exist (expected $(@($missing) -join ' | ')). " +
                 'Point verifyPaths in the catalog at a file inside the folder it created. Nothing is offered for removal.') $false @()
             Remove-Unpacked
@@ -8755,7 +8856,13 @@ function Uninstall-One($app) {
                 Where-Object { $_.DisplayName -eq $fam } |
                 ForEach-Object { Remove-AppxProvisionedPackage -Online -PackageName $_.PackageName -ErrorAction SilentlyContinue | Out-Null }
         } catch {}
-        if (@(Get-AppxPackage -ErrorAction SilentlyContinue | Where-Object { $_.PackageFullName -eq $app.args }).Count) {
+        # -AllUsers on the check as well as the removal: the per-user fallback above can
+        # succeed for this account alone, and a check without it then reported "Uninstalled"
+        # while every other profile still had the package
+        $still = @()
+        try { $still = @(Get-AppxPackage -AllUsers -ErrorAction Stop | Where-Object { $_.PackageFullName -eq $app.args }) }
+        catch { $still = @(Get-AppxPackage -ErrorAction SilentlyContinue | Where-Object { $_.PackageFullName -eq $app.args }) }
+        if ($still.Count) {
             Write-Status $app.id 'Failed' 'package still present after removal'
         } else {
             Write-Status $app.id 'Uninstalled' ''
@@ -8785,11 +8892,11 @@ function Uninstall-One($app) {
     # and the vendor's wizard appears on the technician's own desktop for them to click through.
     # Killing that would be destroying work in progress, so an interactive uninstaller is
     # allowed its window and bounded only by the clock.
-    $unWatch = @{}
+    # one clock for both shapes, so the failure text below says the number that was actually used
+    $unWatch = @{ TimeoutSec = 3600 }
     if (-not $app.silent) {
         $unWatch['AllowUi'] = $true
         # long enough for somebody to actually read a wizard, short enough to end a hang
-        $unWatch['TimeoutSec'] = 3600
     }
     if ([string]::IsNullOrWhiteSpace($app.args)) {
         $p = Start-InstallerWatched -FilePath $exe @unWatch
@@ -8813,8 +8920,10 @@ function Uninstall-One($app) {
     # so the key disappearing is the reliable signal.
     $gone = $true
     if ($app.detect) {
-        if ($app.detect -match '^HK(LM|CU|CR|EY)') {
-            if (Test-Path -LiteralPath (ConvertTo-PSRegPath $app.detect)) { $gone = $false }
+        if ($app.detect -match '^HK(LM|CU|CR|EY|U)') {
+            # Resolve-Reg, not ConvertTo-PSRegPath: an HKCU detect key must be read in the
+            # technician's hive, where the program was found, not the elevating admin's
+            if (Test-Path -LiteralPath (Resolve-Reg $app.detect)) { $gone = $false }
         } elseif (Test-Path -LiteralPath ([Environment]::ExpandEnvironmentVariables($app.detect))) {
             $gone = $false
         }
@@ -8857,10 +8966,45 @@ function Test-WipeAllowed([string]$Path) {
     $full = ''
     # GetFullPath, so "...\Adobe\..\Adobe" and a trailing dot cannot walk past an equality test
     try { $full = [IO.Path]::GetFullPath([Environment]::ExpandEnvironmentVariables($Path)) } catch { return $false }
+    # Only a plain local drive path. "\\?\C:\Windows" and "\\localhost\c$\Windows" are the same
+    # folder spelled so that neither equals an entry in the list above - GetFullPath leaves
+    # both untouched, Test-Path answers $true for both, and Remove-Stubborn would have gone
+    # through them. A leftover on THIS machine has a drive letter or it is not a leftover.
+    if ($full.StartsWith('\\?\')) { $full = $full.Substring(4) }
+    if ($full -notmatch '^[A-Za-z]:\\') { return $false }
     $t = $full.TrimEnd('\')
     if ($script:WipeProtected -contains $t.ToLower()) { return $false }
+    # The list above is built from THIS process's environment - the elevating admin's - so
+    # another account's profile roots are not in it. Every user's profile and AppData roots
+    # are refused by shape instead; a leftover lives INSIDE one of these, never IS one.
+    if ($t -match '^(?i)[a-z]:\\Users\\[^\\]+(\\AppData(\\(Local|Roaming|LocalLow))?)?$') { return $false }
     # a bare drive root - "C:\" - is not a leftover under any reading
     if ($t.Length -le 3) { return $false }
+    return $true
+}
+
+# The registry twin of Test-WipeAllowed. The 'reg' wipe is the same recursive delete as the
+# file branch and had no gate at all: a catalog cleanup.registry of "HKLM\SOFTWARE\Microsoft",
+# or a tampered queue, went straight to Remove-Item -Recurse. Hive roots and the shared
+# trunks every product lives under are refused; a product's own key beneath them is not.
+$script:RegProtected = @(
+    'SOFTWARE', 'SOFTWARE\WOW6432Node', 'SOFTWARE\Microsoft', 'SOFTWARE\WOW6432Node\Microsoft',
+    'SOFTWARE\Classes', 'SOFTWARE\Policies', 'SOFTWARE\Microsoft\Windows', 'SOFTWARE\Microsoft\Windows NT',
+    'SOFTWARE\Microsoft\Windows\CurrentVersion', 'SOFTWARE\Microsoft\Windows\CurrentVersion\Run',
+    'SOFTWARE\Microsoft\Windows\CurrentVersion\RunOnce', 'SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall',
+    'SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall',
+    'SYSTEM', 'SYSTEM\CurrentControlSet', 'SYSTEM\CurrentControlSet\Services', 'SYSTEM\CurrentControlSet\Control'
+) | ForEach-Object { $_.ToLower() }
+function Test-RegWipeAllowed([string]$Path) {
+    if ([string]::IsNullOrWhiteSpace($Path)) { return $false }
+    # strip the provider/hive prefix down to the sub-key path, whichever spelling arrived
+    $sub = ('' + $Path) -replace '^(Registry::)?', '' `
+                        -replace '^(HKEY_LOCAL_MACHINE|HKLM:?|HKEY_CURRENT_USER|HKCU:?|HKEY_CLASSES_ROOT|HKCR:?)\\?', '' `
+                        -replace '^(HKEY_USERS|HKU:?)\\[^\\]+\\?', ''
+    $sub = $sub.Trim('\')
+    if (-not $sub) { return $false }                                    # a hive root
+    if ($sub -match '^(?i)(Software|Software\\WOW6432Node)\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\[^\\]+$') { return $true }  # a product's own uninstall key
+    if ($script:RegProtected -contains $sub.ToLower()) { return $false }
     return $true
 }
 
@@ -8889,14 +9033,20 @@ function Wipe-One($app) {
         try {
             switch ($t.type) {
                 'reg' {
-                    $rk = ConvertTo-PSRegPath $t.path
+                    if (-not (Test-RegWipeAllowed $t.path)) {
+                        $failed++
+                        Write-Activity $app.id 'wipe' 'Refused' "$($t.path) is a hive root or a shared registry trunk"
+                        break
+                    }
+                    # Resolve-Reg: an HKCU key was found in the technician's hive and is deleted there
+                    $rk = Resolve-Reg $t.path
                     if (Test-Path -LiteralPath $rk) { Remove-Item -LiteralPath $rk -Recurse -Force -ErrorAction Stop }
                     $removed++
                 }
                 'regvalue' {
                     # one VALUE out of a shared key - never the key itself. Run holds every
                     # other product's autostart entry too, and removing it would stop them all.
-                    $rk = ConvertTo-PSRegPath $t.path
+                    $rk = Resolve-Reg $t.path
                     if (-not $t.name) { throw 'regvalue target has no value name' }
                     if (Test-Path -LiteralPath $rk) {
                         Remove-ItemProperty -LiteralPath $rk -Name ([string]$t.name) -Force -ErrorAction Stop
@@ -8904,25 +9054,42 @@ function Wipe-One($app) {
                     $removed++
                 }
                 'service' {
-                    $svc = Get-Service -Name $t.path -ErrorAction SilentlyContinue
+                    # Get-Service -Name honours wildcards, so a name of "W*" would stop every
+                    # matching Windows service before the guard below ever ran; a service name
+                    # with a wildcard in it is not a service name
+                    $svcName = '' + $t.path
+                    if ($svcName -match '[*?\[\]]') {
+                        $failed++
+                        Write-Activity $app.id 'wipe' 'Refused' "service name '$svcName' contains a wildcard"
+                        break
+                    }
+                    $svc = Get-Service -Name $svcName -ErrorAction SilentlyContinue
                     # A service the token scan matched by NAME is still only a guess, and the
                     # guess can land on Windows itself: an app called "Update Something" matches
                     # every *Update* service. Anything whose binary lives under the Windows
                     # folder is the operating system's and is refused here, whatever was ticked.
+                    # Fail CLOSED: a binary path that cannot be read is a service that is not deleted.
                     if ($svc) {
                         $bin = ''
-                        try { $bin = ('' + (Get-CimInstance Win32_Service -Filter "Name='$(('' + $t.path) -replace "'", "''")'" -ErrorAction Stop).PathName) } catch { $bin = '' }
+                        try { $bin = ('' + (Get-CimInstance Win32_Service -Filter "Name='$($svcName -replace "'", "''")'" -ErrorAction Stop).PathName) } catch { $bin = '' }
                         $winRoot = ($env:SystemRoot.TrimEnd('\') + '\')
-                        if ($bin -and ($bin.Trim('"') -replace '^"?([^"]+)"?.*$', '$1').StartsWith($winRoot, [StringComparison]::OrdinalIgnoreCase)) {
+                        $binPath = $(if ($bin) { ($bin.Trim() -replace '^"([^"]+)".*$', '$1' -replace '^([^ ]+).*$', '$1') } else { '' })
+                        if (-not $binPath -or $binPath.StartsWith($winRoot, [StringComparison]::OrdinalIgnoreCase)) {
                             $failed++
-                            Write-Activity $app.id 'wipe' 'Refused' "service $($t.path) runs from the Windows folder - not deleted"
+                            Write-Activity $app.id 'wipe' 'Refused' $(if ($binPath) { "service $svcName runs from the Windows folder - not deleted" }
+                                                                    else { "service $svcName has no readable binary path - not deleted" })
                             break
                         }
-                    }
-                    if ($svc) {
-                        if ($svc.Status -ne 'Stopped') { Stop-Service -Name $t.path -Force -ErrorAction SilentlyContinue }
-                        # sc.exe delete works on 5.1 where Remove-Service does not exist
-                        & "$env:SystemRoot\System32\sc.exe" delete $t.path | Out-Null
+                        if ($svc.Status -ne 'Stopped') { Stop-Service -Name $svcName -Force -ErrorAction SilentlyContinue }
+                        # sc.exe delete works on 5.1 where Remove-Service does not exist. Its exit
+                        # code is the verdict - "marked for deletion" and "access denied" both used
+                        # to count as removed.
+                        & "$env:SystemRoot\System32\sc.exe" delete $svcName | Out-Null
+                        if ($LASTEXITCODE -ne 0) {
+                            $failed++
+                            Write-Activity $app.id 'wipe' 'Failed' "sc delete $svcName exited $LASTEXITCODE"
+                            break
+                        }
                     }
                     $removed++
                 }
@@ -8940,12 +9107,23 @@ function Wipe-One($app) {
                     # that travelled with the target. Allowed its window (vendor removers often
                     # show one) but never allowed to hang the batch.
                     $exe = ''
+                    $staged = ''
                     if ($t.file) {
                         $want = ('' + $t.sha256).ToUpper()
                         if (-not $want) { throw "removal tool '$($t.name)' arrived with no expected hash - not executed" }
-                        $got = (Get-FileHash -LiteralPath $t.file -Algorithm SHA256).Hash.ToUpper()
-                        if ($got -ne $want) { throw "removal tool '$($t.name)' failed its integrity check - not executed" }
-                        $exe = [string]$t.file
+                        # Copied OUT of the user-writable cache before it is hashed, and the COPY
+                        # is what runs: hashing a file in %LOCALAPPDATA% and then launching it by
+                        # path left a window in which anything running as the user could swap it.
+                        # Windows\Temp is writable by everyone, but a file this elevated process
+                        # creates there is owned by it, and other users cannot modify it.
+                        $staged = Join-Path $env:SystemRoot ('Temp\PC2GoDeploy-' + [Guid]::NewGuid().ToString('N') + [IO.Path]::GetExtension([string]$t.file))
+                        Copy-Item -LiteralPath $t.file -Destination $staged -Force -ErrorAction Stop
+                        $got = (Get-FileHash -LiteralPath $staged -Algorithm SHA256).Hash.ToUpper()
+                        if ($got -ne $want) {
+                            try { Remove-Item -LiteralPath $staged -Force -ErrorAction SilentlyContinue } catch { }
+                            throw "removal tool '$($t.name)' failed its integrity check - not executed"
+                        }
+                        $exe = $staged
                     } else {
                         $exe = [Environment]::ExpandEnvironmentVariables([string]$t.path)
                         if (-not (Test-RunAllowed $exe)) {
@@ -8958,6 +9136,7 @@ function Wipe-One($app) {
                     $rw = @{ FilePath = $exe; AllowUi = $true; TimeoutSec = 1800 }
                     if (-not [string]::IsNullOrWhiteSpace([string]$t.args)) { $rw['ArgumentList'] = @([string]$t.args) }
                     $p = Start-InstallerWatched @rw
+                    if ($staged) { try { Remove-Item -LiteralPath $staged -Force -ErrorAction SilentlyContinue } catch { } }
                     if ($p.TimedOut) {
                         $failed++
                         Write-Activity $app.id 'wipe' 'Failed' "$($t.name) was still running after 30 min and was stopped"
@@ -8992,7 +9171,10 @@ function Wipe-One($app) {
     if ($hostLines.Count) {
         try {
             $hostsFile = Join-Path $env:SystemRoot 'System32\drivers\etc\hosts'
-            $keep = @(Get-Content -LiteralPath $hostsFile -ErrorAction Stop |
+            # read with the encoding it is written back in - Get-Content with no -Encoding on
+            # 5.1 decodes a BOM-less file as ANSI, and the UTF-8 write below then re-encoded
+            # every kept non-ASCII character as mojibake, on every wipe
+            $keep = @([IO.File]::ReadAllLines($hostsFile, (New-Object Text.UTF8Encoding $false)) |
                       Where-Object { $hostLines -notcontains $_.Trim() })
             # UTF-8 without a BOM, not ASCII: -Encoding ASCII turned every non-ASCII character
             # in the lines being KEPT - a comment in French, a hostname with an accent - into
@@ -9017,8 +9199,9 @@ function Resolve-Reg([string]$Path) {
     # HKCU inside an elevated process is the ELEVATING account's hive - not necessarily
     # the technician's. The GUI passes its own SID, so per-user tweaks are written into
     # HKEY_USERS\<sid> and actually land on the profile the tech is looking at.
-    if ($script:UserSid -and $Path -match '^HKCU[:\\]') {
-        return "Registry::HKEY_USERS\$script:UserSid\" + ($Path -replace '^HKCU:?\\', '')
+    # both spellings: tweaks say HKCU\, the leftover scan emits HKEY_CURRENT_USER\
+    if ($script:UserSid -and $Path -match '^(HKCU[:\\]|HKEY_CURRENT_USER\\)') {
+        return "Registry::HKEY_USERS\$script:UserSid\" + ($Path -replace '^(HKCU:?|HKEY_CURRENT_USER)\\', '')
     }
     return ConvertTo-PSRegPath $Path
 }
@@ -9200,8 +9383,12 @@ function New-LocalAdmin($app) {
         if ($pw) {
             $created = Set-LocalPasswordFallback $name $pw -Create
         } else {
-            & "$env:SystemRoot\System32\net.exe" user $name /add 2>&1 | Out-Null
+            # net.exe says why in a sentence of its own - "The password does not meet the
+            # password policy requirements", "The account already exists" - and that sentence
+            # is worth more than the cmdlet's "not recognized" on a machine without the module.
+            $netOut = (& "$env:SystemRoot\System32\net.exe" user $name /add 2>&1 | Out-String).Trim()
             $created = ($LASTEXITCODE -eq 0)
+            if (-not $created -and $netOut) { $why = ($netOut -replace '\s+', ' ') }
         }
     }
     if (-not $created) {
@@ -12054,12 +12241,31 @@ while (-not $finished) {
     $lines = @(Get-Content -LiteralPath $QueueFile -ErrorAction SilentlyContinue)
     if ($lines.Count -le $offset) {
         if ($CancelFile -and (Test-Path -LiteralPath $CancelFile)) { break }
+        # The only other exits are the end marker and the cancel file, and a GUI that crashed
+        # writes neither: this hidden, elevated process then polled for ever, holding any
+        # mounted image with it. The GUI hands its PID on the command line; gone means done.
+        # Harnesses that launch the worker by hand pass nothing and keep the old behaviour.
+        if ($ParentPid -gt 0 -and -not (Get-Process -Id $ParentPid -ErrorAction SilentlyContinue)) {
+            Write-Activity '' 'batch' 'Abandoned' "the console (pid $ParentPid) is gone - stopping"
+            break
+        }
         Start-Sleep -Milliseconds 700
         continue
     }
+    # -1 = every line consumed. Set to a line index when the LAST line would not parse: the
+    # GUI appends with Add-Content while this loop polls with Get-Content, so a long entry
+    # (a Depth-6 install with several post-install steps) can be observed half-written.
+    # Skipping it and advancing the offset past it - what `continue` used to do - dropped
+    # that entry for ever: the row sat at "Queued for install" and, when it was the end
+    # marker, the worker never exited. A torn last line is left for the next read instead.
+    $stopAt = -1
     for ($i = $offset; $i -lt $lines.Count; $i++) {
         $app = $null
-        try { $app = $lines[$i] | ConvertFrom-Json } catch { continue }
+        try { $app = $lines[$i] | ConvertFrom-Json } catch { $app = $null }
+        if ($null -eq $app) {
+            if ($i -eq $lines.Count - 1) { $stopAt = $i; break }
+            continue
+        }
         if ($app.end) { $finished = $true; break }
         if ($CancelFile -and (Test-Path -LiteralPath $CancelFile) -and $app.action -ne 'wipe') {
             Write-Status $app.id 'Cancelled' ''
@@ -12070,6 +12276,10 @@ while (-not $finished) {
         if ($SkipFile -and $app.id -and $app.action -ne 'wipe' -and
             @(Get-Content -LiteralPath $SkipFile -ErrorAction SilentlyContinue) -contains ([string]$app.id)) {
             Write-Status $app.id 'Removed' 'pulled out of the batch before it started'
+            # a step that did not run did not succeed: anything whose `after` names it must
+            # not run on the assumption that it did (a reinstall over the copy it was meant
+            # to clear)
+            if ($app.id) { $script:FailedIds[[string]$app.id] = $true }
             continue
         }
         # A CHAIN is an ordered sequence where each step assumes the one before it worked:
@@ -12100,8 +12310,10 @@ while (-not $finished) {
         $script:StepFailed = $false
         try {
             switch ($app.action) {
-                'uninstall' { Uninstall-One $app }
-                'wipe'      { Wipe-One $app }
+                # both read HKCU targets through Resolve-Reg, which needs the technician's SID
+                # or it resolves to the elevating admin's hive (see the tweak branch below)
+                'uninstall' { if ($app.userSid) { $script:UserSid = [string]$app.userSid }; Uninstall-One $app }
+                'wipe'      { if ($app.userSid) { $script:UserSid = [string]$app.userSid }; Wipe-One $app }
                 'tweak'     {
                     # per-user tweaks must land in the technician's hive, not the
                     # elevating admin's - the GUI ships its SID with every entry
@@ -12147,6 +12359,12 @@ while (-not $finished) {
                     # file out of the package before it and reported "1 post-install step
                     # completed". A left-behind mount also holds the .iso open and costs a drive
                     # letter for every app installed that way.
+                    # A post-install `registry` step writes HKCU through Resolve-Reg, which maps
+                    # it to the technician's hive ONLY if this was set - and only the tweak
+                    # branches set it. Enqueue-Install sends userSid; without this line an
+                    # install's HKCU step landed in the elevating admin's hive, or in whichever
+                    # user a tweak earlier in the same queue had happened to name.
+                    if ($app.userSid) { $script:UserSid = [string]$app.userSid }
                     try { Install-One $app } finally { Remove-Unpacked }
                 }
             }
@@ -12158,7 +12376,7 @@ while (-not $finished) {
             $script:TweakChainFailed = $true
         }
     }
-    $offset = $lines.Count
+    $offset = $(if ($stopAt -ge 0) { $stopAt } else { $lines.Count })
 }
 Write-Status '_batch' 'Complete' ''
 '@
@@ -12276,6 +12494,16 @@ function Start-Worker {
         #
         # Someone who can also rewrite AppDeploy.ps1 is out of scope on purpose - go.ps1 pins
         # its SHA-256 at the edge, and that pin is this tool's trust root.
+        #
+        # Be honest about what the hash does and does not buy. It stops the worker's CODE from
+        # being swapped between write and launch. It does not - cannot - authenticate the QUEUE:
+        # that file is written by this unelevated process and is writable by anything else
+        # running as this user, and an install entry names a file plus the hash it must match,
+        # a `powershell` post-install step names a command. The worker verifies what it is told
+        # to verify; it takes the queue itself on trust (Unprotect-Secret says the same). The
+        # real boundary is therefore "anything running as this user", the same as any tool that
+        # elevates once and then takes instructions from that user. Wipe-One and the 'run'
+        # target re-check their most destructive inputs on the elevated side regardless.
         $want = (Get-FileHash -LiteralPath $script:WorkerPath -Algorithm SHA256).Hash
         # a path can legitimately contain an apostrophe (a username can), and it would end the
         # string it is being pasted into
@@ -12290,7 +12518,7 @@ try {
         exit 9
     }
     & `$w -QueueFile $(& $lit $script:QueuePath) -StatusFile `$st ``
-          -CancelFile $(& $lit $script:CancelPath) -SkipFile $(& $lit $script:SkipPath)
+          -CancelFile $(& $lit $script:CancelPath) -SkipFile $(& $lit $script:SkipPath) -ParentPid $PID
 } catch {
     # this window is hidden, so an unreported throw here is a batch that simply never moves
     Add-Content -LiteralPath `$st -Encoding UTF8 -Value ('{"id":"_batch","state":"Complete","detail":' + (ConvertTo-Json ("the elevated worker could not start - " + `$_.Exception.Message)) + '}')
@@ -12484,7 +12712,9 @@ function Sync-DepGuards {
             }
             continue
         }
-        if ($base -and ('' + $base.Status) -like 'Failed*' -and $st -like 'Queued*') {
+        # Removed as well as Failed: a base the technician pulled out is not going to install
+        # either, and its add-on's pre-queued remove-first step would otherwise still run
+        if ($base -and ('' + $base.Status) -match '^(Failed|Removed)' -and $st -like 'Queued*') {
             try {
                 Add-Content -Path $script:SkipPath -Value ([string]$un.Id) -Encoding UTF8
                 if ($un.DepAddonId) { Add-Content -Path $script:SkipPath -Value ([string]$un.DepAddonId) -Encoding UTF8 }
@@ -12499,8 +12729,22 @@ function Sync-DepGuards {
     }
 }
 
+# Cancel is a FLAG as well as a file. The Cancel handler runs nested inside Update-UI from a
+# synchronous download loop; in the no-worker branch it calls Finish-Batch, which deletes the
+# cancel file - before control returns to the loop whose next line tests for that file. The
+# download then ran to completion on a batch already reported finished and launched a worker
+# (one UAC prompt) into a queue that had just been wiped. The flag outlives the file and is
+# reset only when the next batch starts.
+$script:CancelRequested = $false
+function Test-CancelRequested {
+    return [bool]($script:CancelRequested -or ($script:CancelPath -and (Test-Path -LiteralPath $script:CancelPath)))
+}
+
 function Abort-Batch([string]$Reason) {
     if ($script:CurJob) { Remove-BitsTransfer -BitsJob $script:CurJob -ErrorAction SilentlyContinue; $script:CurJob = $null }
+    # A worker that was started must be told to stop, or it polls a queue for ever - Finish-Batch
+    # keeps the queue file when EndQueued is false, precisely so it is not deleted under it.
+    if ($script:WorkerStarted -and -not $script:EndQueued) { Complete-Worker }
     foreach ($p in $script:Pending) {
         # a row the technician pulled out did not fail - it was never going to run
         if ($p.Status -notlike 'Installed*' -and $p.Status -notlike 'Failed*' -and
@@ -12570,7 +12814,16 @@ function Read-WorkerStatus {
                     if ($eta) { $txt += "  -  $eta" }
                 }
             }
-            if ($null -ne $s.pct) { Update-Overall ([int]$s.pct) }
+            if ($null -ne $s.pct) {
+                Update-Overall ([int]$s.pct)
+                # The clock. A copy has a countdown once the rate settles, but the first minute of
+                # a large one - and every account action - has nothing to count down from, and a
+                # progress row that shows no time at all reads as stalled. Batch-wide, from the
+                # moment the button was pressed, so it keeps moving between folders too.
+                if ($script:RunStarted) {
+                    $TxtOverall.Text += "   -   $(Format-Elapsed ([int]((Get-Date) - $script:RunStarted).TotalSeconds)) elapsed"
+                }
+            }
             $kind = 'active'; $ring = 'busy'
             if ($s.state -in 'Installed', 'Uninstalled', 'Cleaned', 'Applied', 'Reverted') { $kind = 'ok'; $ring = 'ok' }
             elseif ($s.state -eq 'Failed') { $kind = 'fail'; $ring = 'fail' }
@@ -12579,7 +12832,9 @@ function Read-WorkerStatus {
             # Without this the row would go green on 'Cleaned' and the batch would count it
             # as done - the one outcome a technician must never be told.
             if ($s.state -eq 'Cleaned' -and $item.Dirty) {
-                $txt = "Failed: partial install removed - $($s.detail)"
+                # a killed UNINSTALLER is dirty too, and this said "partial install" for it
+                $what = $(if ($script:BatchTab -eq 'Un') { 'what the failed uninstall left behind' } else { 'partial install' })
+                $txt = "Failed: $what removed - $($s.detail)"
                 $kind = 'fail'; $ring = 'fail'
             }
             Set-Status $item $txt $kind
@@ -12596,12 +12851,30 @@ function Read-WorkerStatus {
             # logged twice before anybody noticed.
             # A settled verdict was already written by Set-Status when it shortened the card
             # text; logging it here as well would be the very duplicate this guards against.
-            if ($item.Status -eq $txt) { Add-Log "$($item.Name) -> $txt" }
+            if ($item.Status -eq $txt) {
+                # Progress is not an event. A profile copy reports once a second - "copying
+                # Documents - 41 file(s) - 12 MB of 3 GB at 40 MB/s" - and logging each one put
+                # 3,600 lines into a 500-line log over an hour, pushing every real entry out of
+                # the top. The card gets the numbers; the log gets each PHASE once, the moment it
+                # starts, with the size it is about to move so the entry still says something.
+                $base = ('' + $s.detail) -replace '\s+-\s+\d+ file\(s\).*$', ''
+                $key  = "$($s.state)|$base"
+                if (-not $script:LastLogKey) { $script:LastLogKey = @{} }
+                if ($null -eq $s.pct) {
+                    Add-Log "$($item.Name) -> $txt"
+                } elseif ($script:LastLogKey[[string]$s.id] -ne $key) {
+                    $script:LastLogKey[[string]$s.id] = $key
+                    $line = "$($item.Name) -> $($s.state): $base"
+                    if ($null -ne $s.total -and [long]$s.total -gt 0 -and $base -notlike 'verified*') {
+                        $line += "  ($(Format-Size ([long]$s.total)))"
+                    }
+                    Add-Log $line
+                }
+            }
         }
     }
-    # Guarded rather than assigned. The early return above already covers the case this
-    # protects against, but this is the line that actually caused the replay, so it states the
-    # invariant instead of relying on a caller three hundred lines away to have upheld it.
+    # Guarded rather than assigned: this is the line that actually caused the replay, so it
+    # states the forward-only invariant itself rather than relying on the $fresh flag above.
     if ($lines.Count -gt $script:StatusOffset) { $script:StatusOffset = $lines.Count }
 
     # deep clean: once every item has reported, scan for leftovers and show the kill list.
@@ -12711,9 +12984,19 @@ function Update-LeftoverScan {
     $ctl = $script:ScanCtl
     if (-not $ctl) { $script:ScanJob = $null; return }
     if (-not $ctl.Done) {
-        $TxtNow.Text = "$($ctl.Label)$(if ($ctl.Stage) { "  -  $($ctl.Stage)" })"
-        $DotNow.Fill = '#FF4C8DFF'
-        return
+        # Done is set by the last line of the runspace script. Anything that throws BEFORE the
+        # per-target loop - the dot-source of the function text, a bad argument - ends the
+        # runspace without ever setting it, and this tick then showed "Scanning..." for ever
+        # with an elevated worker waiting behind it. The runspace's own state is the truth.
+        $j = $script:ScanJob
+        if ($j -and $j.ps -and $j.ps.InvocationStateInfo.State -in 'Completed', 'Failed', 'Stopped') {
+            if (-not $ctl.Error) { $ctl.Error = "the scan ended early ($($j.ps.InvocationStateInfo.State))" + $(if ($j.ps.InvocationStateInfo.Reason) { " - $($j.ps.InvocationStateInfo.Reason.Message)" } else { '' }) }
+            $ctl.Done = $true
+        } else {
+            $TxtNow.Text = "$($ctl.Label)$(if ($ctl.Stage) { "  -  $($ctl.Stage)" })"
+            $DotNow.Fill = '#FF4C8DFF'
+            return
+        }
     }
     $job = $script:ScanJob
     $script:ScanJob = $null
@@ -12750,6 +13033,7 @@ function Complete-LeftoverScan {
     $ListWipe.ItemsSource = $script:WipeView
     if ($script:WipeFindings.Count -eq 0) {
         Add-Log $(if ($cut) { 'Leftover scan stopped before anything was found.' }
+                  elseif (-not $targets.Count) { 'Nothing to scan - no product was removed in this batch.' }
                   else { 'Leftover scan: nothing found - the machine is already clean.' })
         Set-ForceRemoveOutcome 'force remove found no traces to delete, and no uninstaller was run'
         Release-Worker
@@ -13030,6 +13314,11 @@ function Finish-Batch {
     # the results stay on screen until dismissed, with whatever went wrong at the top
     Sort-BatchStrip
     Sync-BatchStrip
+    # Only said when it is TRUE. An account rename or a profile copy downloads nothing, yet every
+    # one of them ended with 'Downloaded installers removed' - or, after a copy with one locked
+    # file, 'Cache kept so a retry does not re-download completed files' - two lines about
+    # installers on a batch that had none, in the log a technician hands to a colleague.
+    $stale = @(Get-ChildItem $script:CacheDir -Include *.exe, *.msi, *.zip, *.rar, *.iso, *.part -Recurse -ErrorAction SilentlyContinue)
     if ($fail -eq 0 -and $cans -eq 0 -and -not $KeepCache) {
         # Remove the big installer files immediately; the rest goes on window close. .zip is in
         # the list because a package IS the installer here - leaving it out meant a 14 GB Office
@@ -13038,10 +13327,11 @@ function Finish-Batch {
         # .rar and .iso belong here for the same reason .zip does: the package IS the installer,
         # and leaving them out let a 1.1 GB .rar survive a clean batch while the log line below
         # said every downloaded installer had been removed.
-        Get-ChildItem $script:CacheDir -Include *.exe, *.msi, *.zip, *.rar, *.iso, *.part -Recurse -ErrorAction SilentlyContinue |
-            Remove-Item -Force -ErrorAction SilentlyContinue
-        Add-Log 'Downloaded installers removed.'
-    } else {
+        if ($stale.Count) {
+            $stale | Remove-Item -Force -ErrorAction SilentlyContinue
+            Add-Log "Downloaded installers removed ($($stale.Count) file(s))."
+        }
+    } elseif ($script:BatchTab -eq 'Install') {
         Add-Log 'Cache kept so a retry does not re-download completed files.'
     }
     $BtnInstall.IsEnabled = $true
@@ -13059,7 +13349,9 @@ function Finish-Batch {
     # 'Migrate' too: a migration creates the destination profile folder, so the account list is
     # just as stale afterwards as it is after an account action.
     if ($script:BatchTab -in 'Users', 'Migrate') {
-        $TxtNewUser.Clear(); $TxtNewFull.Clear()
+        # The password box too. It was the one field left holding its value after the batch, so
+        # the password just set sat readable in a dialog one click away for the rest of the session.
+        $TxtNewUser.Clear(); $TxtNewFull.Clear(); $TxtNewPw.Clear()
         Load-Users
     }
     $BtnPause.Visibility = 'Collapsed'
@@ -13074,6 +13366,8 @@ function Finish-Batch {
         $next = @($script:Deferred)
         $script:Deferred = @()
         Add-Log "Starting queued follow-up batch: $($next.Count) app(s)."
+        # straight into Start-Batch, never through the sheet: no orchestration, so no flags
+        foreach ($d in $next) { $d.Chain = $false; $d.After = $null }
         Start-Batch $next
         return
     }
@@ -13089,6 +13383,18 @@ function Finish-Batch {
     }
     if ($notes.Count) {
         Show-Overlay 'Batch complete - action needed' ($summary + "`n`n" + ($notes -join "`n`n"))
+    } elseif ($script:BatchTab -in 'Users', 'Migrate') {
+        # "1 completed, 0 failed" is a count, and for a one-row batch it is the least useful
+        # sentence there is. What a technician needs off the closing dialog of a copy is WHERE
+        # it went, how much, how long, and what was skipped - the worker wrote all of that, and
+        # the card had shortened it to one word.
+        $said = @()
+        foreach ($p in $script:Pending) {
+            $d = $(if ($p.StatusDetail) { [string]$p.StatusDetail } else { [string]$p.Status })
+            $said += "$($p.Name)`n$d"
+        }
+        Show-Overlay $(if ($fail) { 'Finished - with a failure' } elseif ($cans) { 'Finished - check the details' } else { 'Finished' }) `
+                     ($summary + "`n`n" + ($said -join "`n`n"))
     } else {
         Show-Overlay 'Batch complete' $summary
     }
@@ -13184,7 +13490,7 @@ $timer.Add_Tick({
                         # BITS job started here is never looked at again: it sits in $script:CurJob,
                         # transferring a file the batch has written off, and the next tick does not
                         # enter the Download branch to clean it up.
-                        if ($script:CancelPath -and (Test-Path -LiteralPath $script:CancelPath)) {
+                        if ((Test-CancelRequested)) {
                             $item.ProgressVis = 'Collapsed'
                             Add-Log "$($item.Name): download stopped - the batch was cancelled."
                             return
@@ -13234,7 +13540,7 @@ $timer.Add_Tick({
                         # immediately overwritten with 'Failed: the batch was cancelled', which
                         # reports the technician's own decision back to them as a fault and
                         # turns the summary red.
-                        if ($script:CancelPath -and (Test-Path -LiteralPath $script:CancelPath)) {
+                        if ((Test-CancelRequested)) {
                             $item.ProgressVis = 'Collapsed'
                             Add-Log "$($item.Name): download stopped - the batch was cancelled."
                         } elseif ($item.Status -like 'Removed*') {
@@ -13463,6 +13769,7 @@ function Start-Batch([object[]]$Sel) {
     $script:EndQueued = $false
     $script:Paused = $false
     $script:AwaitingScan = $false
+    $script:CancelRequested = $false
     Remove-Item -LiteralPath $script:QueuePath, $script:StatusPath, $script:CancelPath, $script:SkipPath -ErrorAction SilentlyContinue
     # Orchestrated remove-first steps go into the queue NOW, ahead of every install - but the
     # worker is only launched by the first Enqueue-Install, i.e. after the base's download has
@@ -13536,6 +13843,8 @@ $BtnInstall.Add_Click({
             Set-Status $s 'Queued' 'neutral'
             $s.ProgressVis = 'Collapsed'
             Set-Ring $s 'queued'
+            # this path never goes through Get-PfCommitItems, which is where these are reset
+            $s.Chain = $false; $s.After = $null
             # same two resets Start-Batch does: a verdict and a folder list from an earlier
             # batch must not ride into this one's leftover scan
             $s.Dirty = $false
@@ -13784,6 +14093,15 @@ function Get-PfCommitItems {
     }
     if ($script:PfAction -ne 'install') { return $items }
     if (-not $items.Count) { return @() }
+    # Catalog rows are long-lived. Chain/After were set on a base and its add-on by an earlier
+    # orchestrated batch and only ever reset on the dependency path below - so a plain batch
+    # two runs later still carried `chain`, and one unrelated failure skipped the rest.
+    foreach ($it in $items) {
+        # guarded: harnesses put plain PSCustomObjects on the sheet, and a property that is
+        # not there throws on assignment - inside a click handler
+        if ($it.PSObject.Properties['Chain']) { $it.Chain = $false }
+        if ($it.PSObject.Properties['After']) { $it.After = $null }
+    }
     if (-not $script:PfDep) { return (Sort-ByRequires $items) }
     $un = @(); $re = @()
     if ($script:PfDep.Reinstall) {
@@ -14509,12 +14827,20 @@ $BtnBatchClose.Add_Click({
         # "Already removed" are stamped on rows the sheet SKIPPED - never in $script:Pending -
         # and those kept their badge after the strip was closed. The catalog and both
         # uninstall inventories are the only places a row can carry one.
-        $rows = @($script:Pending) + @($script:Items) + @($script:UnItems) + @($script:UnStore)
-        foreach ($p in @($rows | Select-Object -Unique)) {
-            if (-not $p -or -not ('' + $p.Status)) { continue }
-            Set-Status $p '' 'neutral'
-            Set-Ring $p 'none'
-            $p.ProgressVis = 'Collapsed'
+        # ...and the Optimize sub-tabs and Tools rows, which carry Applied/Reverted/Failed the
+        # same way. Property writes are guarded: these are different row classes.
+        $rows = @($script:Pending) + @($script:Items) + @($script:UnItems) + @($script:UnStore) +
+                @($script:TweakItems) + @($script:CleanItems) + @($script:GameItems) + @($script:FixItems)
+        # NOT `| Select-Object -Unique`: AppItem overrides neither Equals nor ToString, and on
+        # 5.1 -Unique then compares ToString() - every row is "equal" and ONE survives. It
+        # cleared exactly one card. Set-Status on a row twice costs nothing.
+        foreach ($p in $rows) {
+            if (-not $p -or -not $p.PSObject.Properties['Status'] -or -not ('' + $p.Status)) { continue }
+            try {
+                Set-Status $p '' 'neutral'
+                if ($p.PSObject.Properties['BadgeVis']) { Set-Ring $p 'none' }
+                if ($p.PSObject.Properties['ProgressVis']) { $p.ProgressVis = 'Collapsed' }
+            } catch { }
         }
         # Finish-Batch already marked both inventories stale; a removal batch dismissed while
         # its list is on screen rescans now, so what is gone is gone from the list too.
@@ -14555,6 +14881,9 @@ $BtnWipeNone.Add_Click({
 
 $BtnWipeWeak.Add_Click({
     $script:WipeShowWeak = -not $script:WipeShowWeak
+    # hiding them unticks them: nothing may stay marked for deletion while it is off screen -
+    # the rule Select-all already follows, and Go read the ticks regardless of visibility
+    if (-not $script:WipeShowWeak) { foreach ($f in @($script:WipeFindings)) { if ($f.Weak) { $f.Del = $false } } }
     $n = @($script:WipeFindings | Where-Object { $_.Weak }).Count
     $BtnWipeWeak.Content = $(if ($script:WipeShowWeak) { "Hide $n possible match(es)" } else { "Show $n possible match(es)" })
     try { $script:WipeView.Refresh() } catch { }
@@ -14570,6 +14899,13 @@ $BtnWipeSkip.Add_Click({
 
 $BtnWipeGo.Add_Click({
     $WipeOverlay.Visibility = 'Collapsed'
+    # the belt: a wipe needs a worker still reading the queue. If the batch has been released
+    # or ended underneath this overlay, there is nothing to hand the targets to.
+    if ($script:Phase -ne 'Install' -or $script:EndQueued -or -not $script:WorkerStarted) {
+        Add-Log 'The batch had already ended - nothing was deleted. Rescan and remove again to clean up.'
+        $script:WipeFindings.Clear()
+        return
+    }
     $chosen = @($script:WipeFindings | Where-Object { $_.Del })
     if ($chosen.Count -eq 0) {
         Add-Log 'No leftover items were checked - nothing deleted.'
@@ -14608,11 +14944,28 @@ $BtnWipeGo.Add_Click({
         return
     }
     # group by owning app so each row reports its own cleanup result
+    # Force remove stamps every row 'Uninstalled' up front purely so the scan picks it up. A row
+    # with nothing ticked here gets no wipe entry, so nothing ever corrects that stamp: it stayed
+    # green, was unticked as a success, and went into the run record as ok - for a product that
+    # was neither uninstalled nor cleaned.
+    if ($script:ForceMode) {
+        $touched = @($chosen | ForEach-Object { [string]$_.OwnerId } | Select-Object -Unique)
+        foreach ($p in @($script:Pending)) {
+            if ($p -and $touched -notcontains [string]$p.Id -and $p.Status -like 'Uninstalled*') {
+                Set-Status $p 'Skipped: nothing was ticked for this product, and force remove runs no uninstaller' 'warn'
+                Set-Ring $p 'warn'
+            }
+        }
+    }
     foreach ($grp in ($chosen | Group-Object OwnerId)) {
         $item = $script:Pending | Where-Object { $_.Id -eq $grp.Name } | Select-Object -First 1
         if ($item) { Set-Status $item 'Cleaning leftovers' 'active'; Set-Ring $item 'busy' }
+        # userSid for the same reason the tweaks carry it: an HKCU leftover was found in THIS
+        # user's hive, and the elevated worker must delete it from this hive, not its own
+        $wipeSid = ''
+        try { $wipeSid = ([Security.Principal.WindowsIdentity]::GetCurrent()).User.Value } catch {}
         $entry = @{
-            id = $grp.Name; action = 'wipe'
+            id = $grp.Name; action = 'wipe'; userSid = $wipeSid
             targets = @($grp.Group | ForEach-Object {
                 $t = @{ type = $_.Type; path = $_.Path; name = $_.Name }
                 if ($_.Type -eq 'run') {
@@ -14853,10 +15206,12 @@ $BtnNewUserOk.Add_Click({
         Show-Overlay 'No name' 'Type the account name to create.'
         return
     }
-    # Windows rejects these outright, and a name that only differs by case still collides
-    if ($name -match '[\\/"\[\]:;|=,+*?<>@]' -or $name.Length -gt 20) {
+    # Windows rejects these outright, and a name that only differs by case still collides.
+    # A name that is all dots or spaces, or ends in a dot, is refused by SAM as well - and it is
+    # also a folder name Windows cannot create, which is the other half of what this becomes.
+    if ($name -match '[\\/"\[\]:;|=,+*?<>@]' -or $name.Length -gt 20 -or $name -match '^[. ]+$' -or $name.EndsWith('.')) {
         Show-Overlay 'Invalid account name' ("Windows account names cannot contain  \ / `" [ ] : ; | = , + * ? < > @  " +
-                                             'and must be 20 characters or fewer.')
+                                             'must be 20 characters or fewer, and cannot be only dots or end in one.')
         return
     }
     # AccountItems, not DstUsers. DstUsers is the migration destination list and holds only
@@ -15026,8 +15381,8 @@ function Invoke-ReplaceWithLocal([object]$Acct) {
             "It becomes the replacement for `"$($Acct.Name)`" - a real Administrator with no Microsoft account attached.")
         return
     }
-    if ($name -match '[\\/"\[\]:;|=,+*?<>@]' -or $name.Length -gt 20) {
-        Show-Overlay 'Invalid account name' 'Windows account names cannot contain  \ / " [ ] : ; | = , + * ? < > @  and must be 20 characters or fewer.'
+    if ($name -match '[\\/"\[\]:;|=,+*?<>@]' -or $name.Length -gt 20 -or $name -match '^[. ]+$' -or $name.EndsWith('.')) {
+        Show-Overlay 'Invalid account name' 'Windows account names cannot contain  \ / " [ ] : ; | = , + * ? < > @  must be 20 characters or fewer, and cannot be only dots or end in one.'
         return
     }
     if (@($script:AccountItems | Where-Object { $_.Name -eq $name }).Count) {
@@ -15395,6 +15750,12 @@ function Select-BackupMode([string]$Which) {
     # A sign-in belongs to the folder it was typed for. Carrying it into a different mode would
     # mean a USB backup still quietly trying to authenticate to someone else machine.
     $script:NetUser = ''; $script:NetPassword = ''
+    # And the folder goes with it. It means a different thing in each mode - the PARENT a backup
+    # is written under, or the backup ITSELF to restore from - so one carried across from
+    # "back up to a drive" into "restore" pointed the restore at a folder that never held a
+    # manifest, with the note under it still describing free space. Chosen again, on purpose.
+    $script:FolderPath = ''
+    $TxtFolderPath.Text = 'No folder chosen yet'
     # The item list is built from whatever the SOURCE is, and restore reads its list out of the
     # backup rather than off a profile, so ticks carried over from the previous mode mean nothing.
     Sync-BackupMode
@@ -16077,34 +16438,105 @@ $BtnNetUse.Add_Click({
     $NetOverlay.Visibility = 'Collapsed'
 })
 
+# The measuring pass runs on the UI thread and pumps the dispatcher to stay alive - which is
+# precisely what lets THIS handler run again in the middle of it. State for that lives here,
+# in $script:, and the tick below reads it without a closure, for the reason Show-Confirm's
+# comment gives: a GetNewClosure block cannot be relied on to read $script: state.
+$script:Measuring    = $false
+$script:MeasureStop  = $false
+$script:MeasLabel    = ''
+$script:MeasDone     = 0
+$script:MeasCount    = 0
+$script:MeasRunning  = [long]0
+$script:MeasTick = {
+    param($sofar)
+    $TxtNow.Text = "Measuring $script:MeasLabel  ($script:MeasDone of $script:MeasCount)  -  " +
+                   "$(Format-Size ($script:MeasRunning + $sofar)) so far   -   press Stop measuring to skip this"
+    Update-UI
+    return (-not $script:MeasureStop)
+}
+
 $BtnMigrate.Add_Click({
+    # A second press while measuring IS the stop. Before the guard, re-entry started a second
+    # walk over the top of the first, and both wrote to the same status line.
+    if ($script:Measuring) { $script:MeasureStop = $true; $BtnMigrate.IsEnabled = $false; return }
     if (Test-BatchBusy) { return }
-    $src = Get-SelectedUser $script:SrcUsers
-    if (-not $src) { Show-Overlay 'No source' 'Pick the profile to copy FROM in the left column.'; return }
+    $mode = [string]$script:BackupMode
 
     # Which of the three jobs, and what each needs before it can be promised. The worker checks
     # all of this again - the queue file is writable by anything running as this user - but a
     # refusal a technician can see BEFORE the confirm is worth far more than one after it.
+    #
+    # A RESTORE has no source profile: the backup folder is the source, and the profile list on
+    # the left is not even on screen in that mode. Demanding one anyway - which this did - made
+    # "Restore Data" answer 'No source, pick the profile on the left' against an empty column,
+    # and the only way past it was to pick a source in another mode first and carry it over.
+    $src = $null
+    if ($mode -ne 'restore') {
+        $src = Get-SelectedUser $script:SrcUsers
+        if (-not $src) { Show-Overlay 'No source' 'Pick the profile to copy FROM in the left column.'; return }
+    }
     $dst = $null
     $srcKind = 'profile'; $dstKind = 'profile'; $dstPath = ''; $dstUser = ''
-    switch ($script:BackupMode) {
+    $srcRoot = $(if ($src) { [string]$src.UnArgs } else { '' })
+    $bs = [string][char]92
+    switch ($mode) {
         'folder' {
             if (-not $script:FolderPath) { Show-Overlay 'No folder chosen' 'Choose the folder to back up to.'; return }
+            # Still there? A stick gets pulled, a laptop goes to sleep, a share drops. The path
+            # was checked when it was picked; that was minutes ago.
+            if (-not (Test-Path -LiteralPath $script:FolderPath -PathType Container)) {
+                Show-Overlay 'Folder not there' ("$($script:FolderPath) cannot be reached any more.`n`n" +
+                    'If it is a USB stick, check it is still plugged in. If it is another PC, check it is awake ' +
+                    'and on this network. Then choose it again.')
+                return
+            }
             # What was picked is the PARENT. The backup lands in its own folder inside it.
             $dstKind = 'folder'
             $dstPath = Join-Path $script:FolderPath (Get-BackupFolderName ([string]$src.Name))
+            # The two loops the worker refuses, refused here first - before a 40 GB measuring
+            # pass, not after it. A profile copied into itself grows until the disk fills;
+            # a destination that contains the profile is the same loop from the other end.
+            $sk = ''; $dk = ''
+            try { $sk = [IO.Path]::GetFullPath($srcRoot).TrimEnd([char]92).ToLower() } catch { }
+            try { $dk = [IO.Path]::GetFullPath($dstPath).TrimEnd([char]92).ToLower() } catch { }
+            if ($sk -and $dk -and ($dk -eq $sk -or $dk.StartsWith($sk + $bs))) {
+                Show-Overlay 'Refused - that folder is inside the profile' (
+                    "$($script:FolderPath) is inside the profile being backed up.`n`n" +
+                    'Copying a folder into itself grows without limit until the disk fills. Pick somewhere outside it - a drive, a stick, or another PC.')
+                return
+            }
+            if ($sk -and $dk -and $sk.StartsWith($dk + $bs)) {
+                Show-Overlay 'Refused - that folder contains the profile' (
+                    "$($script:FolderPath) contains the profile being backed up, so the copy would include its own destination.`n`n" +
+                    'Pick a folder that is not a parent of the profile.')
+                return
+            }
         }
         'restore' {
             if (-not $script:FolderPath) { Show-Overlay 'No backup chosen' 'Choose the backup folder to restore from.'; return }
+            if (-not (Test-Path -LiteralPath $script:FolderPath -PathType Container)) {
+                Show-Overlay 'Backup not there' ("$($script:FolderPath) cannot be reached any more.`n`n" +
+                    'If it is on a USB stick, check it is still plugged in. If it is on another PC, check it is awake. Then choose it again.')
+                return
+            }
+            # The worker refuses a folder without the manifest; saying so here costs nothing and
+            # saves a wasted press and a UAC prompt.
+            if (-not (Test-Path -LiteralPath (Join-Path $script:FolderPath 'pc2go-backup.json'))) {
+                Show-Overlay 'Not a backup this tool wrote' (
+                    "$($script:FolderPath) has no pc2go-backup.json in it, so there is no record of where it came from or what it holds.`n`n" +
+                    'Restoring from an unknown folder could pour anything over a profile, so it is refused. Pick the folder a backup was written INTO - it is named "PC2Go Backup - <PC> - <account>".')
+                return
+            }
             # roots swapped: the backup is the source, the picked account is the destination
-            $srcKind = 'folder'
+            $srcKind = 'folder'; $srcRoot = [string]$script:FolderPath
             $dst = Get-SelectedUser $script:DstUsers
-            if (-not $dst) { Show-Overlay 'No destination' 'Pick the account to restore INTO in the middle column.'; return }
+            if (-not $dst) { Show-Overlay 'No destination' 'Pick the account to restore INTO in the right-hand column.'; return }
             $dstKind = 'profile'; $dstPath = [string]$dst.UnArgs; $dstUser = [string]$dst.DetectPath
         }
         default {
             $dst = Get-SelectedUser $script:DstUsers
-            if (-not $dst) { Show-Overlay 'No destination' 'Pick the account to copy TO in the middle column.'; return }
+            if (-not $dst) { Show-Overlay 'No destination' 'Pick the account to copy TO in the right-hand column.'; return }
             if ($src.DetectPath -eq $dst.DetectPath -or $src.Name -eq $dst.Name) {
                 Show-Overlay 'Same account' 'The source and destination are the same profile. Pick two different accounts.'
                 return
@@ -16117,32 +16549,58 @@ $BtnMigrate.Add_Click({
 
     # Measure before promising anything: a profile copy is the one operation here that can
     # fill the disk, and finding that out half way through is how you brick a machine.
+    #
+    # Measured from the JOB's source - the backup folder for a restore, the profile otherwise.
+    # It was always the profile, so a restore measured the wrong tree entirely.
+    $script:Measuring   = $true
+    $script:MeasureStop = $false
+    $script:MeasCount   = $sel.Count
+    $script:MeasDone    = 0
+    $script:MeasRunning = [long]0
+    $btnText = $BtnMigrate.Content
+    $BtnMigrate.Content = 'Stop measuring'
     $TxtNow.Text = 'Measuring...'
     $DotNow.Fill = '#FF4C8DFF'
     $RowNow.Visibility = 'Visible'
+    $t0 = Get-Date
     Update-UI
     $total = [long]0
     $done  = 0
-    foreach ($m in $sel) {
-        $p = Join-Path ([string]$src.UnArgs) ([string]$m.UnArgs)
-        $done++
-        # Measuring a profile walks every file in it, and on a real one that is minutes. It
-        # used to happen with the dispatcher blocked: the window printed 'Measuring...' and
-        # then froze solid - no repaint, no progress, no way to tell it from a hang. The
-        # callback below is the only thing keeping the UI breathing while this runs.
-        $label = [string]$m.Name
-        $running = $total
-        $sz = Get-FolderSize $p {
-            param($sofar)
-            $TxtNow.Text = "Measuring $label  ($done of $($sel.Count))  -  $(Format-Size ($running + $sofar)) so far"
+    try {
+        foreach ($m in $sel) {
+            if ($script:MeasureStop) { break }
+            $p = Join-Path $srcRoot ([string]$m.UnArgs)
+            $done++
+            # Measuring a profile walks every file in it, and on a real one that is minutes. It
+            # used to happen with the dispatcher blocked: the window printed 'Measuring...' and
+            # then froze solid - no repaint, no progress, no way to tell it from a hang. The
+            # tick is the only thing keeping the UI breathing while this runs - and it is also
+            # how a Stop press reaches the walk.
+            $script:MeasLabel   = [string]$m.Name
+            $script:MeasDone    = $done
+            $script:MeasRunning = $total
+            $sz = Get-FolderSize $p $script:MeasTick
+            if ($script:MeasureStop) { break }
+            $m.Size = Format-Size $sz
+            $total += $sz
+            $TxtNow.Text = "Measured $done of $($sel.Count)  -  $(Format-Size $total) so far"
             Update-UI
-        }.GetNewClosure()
-        $m.Size = Format-Size $sz
-        $total += $sz
-        $TxtNow.Text = "Measured $done of $($sel.Count)  -  $(Format-Size $total) so far"
-        Update-UI
+        }
+    } finally {
+        $script:Measuring = $false
+        $BtnMigrate.Content = $btnText
+        $BtnMigrate.IsEnabled = $true
+        $RowNow.Visibility = 'Collapsed'
     }
-    $RowNow.Visibility = 'Collapsed'
+    if ($script:MeasureStop) {
+        $script:MeasureStop = $false
+        Add-Log "Measuring stopped by technician after $(Format-Elapsed ([int]((Get-Date) - $t0).TotalSeconds)) - nothing was copied. Press the button again to start over."
+        Update-Dash
+        return
+    }
+    Add-Log ("$(if ($mode -eq 'restore') { 'Restore' } else { 'Backup' }): measured $($sel.Count) item(s) under $srcRoot - " +
+             "$(Format-Size $total) in $(Format-Elapsed ([int]((Get-Date) - $t0).TotalSeconds)).")
+    Update-Dash
     # The DESTINATION drive, not the system drive. A profile can live anywhere - redirected,
     # or on a second disk - and checking C: while copying onto D: answers a question nobody
     # asked. For an account with no profile yet, Windows will build it beside the others.
@@ -16160,24 +16618,33 @@ $BtnMigrate.Add_Click({
     $risky = @($sel | Where-Object { -not $_.IsSilent })
     # Three jobs, three honest descriptions. "to the profile of" was the only wording, and it
     # would have described a USB stick as an account.
-    $fromTxt = $(if ($script:BackupMode -eq 'restore') { $script:FolderPath } else { [string]$src.UnArgs })
-    $toTxt   = $(switch ($script:BackupMode) {
-                    'folder'  { $script:FolderPath }
-                    'restore' { "the profile of `"$($dst.Name)`"" }
+    $fromTxt = $srcRoot
+    $toTxt   = $(switch ($mode) {
+                    'folder'  { $dstPath }
                     default   { "the profile of `"$($dst.Name)`"" } })
-    $verb = $(if ($script:BackupMode -eq 'restore') { 'Restore' } else { 'Copy' })
+    $verb = $(if ($mode -eq 'restore') { 'Restore' } else { 'Copy' })
     $msg = "$verb $($sel.Count) item(s), $(Format-Size $total), from`n  $fromTxt`nto`n  $toTxt.`n`n" +
-           $(if ($script:BackupMode -eq 'restore') {
+           $(if ($mode -eq 'restore') {
                  "The backup is left completely untouched - this copies out of it, it never moves.`n" +
                  "Files already in the account with the same size and date are left alone.`n" }
              else {
                  "The source profile is left completely untouched - this copies, it never moves.`n" })
+    if ($mode -eq 'folder') { $msg += "Running this again later copies only what has changed; nothing already on the drive is deleted.`n" }
+    if ($script:NetUser) { $msg += "The other PC will be signed into as $($script:NetUser).`n" }
+    $msg += "You can press Cancel on the progress row while it copies - the folder in flight is stopped, and what was already copied stays.`n"
     if ($risky.Count) {
         $msg += "`n$($risky.Count) of these come from AppData. If the old profile is corrupt, the fault often lives there and can travel with them."
     }
-    Show-Confirm 'Back up this data?' $msg ({
+    # Everything the job needs is in LOCALS before the closure is made, so the callback carries
+    # values rather than reading $script: state at fire time - see Show-Confirm.
+    $jobSrc = $srcRoot
+    $netU   = [string]$script:NetUser
+    $netP   = [string]$script:NetPassword
+    $items  = @($sel | ForEach-Object { [string]$_.UnArgs })
+    $title  = $(switch ($mode) { 'restore' { 'Restore this backup?' } 'folder' { 'Back up this data?' } default { 'Copy this data?' } })
+    Show-Confirm $title $msg ({
         Start-UserBatch 'migrate' @{
-            src     = $(if ($script:BackupMode -eq 'restore') { $script:FolderPath } else { [string]$src.UnArgs })
+            src     = $jobSrc
             srcKind = $srcKind
             dstUser = $dstUser
             dstPath = $dstPath
@@ -16185,9 +16652,9 @@ $BtnMigrate.Add_Click({
             # Empty for a local folder or another profile. Protect-QueueEntry wraps netPassword
             # with DPAPI on the way out - it is named in $script:SecretFields - so it never sits
             # in the queue file in clear.
-            netUser     = $script:NetUser
-            netPassword = $script:NetPassword
-            items   = @($sel | ForEach-Object { [string]$_.UnArgs }) }
+            netUser     = $netU
+            netPassword = $netP
+            items   = $items }
     }.GetNewClosure())
 })
 $BtnSubDesktop.Add_Click({ Select-UnTab 'Desktop' })
@@ -16230,6 +16697,18 @@ $BtnPause.Add_Click({
 
 $BtnCancel.Add_Click({
     if ($script:Phase -notin 'Download', 'Install') { return }
+    # Cancel while the leftover REVIEW is open is "no, do not wipe": the uninstalls are already
+    # done. This used to fall through to the batch-cancel below, which ended the batch under an
+    # overlay only Skip/Go ever close - and a Go pressed afterwards wrote to a queue nobody was
+    # reading and left every row spinning on "Cleaning leftovers" for good.
+    if ($WipeOverlay -and $WipeOverlay.Visibility -eq 'Visible') {
+        $WipeOverlay.Visibility = 'Collapsed'
+        Add-Log 'Leftover cleanup cancelled by technician - nothing was deleted.'
+        $script:WipeFindings.Clear()
+        Set-ForceRemoveOutcome 'cleanup was cancelled, and force remove runs no uninstaller'
+        Release-Worker
+        return
+    }
     # A running leftover scan is the one thing here that can be stopped without leaving anything
     # half-done: it only READS. Stop it and show what it found so far - the batch itself is
     # untouched, and the technician still decides what goes.
@@ -16239,13 +16718,16 @@ $BtnCancel.Add_Click({
         Add-Log 'Leftover scan stopped by technician - the preview shows what was found up to that point.'
         return
     }
+    $script:CancelRequested = $true      # see Test-CancelRequested
     New-Item -ItemType File -Path $script:CancelPath -Force | Out-Null
     if ($script:CurJob) { Remove-BitsTransfer -BitsJob $script:CurJob -ErrorAction SilentlyContinue; $script:CurJob = $null }
     $script:Paused = $false
     $BtnPause.Visibility = 'Collapsed'
     $script:DlIndex = $script:Pending.Count
     foreach ($p2 in $script:Pending) {
-        if ($p2.Status -notmatch '^(Installed|Uninstalled|Failed|Removed|Installing|Uninstalling|Verifying)') {
+        # Skipped and Removed are decisions, Already-* rows were never in play, and Removing is
+        # a step under way - none of them was cancelled, and the summary said they were
+        if ($p2.Status -notmatch '^(Installed|Uninstalled|Failed|Removed|Removing|Skipped|Cancelled|Already|Installing|Uninstalling|Verifying)') {
             Set-Status $p2 'Cancelled' 'warn'
             Set-Ring $p2 'warn'
             $p2.ProgressVis = 'Collapsed'
@@ -16475,6 +16957,7 @@ function Start-Uninstall([object[]]$sel, [bool]$Force) {
     $script:EndQueued = $false
     $script:Paused = $false
     $script:AwaitingScan = $false
+    $script:CancelRequested = $false
     $script:CurJob = $null
     $script:DlIndex = 0
     # when this batch began, so the run record can say how long it took. Start-Batch stamps
@@ -16510,9 +16993,11 @@ function Start-Uninstall([object[]]$sel, [bool]$Force) {
         # `silent` travels with the entry because the worker cannot work it out for itself:
         # it decides whether a window that stays up is a fault to stop or a wizard the
         # technician is standing in front of. Parse-UninstallString already knows.
+        $unSid = ''
+        try { $unSid = ([Security.Principal.WindowsIdentity]::GetCurrent()).User.Value } catch {}
         $entry = @{ id = $s.Id; action = 'uninstall'; command = $s.UnCommand; args = $s.UnArgs
                     detect = $s.DetectPath; location = @($s.CleanPaths)[0]
-                    silent = [bool]$s.IsSilent } | ConvertTo-Json -Compress
+                    silent = [bool]$s.IsSilent; userSid = $unSid } | ConvertTo-Json -Compress
         Add-Content -Path $script:QueuePath -Value $entry -Encoding UTF8
     }
     if ($script:DeepClean) {

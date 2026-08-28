@@ -291,7 +291,8 @@ Write-Host ''
     # download loop - and the speed/ETA sample only fires after a whole second, so a fast
     # local transfer never reaches it and the harness stays green while the real thing, on a
     # slow link, is the only place that breaks. Hence the exact-count check.
-    $wanted = @('Invoke-SegmentedDownload', 'Format-Size', 'Format-Eta')
+    # Test-CancelRequested: the download loops now ask it instead of testing the cancel file directly
+    $wanted = @('Invoke-SegmentedDownload', 'Format-Size', 'Format-Eta', 'Test-CancelRequested')
     $segFn = @($adAst.FindAll({ param($n)
         $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
         $n.Name -in $wanted }, $true))

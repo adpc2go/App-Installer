@@ -847,10 +847,17 @@ class R {
     Assert-True 'the wipe completed' (Wait-For { $script:Phase -in 'Done', 'Idle' } 120000)
     # each remover writes "<its own downloaded path>.ran.txt" - so the marker file IS the proof
     # of which copy executed, and its absence the proof the tampered one never did
+    # The worker now COPIES a fetched remover out of the user-writable cache into Windows\Temp
+    # (PC2GoDeploy-<guid>.exe), hashes the copy and runs the copy - so the marker lands beside
+    # that copy, not beside the download. One marker there = the verified one ran; a second
+    # would mean the tampered one ran too. The old cache-side paths are still accepted so the
+    # assertion also holds against a worker that runs removers in place.
     $ranGood = Join-Path (Join-Path $script:CacheDir 'removers') 'marlin-remover.exe.ran.txt'
     $ranBad  = Join-Path (Join-Path $script:CacheDir 'removers') 'marlin-remover2.exe.ran.txt'
-    Assert-True 'the hash-verified remover actually RAN'          (Test-Path -LiteralPath $ranGood)
-    Assert-True 'the tampered remover was refused and never ran'  (-not (Test-Path -LiteralPath $ranBad))
+    $staged  = @(Get-ChildItem -LiteralPath (Join-Path $env:SystemRoot 'Temp') -Filter 'PC2GoDeploy-*.ran.txt' -ErrorAction SilentlyContinue)
+    Assert-True 'the hash-verified remover actually RAN'          ((Test-Path -LiteralPath $ranGood) -or $staged.Count -ge 1)
+    Assert-True 'the tampered remover was refused and never ran'  (-not (Test-Path -LiteralPath $ranBad) -and $staged.Count -le 1)
+    foreach ($m in $staged) { Remove-Item -LiteralPath $m.FullName -Force -ErrorAction SilentlyContinue }
     Assert-True 'the program folder is gone once the wipe is approved' (-not (Test-Path -LiteralPath $dirU))
 
     # ---- Select all / Clear all in the leftover preview. Bulk tick spares the one-by-one

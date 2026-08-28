@@ -143,7 +143,8 @@ try {
 
     # Invoke-PostStep is the half of the contract the editor writes FOR. Taking it verbatim is
     # the only way this can fail when the two drift apart.
-    foreach ($n in 'Invoke-PostStep', 'Invoke-PostInstall') { . ([scriptblock]::Create((Get-FunctionText $workerAst $n 'AppDeploy.ps1'))) }
+    # Resolve-PackageEntry too: `from` now resolves through it, the same gate `entry` passes
+    foreach ($n in 'Invoke-PostStep', 'Invoke-PostInstall', 'Resolve-PackageEntry') { . ([scriptblock]::Create((Get-FunctionText $workerAst $n 'AppDeploy.ps1'))) }
     # the worker narrates every step down the status pipe; outside the worker there is no pipe
     function Write-Status([string]$Id, [string]$State, [string]$Detail, [bool]$Dirty = $false, [string[]]$Created = @()) { }
     # The overlay these reach for belongs to the MAIN window, which no harness puts up. Three of

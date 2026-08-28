@@ -795,8 +795,12 @@ try {
     Assert-True 'the worker reads netPassword off the job' ($src -match '\$app\.netPassword')
     Assert-True 'and unprotects it rather than using the wrapped form' `
                 ($src -match 'Unprotect-Secret \(\[string\]\$app\.netPassword\)')
+    # Captured into locals BEFORE the confirm closure is made, then put on the entry from those -
+    # the callback carries values rather than reading $script: state at fire time.
+    Assert-True 'the GUI captures the sign-in before the confirm closure is built' `
+                (($src -match '\$netU\s*=\s*\[string\]\$script:NetUser') -and ($src -match '\$netP\s*=\s*\[string\]\$script:NetPassword'))
     Assert-True 'and the GUI puts both on the queue entry' `
-                (($src -match 'netUser\s*=\s*\$script:NetUser') -and ($src -match 'netPassword\s*=\s*\$script:NetPassword'))
+                (($src -match 'netUser\s*=\s*\$netU\b') -and ($src -match 'netPassword\s*=\s*\$netP\b'))
 
     # Nothing can be said about what is ON a share until the share is reachable, so the connect
     # has to come ahead of every other check rather than somewhere in the middle of them.
