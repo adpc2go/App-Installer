@@ -17,3 +17,7 @@ server/.apps-history/
 # Icons of removed applications, set aside rather than deleted so a hand-made one is never
 # destroyed by a click that was about the catalog entry.
 icons/.removed/
+
+# Real vendor installers downloaded by tests\Get-InstallerFixtures.ps1 for Test-InstallerFamily.ps1 -
+# pinned by SHA-256 in that script, never versioned here.
+tests/fixtures/
