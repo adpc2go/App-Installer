@@ -7392,6 +7392,40 @@ function Start-Tweaks([object[]]$Sel) {
 # survives a reboot, which this does not.
 $script:SegmentStreams  = 8
 $script:SegmentMinBytes = [long]100MB
+# What the adaptive throttle settled on for the last file (0 = not yet measured). A link that
+# was dropping connections at eight streams is still that link for the next package.
+$script:SegmentActive   = 0
+
+# Downloads that stopped part-way - a reboot, a crash, a closed window - leave a pre-allocated
+# .part beside a .parts journal in the cache. Nothing used to look for them: the technician had
+# to remember what was queued and press Install again, and on a 15 GB package forgotten is
+# re-downloaded. Offered once, at launch, with the size already on disk named.
+function Offer-ResumeDownloads {
+    $pending = @()
+    $bytes = [long]0
+    foreach ($it in @($script:Items)) {
+        try {
+            if (-not $it -or -not $it.Id -or -not $it.FileName) { continue }
+            # NOT Get-AppCachePath: that creates the folder, and this runs for every row at start
+            $dest = Join-Path (Join-Path (Join-Path $script:CacheDir 'files') (Get-SafeId $it.Id)) ([string]$it.FileName)
+            if ((Test-Path -LiteralPath $dest) -or -not (Test-Path -LiteralPath "$dest.part") -or -not (Test-Path -LiteralPath "$dest.parts")) { continue }
+            $j = (Get-Content -LiteralPath "$dest.parts" -Raw) | ConvertFrom-Json
+            $done = [long]0
+            foreach ($d in @($j.done)) { $done += [long]$d }
+            if ($done -gt 0 -and [long]$j.total -eq [long]$it.SizeBytes) { $pending += $it; $bytes += $done }
+        } catch { }
+    }
+    if (-not $pending.Count) { return }
+    $names = (@($pending | ForEach-Object { $_.Name }) -join ', ')
+    Add-Log "Interrupted download(s) found in the cache: $names ($(Format-Size $bytes) already here)."
+    Show-Confirm 'Resume interrupted downloads?' (
+        "$($pending.Count) download(s) stopped part-way last time - $names - with " +
+        "$(Format-Size $bytes) already on this machine.`n`n" +
+        'Resume now? Nothing already downloaded is fetched again.') ({
+        foreach ($p in $pending) { $p.IsSelected = $true }
+        Show-Preflight @($pending) 'install'
+    }.GetNewClosure())
+}
 
 <#
     One file, fetched over several connections at once, straight into its final offsets.
@@ -7425,6 +7459,12 @@ function Invoke-SegmentedDownload([object]$Item, [string]$Dest, [int]$Streams = 
     $probe.AddRange(0, 0)
     $pr = $probe.GetResponse()
     $pcode = [int]$pr.StatusCode
+    # The object's ETag, so a resume can tell whether it is still the same bytes. A package
+    # republished under the same name between two attempts would otherwise interleave old
+    # and new bytes into one file, and only the SHA-256 at the very end would notice - after
+    # the whole thing had come down.
+    $etag = ''
+    try { $etag = ('' + $pr.Headers['ETag']).Trim() } catch { $etag = '' }
     $pr.Close()
     if ($pcode -ne 206) { throw "the server ignored a Range request (HTTP $pcode)" }
 
@@ -7440,7 +7480,12 @@ function Invoke-SegmentedDownload([object]$Item, [string]$Dest, [int]$Streams = 
     if ((Test-Path -LiteralPath $tmp) -and (Test-Path -LiteralPath $journal)) {
         try {
             $j = (Get-Content -LiteralPath $journal -Raw) | ConvertFrom-Json
-            if ([long]$j.total -eq $total -and [int]$j.streams -eq $Streams -and
+            $sameObject = $true
+            if ($etag -and ('' + $j.etag) -and ('' + $j.etag) -ne $etag) {
+                $sameObject = $false
+                Add-Log "$($Item.Name): the file on the server changed since the last attempt - starting the download over."
+            }
+            if ($sameObject -and [long]$j.total -eq $total -and [int]$j.streams -eq $Streams -and
                 (Get-Item -LiteralPath $tmp).Length -eq $total) {
                 for ($i = 0; $i -lt $Streams; $i++) {
                     $d = [long]$j.done[$i]
@@ -7461,7 +7506,17 @@ function Invoke-SegmentedDownload([object]$Item, [string]$Dest, [int]$Streams = 
 
     $shared = [hashtable]::Synchronized(@{
         Done   = [long[]]::new($Streams)
+        # Errors are now FATAL only - the server refusing a range, the object changing, a link
+        # that could not be refreshed. A dropped socket is not an error here any more; it is a
+        # retry, counted in Retries and narrated through Log.
         Errors = [Collections.ArrayList]::Synchronized((New-Object Collections.ArrayList))
+        Log    = [Collections.ArrayList]::Synchronized((New-Object Collections.ArrayList))
+        Retries = [int[]]::new($Streams)       # per range: attempts beyond the first
+        Retrying = [int]0                      # ranges currently in a backoff sleep
+        Faults  = [int]0                       # transient faults in the current window (adaptive throttle)
+        Url     = [string]$Item.Url            # re-read by every attempt: a refreshed link lands here
+        NeedUrl = $false                       # a range saw 401/403 and is waiting for a fresh link
+        ETag    = $etag
         Cancel = $false
         # Pause stops the ranges the same way Cancel does - by ending their reads - rather
         # than holding the sockets open and idle. A held socket dies anyway: ReadWriteTimeout
@@ -7473,46 +7528,118 @@ function Invoke-SegmentedDownload([object]$Item, [string]$Dest, [int]$Streams = 
     for ($i = 0; $i -lt $Streams; $i++) { $shared.Done[$i] = $ranges[$i].Done }
     $carried = [long](($ranges | Measure-Object -Property Done -Sum).Sum)
 
+    # One range, fetched until it is complete or told to stop.
+    #
+    # A dropped socket used to end the WHOLE download: one range's exception went into Errors,
+    # the caller threw, and the pump fell back to BITS - which starts from byte zero, on one
+    # connection, with the 12 GB already in the .part file ignored. On a link that blips every
+    # ten minutes a 15 GB package could not complete on this path at all. A range now re-opens
+    # from exactly where its counter stands and keeps going: 2, 4, 8, 16, then 30 s between
+    # attempts, for as long as the batch is running - Stop and Pause still end it at once.
+    # Only three things are fatal: the server refusing the range, the object having changed
+    # underneath (If-Range answers 200), and a link that expired and could not be refreshed.
     $work = {
-        param($Url, $Path, [int]$Index, [long]$From, [long]$To, $Shared)
-        try {
-            [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor 3072
-            # .NET allows two connections per host by default, which would quietly turn eight
-            # streams into two and make this whole exercise pointless.
-            [Net.ServicePointManager]::DefaultConnectionLimit = 64
+        param($Path, [int]$Index, [long]$From, [long]$To, $Shared)
+        [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor 3072
+        # .NET allows two connections per host by default, which would quietly turn eight
+        # streams into two and make this whole exercise pointless.
+        [Net.ServicePointManager]::DefaultConnectionLimit = 64
+        $attempt = 0
+        while ($true) {
+            if ($Shared.Cancel -or $Shared.Pause) { return }
             $start = [long]$From + [long]$Shared.Done[$Index]
-            if ($start -gt $To) { return }
-            $req = [Net.HttpWebRequest]::Create($Url)
-            $req.UserAgent = 'PC2GoDeploy/1.0'
-            $req.Timeout = 60000
-            $req.ReadWriteTimeout = 120000
-            $req.AddRange($start, $To)
-            $resp = $req.GetResponse()
-            if ([int]$resp.StatusCode -ne 206) { $resp.Close(); throw "expected 206, got $([int]$resp.StatusCode)" }
-            $st = $resp.GetResponseStream()
-            # ReadWrite sharing: every range holds its own handle on the same file at once
-            $fs = [IO.File]::Open($Path, 'Open', 'Write', 'ReadWrite')
+            if ($start -gt $To) { return }               # complete
+            $attempt++
+            $resp = $null; $st = $null; $fs = $null
             try {
+                $req = [Net.HttpWebRequest]::Create([string]$Shared.Url)
+                $req.UserAgent = 'PC2GoDeploy/1.0'
+                $req.Timeout = 60000
+                $req.ReadWriteTimeout = 120000
+                $req.AddRange($start, $To)
+                if ($Shared.ETag) { $req.Headers['If-Range'] = [string]$Shared.ETag }
+                $resp = $req.GetResponse()
+                $code = [int]$resp.StatusCode
+                if ($code -eq 200 -and $Shared.ETag) {
+                    [void]$Shared.Errors.Add("range $Index : the file changed on the server (If-Range answered 200)")
+                    $Shared.Cancel = $true
+                    return
+                }
+                if ($code -ne 206) { throw "expected 206, got $code" }
+                $st = $resp.GetResponseStream()
+                # ReadWrite sharing: every range holds its own handle on the same file at once
+                $fs = [IO.File]::Open($Path, 'Open', 'Write', 'ReadWrite')
                 [void]$fs.Seek($start, 'Begin')
                 $buf = New-Object byte[] 1048576
                 while (($n = $st.Read($buf, 0, $buf.Length)) -gt 0) {
-                    if ($Shared.Cancel -or $Shared.Pause) { break }
+                    if ($Shared.Cancel -or $Shared.Pause) { return }
                     $fs.Write($buf, 0, $n)
                     $Shared.Done[$Index] = [long]$Shared.Done[$Index] + $n
                 }
-            } finally { $fs.Close(); $st.Close(); $resp.Close() }
-        } catch {
-            [void]$Shared.Errors.Add("range $Index : $($_.Exception.Message)")
+                # the server closed the body early: not an error, the loop simply re-asks for the rest
+            } catch {
+                if ($Shared.Cancel -or $Shared.Pause) { return }
+                $msg = '' + $_.Exception.Message
+                $http = 0
+                $we = $_.Exception
+                while ($we -and -not ($we -is [Net.WebException])) { $we = $we.InnerException }
+                if ($we -and $we.Response) { try { $http = [int]$we.Response.StatusCode } catch { $http = 0 } }
+                if ($http -eq 401 -or $http -eq 403) {
+                    # The link, not the network. Ask the window for a fresh one and wait for it;
+                    # the window says no by setting an Error, which ends every range.
+                    $Shared.NeedUrl = $true
+                    $waited = 0
+                    while ($Shared.NeedUrl -and -not $Shared.Cancel -and -not $Shared.Pause -and $waited -lt 90000) {
+                        Start-Sleep -Milliseconds 500; $waited += 500
+                    }
+                    if ($Shared.NeedUrl) {
+                        [void]$Shared.Errors.Add("range $Index : the download link expired and could not be refreshed")
+                        $Shared.Cancel = $true
+                        return
+                    }
+                    continue
+                }
+                if ($http -eq 416 -or $http -eq 404 -or $http -eq 410) {
+                    [void]$Shared.Errors.Add("range $Index : HTTP $http - $msg")
+                    $Shared.Cancel = $true
+                    return
+                }
+                # transient: count it, say it once per attempt, back off, go again from Done
+                $Shared.Retries[$Index] = [int]$Shared.Retries[$Index] + 1
+                $Shared.Faults = [int]$Shared.Faults + 1
+                $wait = [Math]::Min(30, [Math]::Pow(2, [Math]::Min($attempt, 5)))
+                [void]$Shared.Log.Add("range $Index attempt $attempt failed ($msg) - retrying in ${wait}s")
+                $Shared.Retrying = [int]$Shared.Retrying + 1
+                try {
+                    $until = (Get-Date).AddSeconds($wait)
+                    while ((Get-Date) -lt $until -and -not $Shared.Cancel -and -not $Shared.Pause) { Start-Sleep -Milliseconds 250 }
+                } finally { $Shared.Retrying = [int]$Shared.Retrying - 1 }
+                continue
+            } finally {
+                if ($fs)   { try { $fs.Close() } catch { } }
+                if ($st)   { try { $st.Close() } catch { } }
+                if ($resp) { try { $resp.Close() } catch { } }
+            }
         }
     }
 
-    $pool = [runspacefactory]::CreateRunspacePool(1, $Streams)
+    # The pool's ceiling is the number of ranges running AT ONCE, and it can be changed while
+    # they run: SetMaxRunspaces is the throttle. Eight sockets is the right answer on a link
+    # that throttles per connection (the common case) and the wrong one on a link that drops
+    # packets - there, eight streams each time out and each retry costs the same again. So the
+    # loop below halves the ceiling when faults cluster and raises it back when things go
+    # quiet, and the answer it settles on is kept for the next file in the batch.
+    $active = [int]$(if ($script:SegmentActive -gt 0) { [Math]::Min($script:SegmentActive, $Streams) } else { $Streams })
+    $pool = [runspacefactory]::CreateRunspacePool(1, $active)
     $pool.Open()
+    $faultWindowStart = Get-Date
+    $lastThrottle = Get-Date
+    $refreshedUrl = $false
     $jobs = @()
     foreach ($r in $ranges) {
         $ps = [powershell]::Create()
         $ps.RunspacePool = $pool
-        [void]$ps.AddScript($work).AddArgument($Item.Url).AddArgument($tmp).
+        [void]$ps.AddScript($work).AddArgument($tmp).
               AddArgument($r.Index).AddArgument($r.From).AddArgument($r.To).AddArgument($shared)
         $jobs += [pscustomobject]@{ ps = $ps; handle = $ps.BeginInvoke() }
     }
@@ -7543,9 +7670,60 @@ function Invoke-SegmentedDownload([object]$Item, [string]$Dest, [int]$Streams = 
                     $spPrev = @{ bytes = $done; time = $now }
                 }
             }
+            # ---- the link: a range saw 401/403 and is waiting for a fresh one (once per file)
+            if ($shared.NeedUrl) {
+                $fresh = $null
+                if (-not $refreshedUrl) {
+                    $refreshedUrl = $true
+                    $script:UrlRefreshed[$Item.Id] = $true
+                    $fresh = Get-FreshCatalogUrl $Item
+                }
+                if ($fresh) {
+                    $shared.Url = [string]$fresh
+                    $Item.Url   = [string]$fresh
+                    $shared.NeedUrl = $false
+                    Add-Log "$($Item.Name): download link had expired - refreshed, the ranges are carrying on."
+                }
+                # not refreshed: leave NeedUrl set; the range times out on it and records the fault
+            }
+            # ---- the network: say what is actually happening rather than a stale percentage
+            $netUp = $true
+            try { $netUp = [Net.NetworkInformation.NetworkInterface]::GetIsNetworkAvailable() } catch { $netUp = $true }
+            $retrying = [int]$shared.Retrying
+            foreach ($l in @($shared.Log)) { Add-Log "$($Item.Name): $l" }
+            $shared.Log.Clear()
+            # ---- adaptive concurrency: faults cluster -> halve the ceiling; quiet -> raise it
+            $now2 = Get-Date
+            if (($now2 - $faultWindowStart).TotalSeconds -ge 60) {
+                if ([int]$shared.Faults -ge 3 -and $active -gt 2 -and ($now2 - $lastThrottle).TotalSeconds -ge 60) {
+                    $active = [Math]::Max(2, [int][Math]::Floor($active / 2))
+                    try { [void]$pool.SetMaxRunspaces($active) } catch { }
+                    $lastThrottle = $now2
+                    Add-Log "$($Item.Name): the link is dropping connections - down to $active at a time."
+                } elseif ([int]$shared.Faults -eq 0 -and $active -lt $Streams -and ($now2 - $lastThrottle).TotalSeconds -ge 120) {
+                    $active = [Math]::Min($Streams, $active * 2)
+                    try { [void]$pool.SetMaxRunspaces($active) } catch { }
+                    $lastThrottle = $now2
+                    Add-Log "$($Item.Name): the link is steady again - back up to $active at a time."
+                }
+                $shared.Faults = 0
+                $faultWindowStart = $now2
+                $script:SegmentActive = $active
+            }
+
             $txt = "Downloading $pct%"
             if ($spTxt)  { $txt += "  $spTxt" }
             if ($etaTxt) { $txt += "  -  $etaTxt" }
+            $kind = 'active'
+            if (-not $netUp) {
+                $txt = "Internet lost - waiting; $pct% kept, resumes on its own"
+                $kind = 'warn'
+            } elseif ($shared.NeedUrl) {
+                $txt = "Download link expired - refreshing ($pct% kept)"
+                $kind = 'warn'
+            } elseif ($retrying -gt 0) {
+                $txt += "  -  reconnecting $retrying of $active"
+            }
             # Not over a verdict. Update-UI below is where a Remove or Cancel click runs, and it
             # sets 'Removed from batch' / 'Cancelled' on this row; the ranges are still mid-read
             # so the loop comes round once more, and this line rewrote that to "Downloading 43%".
@@ -7553,7 +7731,7 @@ function Invoke-SegmentedDownload([object]$Item, [string]$Dest, [int]$Streams = 
             # download of the app the technician had just taken out.
             if (-not $shared.Cancel -and -not $shared.Pause -and
                 $Item.Status -notlike 'Removed*' -and $Item.Status -notlike 'Cancelled*') {
-                Set-Status $Item $txt 'active'
+                Set-Status $Item $txt $kind
             }
             $Item.ProgressVis = 'Visible'
             $Item.Progress = $pct
@@ -7564,7 +7742,7 @@ function Invoke-SegmentedDownload([object]$Item, [string]$Dest, [int]$Streams = 
             # over, and losing two seconds of progress to a crash costs two seconds of refetch.
             if (($now - $lastJournal).TotalSeconds -ge 2) {
                 try {
-                    (@{ total = $total; streams = $Streams; done = @($shared.Done) } | ConvertTo-Json -Compress) |
+                    (@{ total = $total; streams = $Streams; done = @($shared.Done); etag = [string]$shared.ETag } | ConvertTo-Json -Compress) |
                         Set-Content -LiteralPath $journal -Encoding ASCII
                 } catch { }
                 $lastJournal = $now
@@ -7588,7 +7766,7 @@ function Invoke-SegmentedDownload([object]$Item, [string]$Dest, [int]$Streams = 
         foreach ($j in $jobs) { try { [void]$j.ps.EndInvoke($j.handle) } catch { }; $j.ps.Dispose() }
         $pool.Close(); $pool.Dispose()
         try {
-            (@{ total = $total; streams = $Streams; done = @($shared.Done) } | ConvertTo-Json -Compress) |
+            (@{ total = $total; streams = $Streams; done = @($shared.Done); etag = [string]$shared.ETag } | ConvertTo-Json -Compress) |
                 Set-Content -LiteralPath $journal -Encoding ASCII
         } catch { }
     }
@@ -17164,6 +17342,9 @@ $window.Add_ContentRendered({
     $script:CatalogLoaded = $true
     foreach ($line in (Get-SessionHeader)) { Add-Log $line }
     Load-Catalog
+    # after the catalog, because the offer is made in terms of catalog rows; guarded so a
+    # cache the tool cannot read never stops the window from opening
+    try { Offer-ResumeDownloads } catch { Add-Log "Could not check for interrupted downloads: $($_.Exception.Message)" }
 })
 $timer.Start()
 # The last thing measured: from here the window is on screen and the clock stops mattering.

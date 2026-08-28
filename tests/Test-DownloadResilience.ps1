@@ -416,6 +416,68 @@ Write-Host ''
         Start-Sleep -Milliseconds 400
     }
 
+    # ---- the link drops mid-transfer and comes back. The Kuwait case: one dropped socket used
+    # to end the whole segmented download and hand the file to BITS from byte zero. Every range
+    # must now re-open from where it stood and the file must complete without a restart.
+    Write-Section '7b. Eight connections, the server dies mid-transfer, then returns'
+
+    $dropPort = 8125
+    $dropSrv = Start-TestServer "http://127.0.0.1:$dropPort/" $srcFile 16384 25
+    $script:DlLog = New-Object Collections.ArrayList
+    function Add-Log { param($m) [void]$script:DlLog.Add([string]$m) }
+    $doneFlag = Join-Path $segDir 'drop-done.flag'
+    Remove-Item -LiteralPath $doneFlag -ErrorAction SilentlyContinue
+    try {
+        $dropItem = [pscustomobject]@{ Id = 'drop'; Name = 'Dropped'; Url = "http://127.0.0.1:$dropPort/f.bin"
+                                       SizeBytes = [long]$payload.Length; Size = '6 MB'
+                                       Progress = 0; ProgressVis = 'Collapsed' }
+        $ddest = Join-Path $segDir 'dropped.bin'
+        # The outage, staged from another runspace while the call is blocked in the download:
+        # raise the stop flag (every response in flight is cut short and the listener exits),
+        # stay dark for 2.5 seconds, then bring a fresh listener up on the SAME prefix and keep
+        # it alive until the test says the download is over.
+        $outage = [powershell]::Create()
+        [void]$outage.AddScript({
+            param($StopFlag, $DoneFlag, $ServerText, $Prefix, $File, $Chunk, $Delay)
+            Start-Sleep -Milliseconds 600
+            Set-Content -LiteralPath $StopFlag -Value 'stop' -Encoding ASCII
+            Start-Sleep -Milliseconds 2500
+            Remove-Item -LiteralPath $StopFlag -ErrorAction SilentlyContinue
+            $srv2 = [powershell]::Create()
+            [void]$srv2.AddScript([scriptblock]::Create($ServerText)).AddArgument($Prefix).AddArgument($File).
+                AddArgument($Chunk).AddArgument($Delay).AddArgument($StopFlag)
+            $h2 = $srv2.BeginInvoke()
+            $waited = 0
+            while (-not (Test-Path -LiteralPath $DoneFlag) -and $waited -lt 120000) { Start-Sleep -Milliseconds 250; $waited += 250 }
+            Set-Content -LiteralPath $StopFlag -Value 'stop' -Encoding ASCII
+            Start-Sleep -Milliseconds 900
+            try { $srv2.Stop() } catch { }
+            try { $srv2.Dispose() } catch { }
+        }).AddArgument($stopFlag).AddArgument($doneFlag).AddArgument($serverCode.ToString()).
+           AddArgument("http://127.0.0.1:$dropPort/").AddArgument($srcFile).AddArgument(16384).AddArgument(25)
+        $oh = $outage.BeginInvoke()
+
+        $sw = [Diagnostics.Stopwatch]::StartNew()
+        $threw = ''
+        try { $null = Invoke-SegmentedDownload -Item $dropItem -Dest $ddest -Streams 8 }
+        catch { $threw = "$($_.Exception.Message)" }
+        $sw.Stop()
+        Set-Content -LiteralPath $doneFlag -Value 'done' -Encoding ASCII
+        try { [void]$outage.EndInvoke($oh) } catch { }
+        $outage.Dispose()
+
+        Assert-Equal 'a dropped connection is survived, not thrown'   '' $threw
+        Assert-Equal 'the ranges reconnected rather than restarting'  $true (@($script:DlLog | Where-Object { $_ -match 'retrying in' }).Count -ge 1)
+        Assert-Equal 'and the file completed with identical bytes'    $srcHash $(if (Test-Path -LiteralPath $ddest) { (Get-FileHash -LiteralPath $ddest -Algorithm SHA256).Hash } else { '(no file)' })
+        Assert-Equal 'within a sensible time for a 2.5 s outage'      $true ($sw.Elapsed.TotalSeconds -lt 60)
+        Assert-Equal 'the journal is gone once the file is whole'     $false (Test-Path -LiteralPath "$ddest.parts")
+    } finally {
+        Set-Content -LiteralPath $doneFlag -Value 'done' -Encoding ASCII -ErrorAction SilentlyContinue
+        Set-Content -LiteralPath $stopFlag -Value 'stop' -Encoding ASCII -ErrorAction SilentlyContinue
+        Start-Sleep -Milliseconds 400
+    }
+    function Add-Log { param($m) }
+
     # ---- everything it cannot do must fall back, never fail the download
     Write-Section '8. What it refuses, so BITS can take over'
 
