@@ -922,6 +922,79 @@ $xaml = @'
 
          It replaced a two-line card in a two-column grid, which could not answer the question
          this tab is opened for: eighty programs, and no way to see which are big. -->
+    <!-- A row for the HALF-WIDTH pick lists on the Backup tab (accounts, drives, folders). UnRow
+         is a seven-column table row built for the full-width Uninstall list: in a column half
+         that wide its star-sized name column collapsed to nothing and the description was cut to
+         "Administrator - local acc...". This one stacks name over description and keeps one small
+         value on the right, so nothing is clipped at 400px. -->
+    <Style x:Key="PickRow" TargetType="CheckBox">
+      <Setter Property="Focusable" Value="False"/>
+      <Setter Property="Cursor" Value="Hand"/>
+      <Setter Property="Template">
+        <Setter.Value>
+          <ControlTemplate TargetType="CheckBox">
+            <Border x:Name="R" CornerRadius="8" Padding="10,7" Background="Transparent" Margin="2,0"
+                    BorderThickness="0,0,0,1" BorderBrush="{StaticResource LineSoft}">
+              <Grid>
+                <Grid.ColumnDefinitions>
+                  <ColumnDefinition Width="26"/>
+                  <ColumnDefinition Width="34"/>
+                  <ColumnDefinition Width="*"/>
+                  <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+                <Border x:Name="Check" Grid.Column="0" Width="17" Height="17" CornerRadius="5"
+                        BorderThickness="1.5" BorderBrush="{StaticResource Dim}" Background="Transparent"
+                        VerticalAlignment="Center" HorizontalAlignment="Left">
+                  <Path x:Name="Tick" Data="M 3.5,8.5 L 6.5,11.5 L 12.5,4.5" Stroke="White" StrokeThickness="2"
+                        StrokeStartLineCap="Round" StrokeEndLineCap="Round" StrokeLineJoin="Round"
+                        Visibility="Collapsed" Stretch="None"/>
+                </Border>
+                <Border Grid.Column="1" Width="26" Height="26" CornerRadius="8" Margin="2,0,0,0"
+                        Background="{Binding IconBg}" VerticalAlignment="Center">
+                  <Grid>
+                    <Path Data="{Binding IconData}" Stroke="White" StrokeThickness="1.5"
+                          StrokeStartLineCap="Round" StrokeEndLineCap="Round" StrokeLineJoin="Round"
+                          Width="14" Height="14" Stretch="Uniform" Opacity="0.95" Visibility="{Binding GlyphVis}"/>
+                    <TextBlock Text="{Binding IconText}" Visibility="{Binding TextVis}" Foreground="White"
+                               FontSize="11.5" FontWeight="Bold" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                  </Grid>
+                </Border>
+                <StackPanel Grid.Column="2" Margin="10,0,10,0" VerticalAlignment="Center">
+                  <TextBlock Text="{Binding Name}" FontSize="12.5" Foreground="{StaticResource Ink}"
+                             TextTrimming="CharacterEllipsis" ToolTip="{Binding Name}"/>
+                  <TextBlock Text="{Binding Publisher}" FontSize="11" Foreground="{StaticResource Dim}" Margin="0,2,0,0"
+                             TextTrimming="CharacterEllipsis" ToolTip="{Binding Publisher}">
+                    <TextBlock.Style>
+                      <Style TargetType="TextBlock">
+                        <Style.Triggers>
+                          <DataTrigger Binding="{Binding Publisher}" Value="">
+                            <Setter Property="Visibility" Value="Collapsed"/>
+                          </DataTrigger>
+                        </Style.Triggers>
+                      </Style>
+                    </TextBlock.Style>
+                  </TextBlock>
+                </StackPanel>
+                <TextBlock Grid.Column="3" Text="{Binding Size}" FontSize="10.5" FontWeight="SemiBold"
+                           Foreground="{StaticResource Muted}" VerticalAlignment="Center" Margin="0,0,4,0"/>
+              </Grid>
+            </Border>
+            <ControlTemplate.Triggers>
+              <Trigger Property="IsMouseOver" Value="True">
+                <Setter TargetName="R" Property="Background" Value="#1AFFFFFF"/>
+              </Trigger>
+              <Trigger Property="IsChecked" Value="True">
+                <Setter TargetName="Check" Property="Background" Value="{StaticResource Accent}"/>
+                <Setter TargetName="Check" Property="BorderBrush" Value="{StaticResource Accent}"/>
+                <Setter TargetName="Tick" Property="Visibility" Value="Visible"/>
+                <Setter TargetName="R" Property="Background" Value="#152563EB"/>
+              </Trigger>
+            </ControlTemplate.Triggers>
+          </ControlTemplate>
+        </Setter.Value>
+      </Setter>
+    </Style>
+
     <Style x:Key="UnRow" TargetType="CheckBox">
       <Setter Property="Focusable" Value="False"/>
       <Setter Property="Cursor" Value="Hand"/>
@@ -1845,9 +1918,11 @@ $xaml = @'
         </Grid.RowDefinitions>
 
         <StackPanel Grid.Row="0" Orientation="Horizontal" Margin="2,0,0,10">
-          <Button x:Name="BtnModeProfile" Content="To another account" Style="{StaticResource TabActive}"/>
-          <Button x:Name="BtnModeFolder"  Content="To a drive, USB or PC" Style="{StaticResource TabIdle}"/>
-          <Button x:Name="BtnModeRestore" Content="Restore a backup"   Style="{StaticResource TabIdle}"/>
+          <!-- Backup first, Restore second, the account-to-account copy last: that is the order the
+               jobs happen in the field, and the words are the ones a technician uses for them. -->
+          <Button x:Name="BtnModeFolder"  Content="Backup"           Style="{StaticResource TabActive}"/>
+          <Button x:Name="BtnModeRestore" Content="Restore"          Style="{StaticResource TabIdle}"/>
+          <Button x:Name="BtnModeProfile" Content="Between accounts" Style="{StaticResource TabIdle}"/>
         </StackPanel>
 
         <TextBlock Grid.Row="1" x:Name="TxtUserHint" Text="" FontSize="11.5" Foreground="{StaticResource Muted}"
@@ -1867,12 +1942,12 @@ $xaml = @'
                 <TextBlock x:Name="TxtFromTitle" Text="Copy FROM" FontSize="12" FontWeight="Bold" Foreground="{StaticResource Ink}" Margin="8,0,6,0"/>
                 <TextBlock x:Name="TxtFromWhat" Text="the broken profile" FontSize="10.5" Foreground="{StaticResource Dim}" VerticalAlignment="Center"/>
               </StackPanel>
-              <ScrollViewer MaxHeight="150" VerticalScrollBarVisibility="Auto">
+              <ScrollViewer MaxHeight="190" VerticalScrollBarVisibility="Auto">
                 <StackPanel>
                   <ItemsControl x:Name="ListSrcUsers">
                     <ItemsControl.ItemTemplate>
                       <DataTemplate>
-                        <CheckBox Style="{StaticResource UnRow}"
+                        <CheckBox Style="{StaticResource PickRow}"
                                   IsChecked="{Binding IsSelected, UpdateSourceTrigger=PropertyChanged}"/>
                       </DataTemplate>
                     </ItemsControl.ItemTemplate>
@@ -1894,12 +1969,12 @@ $xaml = @'
                 <TextBlock x:Name="TxtToTitle" Text="Copy TO" FontSize="12" FontWeight="Bold" Foreground="{StaticResource Ink}" Margin="8,0,6,0"/>
                 <TextBlock x:Name="TxtToWhat" Text="the new profile" FontSize="10.5" Foreground="{StaticResource Dim}" VerticalAlignment="Center"/>
               </StackPanel>
-              <ScrollViewer MaxHeight="150" VerticalScrollBarVisibility="Auto">
+              <ScrollViewer MaxHeight="190" VerticalScrollBarVisibility="Auto">
                 <StackPanel>
                   <ItemsControl x:Name="ListDstUsers">
                     <ItemsControl.ItemTemplate>
                       <DataTemplate>
-                        <CheckBox Style="{StaticResource UnRow}"
+                        <CheckBox Style="{StaticResource PickRow}"
                                   IsChecked="{Binding IsSelected, UpdateSourceTrigger=PropertyChanged}"/>
                       </DataTemplate>
                     </ItemsControl.ItemTemplate>
@@ -1910,17 +1985,28 @@ $xaml = @'
               </ScrollViewer>
               <!-- Shown instead of the account list for a drive/USB backup or a restore. Same
                    column, so the layout does not jump when the mode changes. -->
-              <StackPanel x:Name="PanelFolderPick" Visibility="Collapsed" Margin="10,2,10,6">
+              <StackPanel x:Name="PanelFolderPick" Visibility="Collapsed" Margin="2,2,2,6">
                 <TextBlock x:Name="TxtFolderWhat" Text="" FontSize="11.5" Foreground="{StaticResource Muted}"
-                           TextWrapping="Wrap" Margin="0,0,0,7"/>
-                <Border CornerRadius="7" Background="{StaticResource Raised}" BorderBrush="{StaticResource Line}"
-                        BorderThickness="1" Padding="9,7">
-                  <TextBlock x:Name="TxtFolderPath" Text="No folder chosen yet" FontSize="11.5"
-                             Foreground="{StaticResource Ink}" TextWrapping="Wrap"/>
-                </Border>
-                <WrapPanel Orientation="Horizontal" Margin="0,8,0,0">
-                  <Button x:Name="BtnFolderPick" Content="Choose folder..." Style="{StaticResource GhostBtn}" Margin="0,0,6,6"/>
-                  <Button x:Name="BtnNetFind" Content="Find a PC..." Style="{StaticResource GhostBtn}" Margin="0,0,6,6"/>
+                           TextWrapping="Wrap" Margin="8,0,8,5"/>
+                <!-- The drives of this PC as pick rows - the things a technician actually backs up
+                     onto - plus one row for another PC and one for a folder of their choosing. A
+                     restore adds the backups it finds on the chosen drive underneath. -->
+                <ScrollViewer MaxHeight="190" VerticalScrollBarVisibility="Auto">
+                  <ItemsControl x:Name="ListTargets">
+                    <ItemsControl.ItemTemplate>
+                      <DataTemplate>
+                        <CheckBox Style="{StaticResource PickRow}"
+                                  IsChecked="{Binding IsSelected, UpdateSourceTrigger=PropertyChanged}"/>
+                      </DataTemplate>
+                    </ItemsControl.ItemTemplate>
+                  </ItemsControl>
+                </ScrollViewer>
+                <TextBlock x:Name="TxtFolderPath" Text="No folder chosen yet" FontSize="11" Foreground="{StaticResource Ink}"
+                           TextWrapping="Wrap" Margin="8,7,8,0"/>
+                <WrapPanel Orientation="Horizontal" Margin="8,8,8,0">
+                  <!-- Reached through the two rows above; kept as buttons so the handlers stay simple. -->
+                  <Button x:Name="BtnFolderPick" Content="Choose folder..." Style="{StaticResource GhostBtn}" Margin="0,0,6,6" Visibility="Collapsed"/>
+                  <Button x:Name="BtnNetFind" Content="Find a PC..." Style="{StaticResource GhostBtn}" Margin="0,0,6,6" Visibility="Collapsed"/>
                   <!-- Run on the PC that RECEIVES the backup: turns on file sharing and shares what is
                        ticked, so the other PC's Find a PC... can see it. Stop only appears while this
                        tool has shares of its own to remove. -->
@@ -1929,7 +2015,7 @@ $xaml = @'
                           Visibility="Collapsed"/>
                 </WrapPanel>
                 <TextBlock x:Name="TxtFolderNote" Text="" FontSize="11" Foreground="{StaticResource Dim}"
-                           TextWrapping="Wrap" Margin="0,8,0,0"/>
+                           TextWrapping="Wrap" Margin="8,4,8,0"/>
               </StackPanel>
             </StackPanel>
           </Border>
@@ -2304,7 +2390,7 @@ $xaml = @'
                 <ItemsControl x:Name="ListShareDrives">
                   <ItemsControl.ItemTemplate>
                     <DataTemplate>
-                      <CheckBox Style="{StaticResource UnRow}" IsChecked="{Binding IsSelected, UpdateSourceTrigger=PropertyChanged}"/>
+                      <CheckBox Style="{StaticResource PickRow}" IsChecked="{Binding IsSelected, UpdateSourceTrigger=PropertyChanged}"/>
                     </DataTemplate>
                   </ItemsControl.ItemTemplate>
                 </ItemsControl>
@@ -2316,7 +2402,7 @@ $xaml = @'
                 <ItemsControl x:Name="ListShareFolders">
                   <ItemsControl.ItemTemplate>
                     <DataTemplate>
-                      <CheckBox Style="{StaticResource UnRow}" IsChecked="{Binding IsSelected, UpdateSourceTrigger=PropertyChanged}"/>
+                      <CheckBox Style="{StaticResource PickRow}" IsChecked="{Binding IsSelected, UpdateSourceTrigger=PropertyChanged}"/>
                     </DataTemplate>
                   </ItemsControl.ItemTemplate>
                 </ItemsControl>
@@ -3073,7 +3159,7 @@ foreach ($n in 'ListApps','BarOverall','TxtOverall','TxtLog','TxtStatus','TxtCat
                'PanelAccounts','PanelMigrate','BtnTabMigrate','BtnNewAccount','TxtAcctHint','BtnMigrate',
                'BtnModeProfile','BtnModeFolder','BtnModeRestore','PanelFolderPick','TxtFolderWhat',
                'TxtFromTitle','TxtFromWhat','TxtToTitle','TxtToWhat','SrcColumn','DstColumn',
-               'TxtFolderPath','BtnFolderPick','TxtFolderNote','BtnNetFind',
+               'TxtFolderPath','BtnFolderPick','TxtFolderNote','BtnNetFind','ListTargets',
                'NetOverlay','BtnNetScan','BtnNetStop','TxtNetStatus','ListNetHosts','TreeNetShares',
                'TxtNetManual','HintNetManual',
                'TxtNetNote','BtnNetCancel','BtnNetUse',
@@ -3731,9 +3817,9 @@ function Update-Dash {
         if ($src -and $dst) { $TxtStatus.Text = "$($src.Name)  ->  $($dst.Name)    |    $n item(s) to copy" }
         elseif ($src) { $TxtStatus.Text = "From $($src.Name) - now pick a destination account" }
         else { $TxtStatus.Text = $(switch ($script:BackupMode) {
-                                     'folder'  { 'Pick the account to back up, then the folder to back it up to' }
-                                     'restore' { 'Pick the backup folder, then the account to restore into' }
-                                     default   { 'Pick the profile to copy FROM' } }) }
+                                     'folder'  { 'Pick the account to back up, then the drive to back it up to' }
+                                     'restore' { 'Pick the drive the backup is on, then the account to restore into' }
+                                     default   { 'Pick the account to copy FROM' } }) }
     } else {
         $TxtStatus.Text = ''
     }
@@ -6867,7 +6953,7 @@ function Update-UserEmptyStates {
         $EmptyMigrate.Text = $(if ($script:SrcPick) {
                 "Nothing to copy from `"$($script:SrcPick)`" - none of the usual data folders exist in that profile."
             } else { $(switch ($script:BackupMode) {
-                          'restore' { "Choose the backup folder on the left.`n`nWhat it contains appears here." }
+                          'restore' { "Pick the drive the backup is on, then the backup, on the left.`n`nWhat it contains appears here." }
                           default   { "Pick a profile on the left.`n`nIts folders appear here once selected." } }) })
         $EmptyMigrate.Visibility = 'Visible'
     }
@@ -17000,7 +17086,8 @@ function Find-NetworkHosts([scriptblock]$Tick, [int]$TimeoutMs = 600, [scriptblo
 #   profile  - another account on this machine        (srcKind profile -> dstKind profile)
 #   folder   - a drive, a USB stick, a share          (srcKind profile -> dstKind folder)
 #   restore  - a backup put back into an account      (srcKind folder  -> dstKind profile)
-$script:BackupMode = 'profile'
+# Backup is the job this tab is opened for most, so it is the one that is up when it opens.
+$script:BackupMode = 'folder'
 $script:FolderPath = ''
 # Filled in by Load-Users; Sync-UserHint can be called before it has ever run.
 $script:MsaNames   = @()
@@ -17018,23 +17105,19 @@ function Sync-BackupMode {
 
     switch ($script:BackupMode) {
         'folder' {
-            $TxtFolderWhat.Text = 'Back up to this folder:'
-            $TxtFolderNote.Text = 'A drive, a USB stick or a network share. It must be outside the profile being ' +
-                                  'copied - a folder inside it would be copied into itself and fill the disk. ' +
-                                  'Running this again later copies only what has changed.'
+            $TxtFolderWhat.Text = 'Back up to this drive:'
+            $TxtFolderNote.Text = 'Running this again later copies only what has changed; nothing already on the drive is deleted.'
             $TxtFolderNote.Foreground = $window.FindResource('Dim')
             $BtnMigrate.Content = 'Back Up Data'
         }
         'restore' {
-            $TxtFolderWhat.Text = 'Restore from this backup folder:'
-            $TxtFolderNote.Text = 'Pick the folder a previous backup was written to. It has to contain the ' +
-                                  'pc2go-backup.json this tool writes, so an ordinary folder cannot be poured ' +
-                                  'over a profile by mistake.'
+            $TxtFolderWhat.Text = 'Restore from this drive:'
+            $TxtFolderNote.Text = 'Pick the drive the backup is on. The backups this tool wrote there are listed underneath it.'
             $TxtFolderNote.Foreground = $window.FindResource('Dim')
             $BtnMigrate.Content = 'Restore Data'
         }
         default {
-            $BtnMigrate.Content = 'Back Up Data'
+            $BtnMigrate.Content = 'Copy Data'
         }
     }
     # The column headings are part of the instruction, not decoration. Left at 'the new
@@ -17042,17 +17125,18 @@ function Sync-BackupMode {
     switch ($script:BackupMode) {
         'folder' {
             $TxtFromTitle.Text = 'Back up FROM'; $TxtFromWhat.Text = 'this account'
-            $TxtToTitle.Text   = 'Back up TO';   $TxtToWhat.Text   = 'a drive, USB or another PC'
+            $TxtToTitle.Text   = 'Back up TO';   $TxtToWhat.Text   = 'a drive, a USB stick or another PC'
         }
         'restore' {
-            $TxtFromTitle.Text = 'Restore FROM'; $TxtFromWhat.Text = 'a backup folder'
+            $TxtFromTitle.Text = 'Restore FROM'; $TxtFromWhat.Text = 'a drive, a USB stick or another PC'
             $TxtToTitle.Text   = 'Restore INTO'; $TxtToWhat.Text   = 'this account'
         }
         default {
-            $TxtFromTitle.Text = 'Copy FROM'; $TxtFromWhat.Text = 'the broken profile'
-            $TxtToTitle.Text   = 'Copy TO';   $TxtToWhat.Text   = 'the new profile'
+            $TxtFromTitle.Text = 'Copy FROM'; $TxtFromWhat.Text = 'this account'
+            $TxtToTitle.Text   = 'Copy TO';   $TxtToWhat.Text   = 'this other account'
         }
     }
+    if ($script:BackupMode -ne 'profile' -and (Get-Command Build-TargetList -ErrorAction SilentlyContinue)) { Build-TargetList }
     # The picker MOVES between the columns rather than being duplicated in both.
     #
     # For a drive backup the folder is the destination, so it belongs on the right. For a
@@ -17086,7 +17170,7 @@ function Select-BackupMode([string]$Which) {
     # "back up to a drive" into "restore" pointed the restore at a folder that never held a
     # manifest, with the note under it still describing free space. Chosen again, on purpose.
     $script:FolderPath = ''
-    $TxtFolderPath.Text = 'No folder chosen yet'
+    $TxtFolderPath.Text = 'Nothing chosen yet'
     # The item list is built from whatever the SOURCE is, and restore reads its list out of the
     # backup rather than off a profile, so ticks carried over from the previous mode mean nothing.
     Sync-BackupMode
@@ -17472,10 +17556,22 @@ function Expand-NetNode($Node) {
 # two places a USB stick would leave it. Nothing downstream knows or cares that the folder happens
 # to be on another machine; a share is just a directory to robocopy.
 function Set-BackupFolder([string]$Path, [string]$User, [string]$Password) {
-    $script:FolderPath  = ([string]$Path).TrimEnd([char]92)
+    # A bare drive keeps its separator: "D:" alone means "wherever the current directory on D:
+    # is", which is nobody's backup target.
+    $script:FolderPath  = $(if (([string]$Path) -match '^[A-Za-z]:\\$') { [string]$Path } else { ([string]$Path).TrimEnd([char]92) })
     $script:NetUser     = [string]$User
     $script:NetPassword = [string]$Password
-    $TxtFolderPath.Text = $script:FolderPath
+    if (-not $script:FolderPath) {
+        # unticked, or a picker that was cancelled: back to nothing chosen, with the mode's own note
+        $TxtFolderPath.Text = 'Nothing chosen yet'
+        $TxtFolderNote.Text = $(if ($script:BackupMode -eq 'restore') { 'Pick the drive the backup is on. The backups this tool wrote there are listed underneath it.' }
+                                else { 'Running this again later copies only what has changed; nothing already on the drive is deleted.' })
+        $TxtFolderNote.Foreground = $window.FindResource('Dim')
+        Build-MigrateList
+        Update-Dash
+        return
+    }
+    $TxtFolderPath.Text = $(if ($script:BackupMode -eq 'restore') { "Restore from:  $($script:FolderPath)" } else { "Back up into:  $($script:FolderPath)\$(Get-BackupFolderName $(if ($script:SrcPick) { $script:SrcPick } else { '<account>' }))" })
 
     # Say what is actually there, NOW, rather than letting the technician find out after the
     # confirm. A restore especially: a folder without a manifest is refused by the worker anyway,
@@ -17768,6 +17864,106 @@ $BtnNetUse.Add_Click({
     Set-BackupFolder $path $user $pw
     $NetOverlay.Visibility = 'Collapsed'
 })
+
+# ---------- where a backup goes, or comes from: the target list ----------
+#
+# The drives of this PC as pick rows, because that is what a technician backs up onto, plus one
+# row for another PC on the network and one for a folder of their choosing. It replaced a text box
+# reading "No folder chosen yet" with a Choose folder... button under it, which described the job
+# as a folder when the job is a drive. In restore mode, choosing a drive lists the backups this
+# tool wrote on it underneath, so the technician picks a backup rather than remembering a path.
+$script:Targets = New-Object System.Collections.ObjectModel.ObservableCollection[object]
+$script:TargetBusy = $false
+
+function New-TargetRow([string]$Id, [string]$Name, [string]$Sub, [string]$Path, [string]$Kind, [string]$Bg, [string]$Glyph) {
+    $u = New-Object AppItem
+    $u.Id = $Id; $u.Name = $Name; $u.Publisher = $Sub; $u.UnArgs = $Path; $u.RegKey = $Kind
+    $u.IconText = $Glyph; $u.IconBg = $Bg; $u.IconData = $IconMap['default'][0]
+    $u.Size = ''
+    $u.add_PropertyChanged({ param($s, $e) if ($e.PropertyName -eq 'IsSelected') { Select-Target $s } })
+    return $u
+}
+
+function Build-TargetList([string]$OpenDrive = '') {
+    $script:TargetBusy = $true
+    try {
+        $ListTargets.ItemsSource = $null
+        $script:Targets.Clear()
+        $restore = ($script:BackupMode -eq 'restore')
+        foreach ($d in @([IO.DriveInfo]::GetDrives())) {
+            try {
+                if (-not $d.IsReady -or "$($d.DriveType)" -notin 'Fixed', 'Removable') { continue }
+                $letter = $d.Name.TrimEnd([char]92)
+                $label = $(if ($d.VolumeLabel) { $d.VolumeLabel } else { $(if ("$($d.DriveType)" -eq 'Removable') { 'USB drive' } else { 'Local Disk' }) })
+                $sub = "$(Format-Size $d.AvailableFreeSpace) free of $(Format-Size $d.TotalSize)"
+                if ("$($d.DriveType)" -eq 'Removable') { $sub += '   -   removable' }
+                $row = New-TargetRow "tgt-$letter" "$label ($letter)" $sub $d.Name 'drive' $(if ("$($d.DriveType)" -eq 'Removable') { '#FFF59E0B' } else { '#FF2563EB' }) $letter.Substring(0, 1)
+                if ($restore -and $OpenDrive -and (Get-ShareKey $d.Name) -eq (Get-ShareKey $OpenDrive)) { $row.Size = 'OPEN' }
+                $script:Targets.Add($row)
+                # Restore: the backups on the OPENED drive, straight under it
+                if ($restore -and $OpenDrive -and (Get-ShareKey $d.Name) -eq (Get-ShareKey $OpenDrive)) {
+                    $found = @(Get-ChildItem -LiteralPath $d.Name -Directory -Filter 'PC2Go Backup - *' -ErrorAction SilentlyContinue |
+                               Where-Object { Test-Path -LiteralPath (Join-Path $_.FullName 'pc2go-backup.json') } | Sort-Object LastWriteTime -Descending)
+                    if (-not $found.Count) {
+                        $script:Targets.Add((New-TargetRow "tgt-none-$letter" 'No backups from this tool on this drive' 'Pick another drive, another PC, or a folder below' '' 'none' '#FF4A4A52' '-'))
+                    }
+                    foreach ($f in $found) {
+                        $when = ''
+                        try { $mf = (Get-Content -LiteralPath (Join-Path $f.FullName 'pc2go-backup.json') -Raw).TrimStart([char]0xFEFF) | ConvertFrom-Json
+                              $when = ([datetime]$mf.finishedUtc).ToLocalTime().ToString('d MMM yyyy, HH:mm') + "   -   $(@($mf.items).Count) folder(s) of $($mf.sourceProfile)" } catch { $when = $f.LastWriteTime.ToString('d MMM yyyy, HH:mm') }
+                        $script:Targets.Add((New-TargetRow "tgt-bk-$($f.Name)" $f.Name $when $f.FullName 'backup' '#FF34D399' 'B'))
+                    }
+                }
+            } catch { }
+        }
+        $script:Targets.Add((New-TargetRow 'tgt-net' 'Another PC on the network...' $(if ($restore) { 'A PC that holds the backup - it must be sharing a folder' } else { 'A PC running this tool with Share this PC pressed, or any shared folder' }) '' 'net' '#FF8A6A32' 'PC'))
+        $script:Targets.Add((New-TargetRow 'tgt-pick' 'A folder I choose...' $(if ($restore) { 'The backup folder itself, anywhere' } else { 'Any folder outside the profile being backed up' }) '' 'pick' '#FF64748B' '..'))
+        $ListTargets.ItemsSource = $script:Targets
+    } finally { $script:TargetBusy = $false }
+}
+
+# A row was ticked (or unticked). Single-choice, like every other list on this tab; the drive
+# and backup rows set the folder directly, the other two open the picker they stand for.
+function Select-Target([object]$Row) {
+    if ($script:TargetBusy) { return }
+    $script:TargetBusy = $true
+    try {
+        if (-not $Row.IsSelected) {
+            if ((Get-ShareKey $script:FolderPath) -eq (Get-ShareKey $Row.UnArgs)) { Set-BackupFolder '' '' '' }
+            return
+        }
+        foreach ($x in $script:Targets) { if (-not [object]::ReferenceEquals($x, $Row)) { $x.IsSelected = $false } }
+    } finally { $script:TargetBusy = $false }
+    switch ([string]$Row.RegKey) {
+        'drive' {
+            if ($script:BackupMode -eq 'restore') {
+                # open the drive: rebuild with its backups listed, and keep it ticked
+                Build-TargetList ([string]$Row.UnArgs)
+                $script:TargetBusy = $true
+                try { foreach ($x in $script:Targets) { if ($x.RegKey -eq 'drive' -and (Get-ShareKey $x.UnArgs) -eq (Get-ShareKey $Row.UnArgs)) { $x.IsSelected = $true } } } finally { $script:TargetBusy = $false }
+                $one = @($script:Targets | Where-Object { $_.RegKey -eq 'backup' })
+                if ($one.Count -eq 1) { $script:TargetBusy = $true; try { $one[0].IsSelected = $true } finally { $script:TargetBusy = $false }; Set-BackupFolder ([string]$one[0].UnArgs) '' '' }
+                else { Set-BackupFolder '' '' ''; if ($one.Count) { $TxtFolderNote.Text = "$($one.Count) backups on this drive - pick one."; $TxtFolderNote.Foreground = $window.FindResource('Muted') } }
+            } else {
+                Set-BackupFolder ([string]$Row.UnArgs) '' ''
+            }
+        }
+        'backup' { Set-BackupFolder ([string]$Row.UnArgs) '' '' }
+        'net'    { Invoke-TargetButton $BtnNetFind $Row }
+        'pick'   { Invoke-TargetButton $BtnFolderPick $Row }
+        default  { $script:TargetBusy = $true; try { $Row.IsSelected = $false } finally { $script:TargetBusy = $false } }
+    }
+}
+
+# The picker rows stay ticked only if a folder actually came out of the dialog.
+function Invoke-TargetButton([object]$Button, [object]$Row) {
+    $before = [string]$script:FolderPath
+    $Button.RaiseEvent((New-Object Windows.RoutedEventArgs([Windows.Controls.Primitives.ButtonBase]::ClickEvent)))
+    # the network dialog is modal-in-place and sets the folder later; the folder picker is synchronous
+    if ($Row.RegKey -eq 'pick' -and [string]$script:FolderPath -eq $before) {
+        $script:TargetBusy = $true; try { $Row.IsSelected = $false } finally { $script:TargetBusy = $false }
+    }
+}
 
 # ---------- Share this PC ----------
 #

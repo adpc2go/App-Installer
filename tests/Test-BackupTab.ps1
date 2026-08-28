@@ -217,10 +217,47 @@ try {
     Assert-Equal 'a folder without a manifest is refused up front' 'Not a backup this tool wrote' (Get-OverlayTitle)
     Dismiss-Overlay
 
+    # ================================================================== 1b. the target list
+    Write-Section '1b. Restore lists the backups on the drive you pick; Backup lists the drives'
+
+    # still in restore mode: the drive holding the fake backup is the system drive's parent of
+    # %TEMP%, so the backup made above is NOT at a drive root and must not be listed - but a real
+    # one at a root must be. Plant one, pick the drive, see it.
+    $rootBk = Join-Path ($env:SystemDrive + '\') "PC2Go Backup - FAKEPC - rootuser-$tag"
+    New-Item -ItemType Directory -Force -Path (Join-Path $rootBk 'Music') | Out-Null
+    Copy-Item -LiteralPath (Join-Path $bk 'pc2go-backup.json') -Destination (Join-Path $rootBk 'pc2go-backup.json')
+    try {
+        Assert-True  'the list has the system drive'          ([bool]@($script:Targets | Where-Object { $_.RegKey -eq 'drive' -and $_.UnArgs -eq ($env:SystemDrive + '\') }).Count)
+        Assert-True  'and the two other ways in'               (@($script:Targets | Where-Object { $_.RegKey -in 'net', 'pick' }).Count -eq 2)
+        Assert-Equal 'no backups are listed before a drive is opened' 0 @($script:Targets | Where-Object { $_.RegKey -eq 'backup' }).Count
+        $drv = @($script:Targets | Where-Object { $_.RegKey -eq 'drive' -and $_.UnArgs -eq ($env:SystemDrive + '\') })[0]
+        $drv.IsSelected = $true
+        $found = @($script:Targets | Where-Object { $_.RegKey -eq 'backup' })
+        Assert-True  'opening the drive lists the backup at its root' ([bool]@($found | Where-Object { $_.UnArgs -eq $rootBk }).Count)
+        Assert-True  'described from its manifest'             ([bool]@($found | Where-Object { $_.UnArgs -eq $rootBk -and $_.Publisher -like '*FAKEPC*' -or $_.Publisher -like '*folder(s) of*' }).Count)
+        $pick = @($found | Where-Object { $_.UnArgs -eq $rootBk })[0]
+        $pick.IsSelected = $true
+        Assert-Equal 'ticking the backup makes it the restore source' $rootBk "$($script:FolderPath)"
+        Assert-True  'the path line says so'                   ($TxtFolderPath.Text -like "Restore from:*$rootBk")
+        Assert-Equal 'and its folder is offered'               'Music' "$($script:MigrateItems[0].Name)"
+        $pick.IsSelected = $false
+        Assert-Equal 'unticking it clears the source'          '' "$($script:FolderPath)"
+    } finally { Remove-Item -LiteralPath $rootBk -Recurse -Force -ErrorAction SilentlyContinue }
+
+    Select-BackupMode 'folder'
+    Assert-Equal 'Backup mode rebuilt the list with drives'    0 @($script:Targets | Where-Object { $_.RegKey -eq 'backup' }).Count
+    $drv = @($script:Targets | Where-Object { $_.RegKey -eq 'drive' })[0]
+    $drv.IsSelected = $true
+    Assert-Equal 'ticking a drive makes it the target'         $drv.UnArgs "$($script:FolderPath)"
+    Assert-True  'the path line shows where the backup will land' ($TxtFolderPath.Text -like 'Back up into:*PC2Go Backup - *')
+    $drv.IsSelected = $false
+    Assert-Equal 'unticking it clears the target'              '' "$($script:FolderPath)"
+    Assert-Equal 'a cancelled folder pick leaves nothing ticked' 0 @($script:Targets | Where-Object { $_.IsSelected }).Count
+
     # ================================================================== 2. drive/USB refusals
     Write-Section '2. Drive/USB mode: the loops are refused before measuring'
 
-    Select-BackupMode 'folder'
+    Select-BackupMode 'restore'; Select-BackupMode 'folder'
     Assert-Equal 'switching mode forgot the folder'             '' "$($script:FolderPath)"
     $meSrc.IsSelected = $true
     $inside = Join-Path $myProfile "pc2go-bk-$tag"
