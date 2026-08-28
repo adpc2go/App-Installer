@@ -1918,10 +1918,16 @@ $xaml = @'
                   <TextBlock x:Name="TxtFolderPath" Text="No folder chosen yet" FontSize="11.5"
                              Foreground="{StaticResource Ink}" TextWrapping="Wrap"/>
                 </Border>
-                <StackPanel Orientation="Horizontal" Margin="0,8,0,0">
-                  <Button x:Name="BtnFolderPick" Content="Choose folder..." Style="{StaticResource GhostBtn}"/>
-                  <Button x:Name="BtnNetFind" Content="Find a PC..." Style="{StaticResource GhostBtn}" Margin="6,0,0,0"/>
-                </StackPanel>
+                <WrapPanel Orientation="Horizontal" Margin="0,8,0,0">
+                  <Button x:Name="BtnFolderPick" Content="Choose folder..." Style="{StaticResource GhostBtn}" Margin="0,0,6,6"/>
+                  <Button x:Name="BtnNetFind" Content="Find a PC..." Style="{StaticResource GhostBtn}" Margin="0,0,6,6"/>
+                  <!-- Run on the PC that RECEIVES the backup: turns on file sharing and shares what is
+                       ticked, so the other PC's Find a PC... can see it. Stop only appears while this
+                       tool has shares of its own to remove. -->
+                  <Button x:Name="BtnShareThis" Content="Share this PC" Style="{StaticResource GhostBtn}" Margin="0,0,6,6"/>
+                  <Button x:Name="BtnShareStop" Content="Stop sharing" Style="{StaticResource GhostBtn}" Margin="0,0,6,6"
+                          Visibility="Collapsed"/>
+                </WrapPanel>
                 <TextBlock x:Name="TxtFolderNote" Text="" FontSize="11" Foreground="{StaticResource Dim}"
                            TextWrapping="Wrap" Margin="0,8,0,0"/>
               </StackPanel>
@@ -2266,6 +2272,71 @@ $xaml = @'
               <Button x:Name="BtnNetUse" Content="Use this folder" Style="{StaticResource AccentBtn}" Padding="26,8"/>
             </StackPanel>
           </StackPanel>
+        </Border>
+      </Border>
+
+      <!-- Share this PC: what on THIS machine the other PC may back up into. Drives are listed
+           with a tick each; folders are added with the picker and appear ticked. Both lists are
+           AppItem rows in the same row style as every other list here. -->
+      <Border x:Name="ShareOverlay" Grid.Row="0" Grid.RowSpan="3" CornerRadius="16" Background="#DD0E0E12"
+              Visibility="Collapsed">
+        <Border CornerRadius="14" Background="{StaticResource Raised}" BorderThickness="1" BorderBrush="{StaticResource Line}"
+                Width="600" MaxHeight="620" Padding="28,24" VerticalAlignment="Center" HorizontalAlignment="Center">
+          <Grid>
+            <Grid.RowDefinitions>
+              <RowDefinition Height="Auto"/>
+              <RowDefinition Height="*"/>
+              <RowDefinition Height="Auto"/>
+              <RowDefinition Height="Auto"/>
+            </Grid.RowDefinitions>
+            <StackPanel Grid.Row="0">
+              <TextBlock Text="Share this PC on the network" FontSize="17" FontWeight="SemiBold"/>
+              <TextBlock x:Name="TxtShareIntro" Text="" FontSize="11.5" Foreground="{StaticResource Muted}"
+                         TextWrapping="Wrap" Margin="0,6,0,12"/>
+            </StackPanel>
+            <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto">
+              <StackPanel>
+                <StackPanel Orientation="Horizontal" Margin="10,2,0,4">
+                  <Rectangle Width="3" Height="13" Fill="{StaticResource Accent}" RadiusX="1.5" RadiusY="1.5" VerticalAlignment="Center"/>
+                  <TextBlock Text="Whole drives" FontSize="12" FontWeight="Bold" Foreground="{StaticResource Ink}" Margin="8,0,6,0"/>
+                  <TextBlock Text="tick to share the entire drive" FontSize="10.5" Foreground="{StaticResource Dim}" VerticalAlignment="Center"/>
+                </StackPanel>
+                <ItemsControl x:Name="ListShareDrives">
+                  <ItemsControl.ItemTemplate>
+                    <DataTemplate>
+                      <CheckBox Style="{StaticResource UnRow}" IsChecked="{Binding IsSelected, UpdateSourceTrigger=PropertyChanged}"/>
+                    </DataTemplate>
+                  </ItemsControl.ItemTemplate>
+                </ItemsControl>
+                <StackPanel Orientation="Horizontal" Margin="10,12,0,4">
+                  <Rectangle Width="3" Height="13" Fill="{StaticResource Good}" RadiusX="1.5" RadiusY="1.5" VerticalAlignment="Center"/>
+                  <TextBlock Text="Folders" FontSize="12" FontWeight="Bold" Foreground="{StaticResource Ink}" Margin="8,0,6,0"/>
+                  <TextBlock Text="untick one to leave it out" FontSize="10.5" Foreground="{StaticResource Dim}" VerticalAlignment="Center"/>
+                </StackPanel>
+                <ItemsControl x:Name="ListShareFolders">
+                  <ItemsControl.ItemTemplate>
+                    <DataTemplate>
+                      <CheckBox Style="{StaticResource UnRow}" IsChecked="{Binding IsSelected, UpdateSourceTrigger=PropertyChanged}"/>
+                    </DataTemplate>
+                  </ItemsControl.ItemTemplate>
+                </ItemsControl>
+                <TextBlock x:Name="EmptyShareFolders" Text="No folders added yet." FontSize="11.5" Foreground="{StaticResource Dim}"
+                           Margin="12,4,10,4"/>
+                <Button x:Name="BtnShareAddFolder" Content="Add folder..." Style="{StaticResource GhostBtn}"
+                        HorizontalAlignment="Left" Margin="10,6,0,4"/>
+              </StackPanel>
+            </ScrollViewer>
+            <StackPanel Grid.Row="2" Margin="0,12,0,0">
+              <CheckBox x:Name="ChkShareAnyone" Content="Let anyone on the network open it (no password)" IsChecked="False"
+                        Foreground="{StaticResource Ink}" FontSize="12"/>
+              <TextBlock x:Name="TxtShareNote" Text="" FontSize="11" Foreground="{StaticResource Dim}"
+                         TextWrapping="Wrap" Margin="0,8,0,0"/>
+            </StackPanel>
+            <StackPanel Grid.Row="3" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,18,0,0">
+              <Button x:Name="BtnShareCancel" Content="Cancel" Style="{StaticResource GhostBtn}" Padding="22,8"/>
+              <Button x:Name="BtnShareOk" Content="Share" Style="{StaticResource AccentBtn}" Padding="26,8"/>
+            </StackPanel>
+          </Grid>
         </Border>
       </Border>
 
@@ -3006,6 +3077,8 @@ foreach ($n in 'ListApps','BarOverall','TxtOverall','TxtLog','TxtStatus','TxtCat
                'NetOverlay','BtnNetScan','BtnNetStop','TxtNetStatus','ListNetHosts','TreeNetShares',
                'TxtNetManual','HintNetManual',
                'TxtNetNote','BtnNetCancel','BtnNetUse',
+               'BtnShareThis','BtnShareStop','ShareOverlay','TxtShareIntro','ListShareDrives','ListShareFolders',
+               'EmptyShareFolders','BtnShareAddFolder','ChkShareAnyone','TxtShareNote','BtnShareCancel','BtnShareOk',
                'BtnTabTools','PanelTools','ListFix','PanelGrid','BtnRunFix',
                'AutoLogonOverlay','TxtAlUser','HintAlUser','TxtAlPw','HintAlPw','BtnAlCancel','BtnAlOk',
                'NewUserOverlay','ChkNewAdmin','BtnNewUserCancel','BtnNewUserOk',
@@ -3604,6 +3677,7 @@ function Update-Dash {
                ($script:BatchTab -eq 'Tweak' -and $PanelTweak.Visibility -eq 'Visible') -or
                ($script:BatchTab -eq 'Users' -and $PanelAccounts.Visibility -eq 'Visible') -or
                ($script:BatchTab -eq 'Migrate' -and $PanelMigrate.Visibility -eq 'Visible') -or
+               ($script:BatchTab -eq 'Share' -and $PanelMigrate.Visibility -eq 'Visible') -or
                ($script:BatchTab -eq 'Fw' -and $PanelFw.Visibility -eq 'Visible') -or
                ($script:BatchTab -eq 'Tools' -and $PanelTools.Visibility -eq 'Visible')
     $RowNow.Visibility = $(if (($running -or $script:Phase -eq 'Done') -and $onOwner) { 'Visible' } else { 'Collapsed' })
@@ -4350,6 +4424,7 @@ function Test-BatchBusy {
         # a sentence about a tab the technician was not on, describing work nobody started.
         'Users'   { 'An account change is still running.' }
         'Migrate' { 'A backup or restore is still copying.' }
+        'Share'   { 'A sharing change is still running.' }
         'Fw'      { 'A firewall batch is still running.' }
         'Tools'   { 'A repair is still running.' }
         default   { 'Apps are still downloading or installing.' }
@@ -4429,6 +4504,8 @@ function Select-Tab([string]$Which) {
             $BtnTabMigrate.Style = $window.FindResource('TabActive')
             $BtnMigrate.Visibility = 'Visible'
             if (-not $script:UsersLoaded) { $script:UsersLoaded = $true; Load-Users }
+            # shares can be made or removed outside this tool; re-read them on every visit
+            if (Get-Command Sync-ShareButtons -ErrorAction SilentlyContinue) { Sync-ShareButtons }
         }
         'Tools' {
             $PanelTools.Visibility = 'Visible'
@@ -7667,6 +7744,74 @@ function Start-UserBatch([string]$Action, [hashtable]$Data) {
         default         { 'Working...' }
     }
     Add-Log "$($row.Name) - started."
+}
+
+# Share this PC / Stop sharing. One elevated batch, one UAC prompt, one row per thing so each
+# reports its own result. For 'shareon' the first row turns sharing on and every share row is
+# CHAINED behind it: if sharing cannot be turned on, nothing is half-shared. For 'shareoff' the
+# last row turns sharing back off, and only if nothing else on the machine is still shared.
+# $Items: for shareon, an array of @{ path; name } hashtables; for shareoff, an array of share names.
+function Start-ShareBatch([string]$Action, [object[]]$Items, [bool]$Anyone = $false) {
+    $rows = @(); $entries = @()
+    if ($Action -eq 'shareon') {
+        $r = New-Object AppItem; $r.Id = 'share-setup'; $r.Name = 'Turn on file sharing'
+        $rows += $r
+        $entries += @{ id = 'share-setup'; action = 'sharesetup'; chain = $true; anyone = $Anyone }
+        $i = 0
+        foreach ($it in $Items) {
+            $i++
+            $r = New-Object AppItem; $r.Id = "share-$i"; $r.Name = "Share $($it.path) as `"$($it.name)`""
+            $rows += $r
+            $entries += @{ id = "share-$i"; action = 'shareon'; chain = $true; path = [string]$it.path; name = [string]$it.name; anyone = $Anyone }
+        }
+    } else {
+        $i = 0
+        foreach ($n in $Items) {
+            $i++
+            $r = New-Object AppItem; $r.Id = "share-$i"; $r.Name = "Stop sharing `"$n`""
+            $rows += $r
+            $entries += @{ id = "share-$i"; action = 'shareoff'; name = [string]$n }
+        }
+        $r = New-Object AppItem; $r.Id = 'share-down'; $r.Name = 'Turn file sharing back off if nothing else is shared'
+        $rows += $r
+        $entries += @{ id = 'share-down'; action = 'sharedown' }
+    }
+    foreach ($r in $rows) {
+        $r.Category = 'Sharing'; $r.IconBg = '#FF2563EB'; $r.IconData = $IconMap['default'][0]
+        Set-Status $r 'Queued' 'neutral'; Set-Ring $r 'queued'
+    }
+    $script:RunStarted = Get-Date
+    $script:Pending = $rows
+    $script:DlIndex = 0
+    $script:LastLogKey = @{}
+    $script:BatchTab = 'Share'
+    $script:HadFailures = $false
+    $script:WorkerStarted = $false
+    $script:EndQueued = $false
+    $script:Paused = $false
+    $script:AwaitingScan = $false
+    Remove-Item -LiteralPath $script:QueuePath, $script:StatusPath, $script:CancelPath, $script:SkipPath -ErrorAction SilentlyContinue
+    Show-BatchStrip
+    if (-not (Start-Worker)) {
+        Abort-Batch 'elevation declined'
+        return
+    }
+    foreach ($e in $entries) {
+        Add-Content -Path $script:QueuePath -Value ((Protect-QueueEntry $e) | ConvertTo-Json -Compress -Depth 4) -Encoding UTF8
+    }
+    Add-Content -Path $script:QueuePath -Value '{"end":true}' -Encoding UTF8
+    $script:EndQueued = $true
+    $script:Phase = 'Install'
+    $BtnMigrate.IsEnabled = $false
+    $BtnInstall.IsEnabled = $false
+    $BtnShareThis.IsEnabled = $false
+    $BtnShareStop.IsEnabled = $false
+    $BtnCancel.Visibility = 'Visible'
+    $TxtNow.Text = $rows[0].Name
+    $DotNow.Fill = '#FF4C8DFF'
+    $RowNow.Visibility = 'Visible'
+    $TxtStatus.Text = $(if ($Action -eq 'shareon') { 'Turning on file sharing...' } else { 'Removing shares...' })
+    Add-Log "Sharing: $Action for $($Items.Count) item(s) - started."
 }
 
 # Several elevated steps behind ONE UAC prompt. The worker already consumes the queue in
@@ -11700,6 +11845,302 @@ function Remove-NamedFwRules($app) {
 }
 
 
+# ---------- network sharing: make THIS PC a place the other PC can back up into ----------
+#
+# The Backup tab can copy to another PC only if that PC shares something. These four actions
+# are what "Share this PC" and "Stop sharing" queue: turn file sharing on, create a share per
+# ticked drive or folder, remove the shares this tool made, and turn sharing back off when
+# nothing else is shared. Every share this tool creates carries the description below, and
+# Stop touches NOTHING without it - a share somebody set up by hand is theirs.
+#
+# Access is by sign-in with an account of this PC (Authenticated Users on the share, NTFS left
+# alone), because that is exactly what the Find a PC... prompt on the other end asks for.
+# "Anyone on the network" grants Everyone AND switches the Guest account on - which is all
+# Windows' own "turn off password protected sharing" does - and Stop switches it back off.
+$script:ShareTag = 'PC2Go share'
+$script:ShareGuestMark = 'HKLM:\SOFTWARE\PC2Go'
+
+function Test-SmbModule { return [bool](Get-Command New-SmbShare -ErrorAction SilentlyContinue) }
+
+function Get-WellKnownName([string]$Sid, [string]$Fallback) {
+    try { return (New-Object Security.Principal.SecurityIdentifier $Sid).Translate([Security.Principal.NTAccount]).Value } catch { return $Fallback }
+}
+
+# One spelling of a path for comparisons: full, lower-case, no trailing separator - except a
+# bare drive root, which keeps it because "C:" alone means "the current directory on C:".
+function Get-ShareKey([string]$Path) {
+    if (-not $Path) { return '' }
+    $p = ''
+    try { $p = [IO.Path]::GetFullPath($Path) } catch { return '' }
+    if ($p -match '^[A-Za-z]:\\$') { return $p.ToLower() }
+    return $p.TrimEnd([char]92).ToLower()
+}
+
+# '' when the path may be shared, otherwise the sentence saying why not. Whole drives are
+# allowed on purpose - "share D:" is the commonest request there is - but the folders Windows
+# and every program live in are not: sharing Program Files hands a stranger every binary the
+# machine runs, and the worker's own cache holds the queue file.
+function Test-SharePathAllowed([string]$Path) {
+    if ([string]::IsNullOrWhiteSpace($Path)) { return 'no folder given' }
+    if ($Path.StartsWith('\\')) { return 'a network path cannot be shared from here - share it on the PC it lives on' }
+    $key = Get-ShareKey $Path
+    if (-not $key) { return "'$Path' is not a valid path" }
+    if (-not (Test-Path -LiteralPath $Path -PathType Container)) { return "'$Path' is not a folder that exists" }
+    $bad = @($env:SystemRoot, $env:ProgramFiles, ${env:ProgramFiles(x86)}, $env:ProgramData) | Where-Object { $_ }
+    if ($script:CacheDir) { $bad += $script:CacheDir }
+    foreach ($b in $bad) {
+        $bk = Get-ShareKey $b
+        if (-not $bk) { continue }
+        if ($key -eq $bk -or $key.StartsWith($bk.TrimEnd([char]92) + [string][char]92)) {
+            return "'$Path' is inside $b, which this tool will not share - Windows and every installed program live there"
+        }
+    }
+    return ''
+}
+
+# Every disk share on this machine as {Name, Path, Description}, from the SmbShare module or
+# from `net share` where the module is missing. Admin shares (C$, ADMIN$, IPC$) are left out.
+function Get-AllShares {
+    $out = @()
+    if (Test-SmbModule) {
+        try {
+            foreach ($s in @(Get-SmbShare -ErrorAction Stop)) {
+                if ($s.Name.EndsWith('$')) { continue }
+                if ("$($s.ShareType)" -ne 'FileSystemDirectory') { continue }
+                $out += [pscustomobject]@{ Name = [string]$s.Name; Path = [string]$s.Path; Description = ('' + $s.Description) }
+            }
+            return $out
+        } catch { }
+    }
+    $ErrorActionPreference = 'Continue'
+    try {
+        $seen = $false
+        foreach ($line in @(& "$env:SystemRoot\System32\net.exe" share 2>$null)) {
+            if ($line -match '^-{3,}') { $seen = $true; continue }
+            if (-not $seen -or $line -match '^The command completed' -or -not $line.Trim()) { continue }
+            $parts = @($line -split '\s{2,}' | Where-Object { $_ })
+            if ($parts.Count -lt 2) { continue }
+            $n = $parts[0].Trim(); $p = $parts[1].Trim()
+            if ($n.EndsWith('$') -or $p -notmatch '^[A-Za-z]:') { continue }
+            $remark = ''
+            foreach ($d in @(& "$env:SystemRoot\System32\net.exe" share $n 2>$null)) { if ($d -match '^Remark\s+(.*)$') { $remark = $Matches[1].Trim() } }
+            $out += [pscustomobject]@{ Name = $n; Path = $p; Description = $remark }
+        }
+    } catch { }
+    return $out
+}
+
+# A share name from a path: 'C' for C:\, the folder's own name otherwise, with the characters
+# a share name cannot hold removed, and ' 2', ' 3'... when the name is already taken.
+function Get-ShareName([string]$Path, [string[]]$Taken) {
+    $p = ('' + $Path).TrimEnd([char]92)
+    $base = $(if ($p -match '^([A-Za-z]):$') { $Matches[1].ToUpper() } else { Split-Path -Leaf $p })
+    $base = ($base -replace '[\\/:*?"<>|]', '').Trim()
+    if (-not $base) { $base = 'Share' }
+    if ($base.Length -gt 60) { $base = $base.Substring(0, 60).Trim() }
+    $taken = @($Taken | ForEach-Object { ('' + $_).ToLower() })
+    $name = $base; $n = 1
+    while ($taken -contains $name.ToLower()) { $n++; $name = "$base $n" }
+    return $name
+}
+
+# The firewall rules that let other PCs reach a share. Found by the group's INDIRECT name
+# first - the display name 'File and Printer Sharing' is translated on a non-English Windows,
+# the resource id is not - then by display name, so an unusual build still resolves.
+function Get-SharingFwRules {
+    $rules = @()
+    try { $rules = @(Get-NetFirewallRule -Group '@FirewallAPI.dll,-28502' -ErrorAction Stop) } catch { }
+    if (-not $rules.Count) { try { $rules = @(Get-NetFirewallRule -DisplayGroup 'File and Printer Sharing' -ErrorAction Stop) } catch { } }
+    # Inbound only, and NEVER the Public-only rules: opening port 445 to a coffee-shop network
+    # is precisely what a technician would not do by hand.
+    return @($rules | Where-Object { "$($_.Direction)" -eq 'Inbound' -and "$($_.Profile)" -ne 'Public' })
+}
+
+# Is anything inbound on 445 enabled right now? The one fact the other PC's scan depends on.
+function Test-SmbInboundOpen {
+    try {
+        foreach ($r in @(Get-SharingFwRules)) {
+            if ("$($r.Enabled)" -ne 'True') { continue }
+            $pf = $null
+            try { $pf = $r | Get-NetFirewallPortFilter -ErrorAction Stop } catch { continue }
+            if ($pf -and ("$($pf.LocalPort)" -eq '445')) { return $true }
+        }
+    } catch { }
+    return $false
+}
+
+function Set-SharingFirewall([bool]$On) {
+    $rules = @(Get-SharingFwRules)
+    if ($rules.Count) {
+        try { $rules | Set-NetFirewallRule -Enabled $(if ($On) { 'True' } else { 'False' }) -ErrorAction Stop; return '' }
+        catch { $why = $_.Exception.Message }
+    }
+    $ErrorActionPreference = 'Continue'
+    $state = $(if ($On) { 'yes' } else { 'no' })
+    & "$env:SystemRoot\System32\netsh.exe" advfirewall firewall set rule group="File and Printer Sharing" new enable=$state profile=private,domain 2>&1 | Out-Null
+    if ($LASTEXITCODE -eq 0) { return '' }
+    return "the firewall rules for file sharing could not be changed$(if ($why) { " - $why" })"
+}
+
+function Set-GuestMark([bool]$On) {
+    try {
+        if ($On) {
+            if (-not (Test-Path -LiteralPath $script:ShareGuestMark)) { New-Item -Path $script:ShareGuestMark -Force | Out-Null }
+            New-ItemProperty -Path $script:ShareGuestMark -Name 'GuestEnabledForSharing' -Value 1 -PropertyType DWord -Force | Out-Null
+        } else {
+            Remove-ItemProperty -Path $script:ShareGuestMark -Name 'GuestEnabledForSharing' -ErrorAction SilentlyContinue
+        }
+    } catch { }
+}
+function Test-GuestMark { try { return ([int](Get-ItemProperty -LiteralPath $script:ShareGuestMark -Name 'GuestEnabledForSharing' -ErrorAction Stop).GuestEnabledForSharing -eq 1) } catch { return $false } }
+
+function Enable-Sharing($app) {
+    Write-Status $app.id 'Applying' 'turning on file sharing'
+    $did = @()
+    # 1. the Server service - without it Windows answers nothing on 445
+    try {
+        Set-SvcStart 'LanmanServer' 'Automatic'
+        $svc = Get-Service LanmanServer -ErrorAction Stop
+        if ($svc.Status -ne 'Running') { Start-Service LanmanServer -ErrorAction Stop; $did += 'started the Server service' }
+    } catch {
+        Write-Status $app.id 'Failed' "the Server service (LanmanServer) could not be started - $($_.Exception.Message)"
+        return
+    }
+    # 2. the network has to be Private. Sharing rules are off on Public by design, and this tool
+    #    will not open them there - so a Public connection is switched to Private, and if Windows
+    #    refuses (policy, or a domain profile) the technician is told what to change instead.
+    $stillPublic = @()
+    try {
+        foreach ($cp in @(Get-NetConnectionProfile -ErrorAction Stop)) {
+            if ("$($cp.NetworkCategory)" -ne 'Public') { continue }
+            if ("$($cp.IPv4Connectivity)" -eq 'Disconnected' -and "$($cp.IPv6Connectivity)" -eq 'Disconnected') { continue }
+            try {
+                Set-NetConnectionProfile -InterfaceIndex $cp.InterfaceIndex -NetworkCategory Private -ErrorAction Stop
+                $did += "set the network '$($cp.Name)' to Private"
+            } catch { $stillPublic += [string]$cp.Name }
+        }
+    } catch { }
+    if ($stillPublic.Count) {
+        Write-Status $app.id 'Failed' ("the network '$($stillPublic -join ', ')' is set to Public and could not be changed. " +
+            'File sharing is never opened on a Public network. In Settings > Network & internet, set it to Private, then try again.')
+        return
+    }
+    # 3. the firewall
+    if (-not (Test-SmbInboundOpen)) {
+        $why = Set-SharingFirewall $true
+        if ($why) { Write-Status $app.id 'Failed' $why; return }
+        if (-not (Test-SmbInboundOpen)) {
+            Write-Status $app.id 'Failed' 'the firewall rules were enabled but nothing inbound on port 445 is open - a third-party firewall may be in the way'
+            return
+        }
+        $did += 'enabled the File and Printer Sharing firewall rules for Private and Domain networks'
+    }
+    # 4. no password at all, only when asked for
+    if ($app.anyone) {
+        $ErrorActionPreference = 'Continue'
+        # the Guest account by its RID (501), never by its localised name
+        $g = $null
+        try { $g = @(Get-LocalUser -ErrorAction Stop | Where-Object { ('' + $_.SID.Value) -like '*-501' })[0] } catch { }
+        if ($g -and -not $g.Enabled) {
+            try { Enable-LocalUser -SID $g.SID -ErrorAction Stop } catch { & "$env:SystemRoot\System32\net.exe" user $g.Name /active:yes 2>&1 | Out-Null }
+            Set-GuestMark $true
+            $did += "switched the Guest account on so no password is needed (this tool switches it back off with Stop sharing)"
+        }
+    }
+    if (-not $did.Count) { Write-Status $app.id 'Applied' 'file sharing was already on - nothing to change'; return }
+    Write-Status $app.id 'Applied' ('file sharing is on: ' + ($did -join '; '))
+}
+
+function New-PC2GoShare($app) {
+    $path = [string]$app.path
+    Write-Status $app.id 'Applying' "sharing $path"
+    $why = Test-SharePathAllowed $path
+    if ($why) { Write-Status $app.id 'Failed' "refused: $why"; return }
+    $key = Get-ShareKey $path
+    $all = @(Get-AllShares)
+    foreach ($s in $all) {
+        if ((Get-ShareKey $s.Path) -ne $key) { continue }
+        if ($s.Description -eq $script:ShareTag) { Write-Status $app.id 'Skipped' "already shared by this tool as `"$($s.Name)`" - nothing to do"; return }
+        Write-Status $app.id 'Skipped' "already shared as `"$($s.Name)`" by hand - use that share; this tool will not change it"
+        return
+    }
+    $name = Get-ShareName $path @($all | ForEach-Object { $_.Name })
+    $who = $(if ($app.anyone) { Get-WellKnownName 'S-1-1-0' 'Everyone' } else { Get-WellKnownName 'S-1-5-11' 'Authenticated Users' })
+    $made = $false; $err = ''
+    if (Test-SmbModule) {
+        try { New-SmbShare -Name $name -Path $path -Description $script:ShareTag -FullAccess $who -ErrorAction Stop | Out-Null; $made = $true }
+        catch { $err = $_.Exception.Message }
+    }
+    if (-not $made) {
+        $ErrorActionPreference = 'Continue'
+        $out = (& "$env:SystemRoot\System32\net.exe" share "$name=$path" "/grant:$who,FULL" "/remark:$($script:ShareTag)" 2>&1 | Out-String).Trim()
+        $made = ($LASTEXITCODE -eq 0)
+        if (-not $made -and -not $err) { $err = ($out -replace '\s+', ' ') }
+    }
+    if (-not $made) { Write-Status $app.id 'Failed' "could not share $path - $err"; return }
+    # verify by reading it back, not by trusting the return
+    $now = @(Get-AllShares | Where-Object { $_.Name -eq $name })
+    if (-not $now.Count) { Write-Status $app.id 'Failed' "the share was created but does not show up afterwards - check with 'net share'"; return }
+    $d = "\\$env:COMPUTERNAME\$name -> $path; " + $(if ($app.anyone) { 'anyone on the network can open it, no password' } else { 'anyone with an account on this PC can sign in and write' })
+    try {
+        $root = [IO.Path]::GetPathRoot($path)
+        if ((New-Object IO.DriveInfo $root).DriveType -eq 'Removable') { $d += '; on a removable drive, so it stops working when that is unplugged' }
+    } catch { }
+    Write-Status $app.id 'Applied' $d
+}
+
+function Remove-PC2GoShare($app) {
+    $name = [string]$app.name
+    Write-Status $app.id 'Applying' "removing the share `"$name`""
+    $s = @(Get-AllShares | Where-Object { $_.Name -eq $name })[0]
+    if (-not $s) { Write-Status $app.id 'Skipped' "`"$name`" is not shared any more - nothing to do"; return }
+    if ($s.Description -ne $script:ShareTag) { Write-Status $app.id 'Failed' "refused: `"$name`" was not created by this tool - left alone"; return }
+    # Somebody mid-copy would lose the file they are writing. Refuse, and say who.
+    if (Test-SmbModule) {
+        try {
+            $open = @(Get-SmbOpenFile -ErrorAction Stop | Where-Object { ('' + $_.Path).ToLower().StartsWith((Get-ShareKey $s.Path).TrimEnd([char]92) + [string][char]92) })
+            if ($open.Count) {
+                $from = @($open | ForEach-Object { '' + $_.ClientComputerName } | Select-Object -Unique) -join ', '
+                Write-Status $app.id 'Failed' "in use: $($open.Count) file(s) open from $from - finish the copy on the other PC first, then try again"
+                return
+            }
+        } catch { }
+    }
+    $gone = $false; $err = ''
+    if (Test-SmbModule) { try { Remove-SmbShare -Name $name -Force -ErrorAction Stop; $gone = $true } catch { $err = $_.Exception.Message } }
+    if (-not $gone) {
+        $ErrorActionPreference = 'Continue'
+        $out = (& "$env:SystemRoot\System32\net.exe" share $name /delete /y 2>&1 | Out-String).Trim()
+        $gone = ($LASTEXITCODE -eq 0)
+        if (-not $gone -and -not $err) { $err = ($out -replace '\s+', ' ') }
+    }
+    if (-not $gone) { Write-Status $app.id 'Failed' "could not remove the share - $err"; return }
+    Write-Status $app.id 'Applied' "`"$name`" is no longer shared; the files in $($s.Path) are untouched"
+}
+
+function Disable-SharingIfIdle($app) {
+    Write-Status $app.id 'Applying' 'checking whether anything else is still shared'
+    $left = @(Get-AllShares)
+    $ours = @($left | Where-Object { $_.Description -eq $script:ShareTag })
+    # Guest was only ever switched on for OUR no-password shares; off again as soon as none remain.
+    $guestNote = ''
+    if (-not $ours.Count -and (Test-GuestMark)) {
+        try {
+            $g = Get-LocalUser | Where-Object { ('' + $_.SID.Value) -like '*-501' } | Select-Object -First 1
+            if ($g -and $g.Enabled) { Disable-LocalUser -SID $g.SID -ErrorAction Stop }
+            Set-GuestMark $false
+            $guestNote = '; the Guest account is switched back off'
+        } catch { $guestNote = "; the Guest account could not be switched back off ($($_.Exception.Message))" }
+    }
+    if ($left.Count) {
+        Write-Status $app.id 'Skipped' ("file sharing left on: still shared - " + (@($left | ForEach-Object { $_.Name }) -join ', ') + $guestNote)
+        return
+    }
+    $why = Set-SharingFirewall $false
+    if ($why) { Write-Status $app.id 'Failed' $why; return }
+    Write-Status $app.id 'Applied' ('file sharing turned back off - no shares remain. The network stays Private' + $guestNote)
+}
+
 # Cleanup rows report reclaimed space by measuring the system drive before and after -
 # honest and cheap, where summing per-file sizes undercounts (folders, ACL-blocked files).
 function Get-FreeBytes {
@@ -13210,6 +13651,13 @@ while (-not $finished) {
                 'setpassword'   { Set-AccountPassword $app }
                 'toggleacct'    { Set-AccountEnabled $app }
                 'deleteaccount' { Remove-Account $app }
+                # Share this PC: `sharesetup` turns sharing on, one `shareon` per path (chained,
+                # so a setup that fails leaves nothing half-shared); `shareoff` per share, then
+                # `sharedown` turns sharing back off only if nothing else is shared.
+                'sharesetup'    { Enable-Sharing $app }
+                'shareon'       { New-PC2GoShare $app }
+                'shareoff'      { Remove-PC2GoShare $app }
+                'sharedown'     { Disable-SharingIfIdle $app }
                 default     {
                     # finally, not just the exits inside Install-One.
                     #
@@ -14165,6 +14613,7 @@ function Finish-Batch {
     Write-RunRecord $script:Pending $(switch ($script:BatchTab) {
         'Un'      { 'Uninstall' }
         'Migrate' { 'Backup' }
+        'Share'   { 'Share' }
         default   { 'Install' }
     })
     Remove-Item -LiteralPath $script:CancelPath, $script:SkipPath -ErrorAction SilentlyContinue
@@ -14211,6 +14660,10 @@ function Finish-Batch {
     $BtnFwBlock.IsEnabled = $true
     $BtnFwUnblock.IsEnabled = $true
     $BtnRunFix.IsEnabled = $true
+    $BtnShareThis.IsEnabled = $true
+    $BtnShareStop.IsEnabled = $true
+    # shares were just created or removed: the buttons and the hint under the folder box follow
+    if ($script:BatchTab -eq 'Share') { Sync-ShareButtons }
     if ($script:BatchTab -eq 'Fw') { Load-Firewall }
     # an account may have just been created, or a profile filled - re-read on next visit
     # 'Migrate' too: a migration creates the destination profile folder, so the account list is
@@ -14250,7 +14703,7 @@ function Finish-Batch {
     }
     if ($notes.Count) {
         Show-Overlay 'Batch complete - action needed' ($summary + "`n`n" + ($notes -join "`n`n"))
-    } elseif ($script:BatchTab -in 'Users', 'Migrate') {
+    } elseif ($script:BatchTab -in 'Users', 'Migrate', 'Share') {
         # "1 completed, 0 failed" is a count, and for a one-row batch it is the least useful
         # sentence there is. What a technician needs off the closing dialog of a copy is WHERE
         # it went, how much, how long, and what was skipped - the worker wrote all of that, and
@@ -14260,8 +14713,17 @@ function Finish-Batch {
             $d = $(if ($p.StatusDetail) { [string]$p.StatusDetail } else { [string]$p.Status })
             $said += "$($p.Name)`n$d"
         }
+        # A share that worked is only half the job: the other PC still has to find it. Say
+        # exactly what to press and what to type over there, on the screen the technician is
+        # looking at right now.
+        $lead = ''
+        if ($script:BatchTab -eq 'Share' -and $done -gt 0 -and
+            @($script:Pending | Where-Object { $_.Id -like 'share-*' -and $_.Id -ne 'share-setup' -and $_.Id -ne 'share-down' -and $_.Status -like 'Applied*' }).Count) {
+            $lead = "On the other PC: Data Backup > To a drive, USB or PC > Find a PC..., pick $env:COMPUTERNAME, " +
+                    "and sign in as $env:COMPUTERNAME\$env:USERNAME (or any other account of this PC).`n`n"
+        }
         Show-Overlay $(if ($fail) { 'Finished - with a failure' } elseif ($cans) { 'Finished - check the details' } else { 'Finished' }) `
-                     ($summary + "`n`n" + ($said -join "`n`n"))
+                     ($lead + $summary + "`n`n" + ($said -join "`n`n"))
     } else {
         Show-Overlay 'Batch complete' $summary
     }
@@ -16607,6 +17069,8 @@ function Sync-BackupMode {
     $ListDstUsers.Visibility = $(if ($script:BackupMode -eq 'folder')  { 'Collapsed' } else { 'Visible' })
     Sync-UserHint
     Update-UserEmptyStates
+    # Guarded: this can run during start-up, before the sharing helpers further down are defined.
+    if (Get-Command Sync-ShareButtons -ErrorAction SilentlyContinue) { Sync-ShareButtons }
     Update-Dash
 }
 
@@ -17303,6 +17767,234 @@ $BtnNetUse.Add_Click({
     $pw   = $(if ($conn.Prompted) { [string]$conn.Password } else { [string]$script:NetPassword })
     Set-BackupFolder $path $user $pw
     $NetOverlay.Visibility = 'Collapsed'
+})
+
+# ---------- Share this PC ----------
+#
+# The GUI half of what the worker's Enable-Sharing / New-PC2GoShare / Remove-PC2GoShare do.
+# Reading shares needs no elevation, so the buttons can say what is true right now; making or
+# removing one goes through the worker like every other change to the machine.
+$script:ShareTag = 'PC2Go share'
+$script:ShareDrives  = New-Object System.Collections.ObjectModel.ObservableCollection[object]
+$script:ShareFolders = New-Object System.Collections.ObjectModel.ObservableCollection[object]
+
+# Same rules as the worker's copy. Kept in step by tests\Test-BackupTab.ps1.
+function Get-ShareKey([string]$Path) {
+    if (-not $Path) { return '' }
+    $p = ''
+    try { $p = [IO.Path]::GetFullPath($Path) } catch { return '' }
+    if ($p -match '^[A-Za-z]:\\$') { return $p.ToLower() }
+    return $p.TrimEnd([char]92).ToLower()
+}
+function Test-SharePathAllowed([string]$Path) {
+    if ([string]::IsNullOrWhiteSpace($Path)) { return 'no folder given' }
+    if ($Path.StartsWith('\\')) { return 'a network path cannot be shared from here - share it on the PC it lives on' }
+    $key = Get-ShareKey $Path
+    if (-not $key) { return "'$Path' is not a valid path" }
+    if (-not (Test-Path -LiteralPath $Path -PathType Container)) { return "'$Path' is not a folder that exists" }
+    $bad = @($env:SystemRoot, $env:ProgramFiles, ${env:ProgramFiles(x86)}, $env:ProgramData, $script:CacheDir) | Where-Object { $_ }
+    foreach ($b in $bad) {
+        $bk = Get-ShareKey $b
+        if (-not $bk) { continue }
+        if ($key -eq $bk -or $key.StartsWith($bk.TrimEnd([char]92) + [string][char]92)) {
+            return "'$Path' is inside $b, which this tool will not share - Windows and every installed program live there"
+        }
+    }
+    return ''
+}
+function Get-ShareName([string]$Path, [string[]]$Taken) {
+    $p = ('' + $Path).TrimEnd([char]92)
+    $base = $(if ($p -match '^([A-Za-z]):$') { $Matches[1].ToUpper() } else { Split-Path -Leaf $p })
+    $base = ($base -replace '[\\/:*?"<>|]', '').Trim()
+    if (-not $base) { $base = 'Share' }
+    if ($base.Length -gt 60) { $base = $base.Substring(0, 60).Trim() }
+    $taken = @($Taken | ForEach-Object { ('' + $_).ToLower() })
+    $name = $base; $n = 1
+    while ($taken -contains $name.ToLower()) { $n++; $name = "$base $n" }
+    return $name
+}
+
+# Every disk share on this PC, {Name, Path, Description}. Unelevated read; `net share` fallback.
+function Get-AllShares {
+    $out = @()
+    if (Get-Command Get-SmbShare -ErrorAction SilentlyContinue) {
+        try {
+            foreach ($s in @(Get-SmbShare -ErrorAction Stop)) {
+                if ($s.Name.EndsWith('$') -or "$($s.ShareType)" -ne 'FileSystemDirectory') { continue }
+                $out += [pscustomobject]@{ Name = [string]$s.Name; Path = [string]$s.Path; Description = ('' + $s.Description) }
+            }
+            return $out
+        } catch { }
+    }
+    $eap = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
+    try {
+        $seen = $false
+        foreach ($line in @(& "$env:SystemRoot\System32\net.exe" share 2>$null)) {
+            if ($line -match '^-{3,}') { $seen = $true; continue }
+            if (-not $seen -or $line -match '^The command completed' -or -not $line.Trim()) { continue }
+            $parts = @($line -split '\s{2,}' | Where-Object { $_ })
+            if ($parts.Count -lt 2) { continue }
+            $n = $parts[0].Trim(); $p = $parts[1].Trim()
+            if ($n.EndsWith('$') -or $p -notmatch '^[A-Za-z]:') { continue }
+            $remark = ''
+            foreach ($d in @(& "$env:SystemRoot\System32\net.exe" share $n 2>$null)) { if ($d -match '^Remark\s+(.*)$') { $remark = $Matches[1].Trim() } }
+            $out += [pscustomobject]@{ Name = $n; Path = $p; Description = $remark }
+        }
+    } catch { } finally { $ErrorActionPreference = $eap }
+    return $out
+}
+function Get-PC2GoShares { return @(Get-AllShares | Where-Object { $_.Description -eq $script:ShareTag }) }
+
+# What could be shared: every fixed or removable drive that is ready, as a tickable row.
+function Get-ShareCandidates {
+    $rows = @()
+    foreach ($d in @([IO.DriveInfo]::GetDrives())) {
+        try {
+            if (-not $d.IsReady) { continue }
+            if ("$($d.DriveType)" -notin 'Fixed', 'Removable') { continue }
+            $letter = $d.Name.TrimEnd([char]92)
+            $u = New-Object AppItem
+            $u.Id = "drv-$letter"
+            $u.Name = "$(if ($d.VolumeLabel) { $d.VolumeLabel } else { 'Local Disk' }) ($letter)"
+            $u.Publisher = "$(Format-Size $d.AvailableFreeSpace) free of $(Format-Size $d.TotalSize)" +
+                           $(if ("$($d.DriveType)" -eq 'Removable') { '   -   removable: the share stops working when it is unplugged' } else { '' })
+            $u.UnArgs = $d.Name
+            $u.RegKey = 'drive'
+            $u.IconText = $letter.Substring(0, 1)
+            $u.IconBg = $(if ("$($d.DriveType)" -eq 'Removable') { '#FFF59E0B' } else { '#FF2563EB' })
+            $u.IconData = $IconMap['default'][0]
+            $u.IsSelected = $false
+            $rows += $u
+        } catch { }
+    }
+    return $rows
+}
+
+# A folder into the list, ticked. '' on success, or the reason it was refused - the same
+# reason the worker would give, so the technician hears it once, here, before any UAC prompt.
+function Add-ShareFolder([string]$Path) {
+    $why = Test-SharePathAllowed $Path
+    if ($why) { return $why }
+    $key = Get-ShareKey $Path
+    # a drive root belongs in the drives list - tick it there instead
+    $drv = @($script:ShareDrives | Where-Object { (Get-ShareKey $_.UnArgs) -eq $key })[0]
+    if ($drv) { $drv.IsSelected = $true; return '' }
+    if (@($script:ShareFolders | Where-Object { (Get-ShareKey $_.UnArgs) -eq $key }).Count) { return "$Path is already in the list" }
+    $u = New-Object AppItem
+    $u.Id = "shf-$($script:ShareFolders.Count + 1)"
+    $u.Name = Split-Path -Leaf $Path.TrimEnd([char]92)
+    $u.Publisher = $Path
+    $u.UnArgs = $Path
+    $u.RegKey = 'folder'
+    $u.IconText = $u.Name.Substring(0, 1).ToUpper()
+    $u.IconBg = '#FF34D399'
+    $u.IconData = $IconMap['default'][0]
+    $u.IsSelected = $true
+    $script:ShareFolders.Add($u)
+    $EmptyShareFolders.Visibility = 'Collapsed'
+    return ''
+}
+
+# The two buttons say what is true: Stop only exists while this tool has shares to remove, and
+# the hint under the folder box tells the technician what the OTHER PC has to do.
+function Sync-ShareButtons {
+    $mine = @(Get-PC2GoShares)
+    $BtnShareThis.Content = $(if ($mine.Count) { 'Share more...' } else { 'Share this PC' })
+    $BtnShareStop.Visibility = $(if ($mine.Count) { 'Visible' } else { 'Collapsed' })
+    if ($mine.Count -and -not $script:FolderPath -and $script:BackupMode -ne 'restore') {
+        $names = (@($mine | ForEach-Object { '"' + $_.Name + '"' }) -join ', ')
+        $TxtFolderNote.Text = "This PC is sharing $names as \\$env:COMPUTERNAME. " +
+                              "On the other PC use Find a PC..., pick $env:COMPUTERNAME and sign in as $env:COMPUTERNAME\$env:USERNAME."
+        $TxtFolderNote.Foreground = $window.FindResource('Muted')
+    }
+}
+
+$BtnShareThis.Add_Click({
+    if (Test-BatchBusy) { return }
+    $ListShareDrives.ItemsSource = $null
+    $ListShareFolders.ItemsSource = $null
+    $script:ShareDrives.Clear(); $script:ShareFolders.Clear()
+    foreach ($r in @(Get-ShareCandidates)) { $script:ShareDrives.Add($r) }
+    $ListShareDrives.ItemsSource = $script:ShareDrives
+    $ListShareFolders.ItemsSource = $script:ShareFolders
+    $EmptyShareFolders.Visibility = 'Visible'
+    $ChkShareAnyone.IsChecked = $false
+    $mine = @(Get-PC2GoShares)
+    $TxtShareIntro.Text = "Another PC running this tool can then find this one ($env:COMPUTERNAME) with Find a PC... and back up into what you tick. " +
+                          "Whoever connects signs in with an account of this PC, like $env:COMPUTERNAME\$env:USERNAME." +
+                          $(if ($mine.Count) { "  Already shared: " + (@($mine | ForEach-Object { $_.Name }) -join ', ') + '.' } else { '' })
+    $TxtShareNote.Text = 'Tick at least one drive, or add a folder.'
+    $TxtShareNote.Foreground = $window.FindResource('Dim')
+    $ShareOverlay.Opacity = 0
+    $ShareOverlay.Visibility = 'Visible'
+    $a = New-Object Windows.Media.Animation.DoubleAnimation 0, 1, (New-Object Windows.Duration ([TimeSpan]::FromMilliseconds(180)))
+    $ShareOverlay.BeginAnimation([Windows.UIElement]::OpacityProperty, $a)
+})
+
+$BtnShareAddFolder.Add_Click({
+    $picked = ''
+    try {
+        Add-Type -AssemblyName System.Windows.Forms -ErrorAction Stop
+        $dlg = New-Object Windows.Forms.FolderBrowserDialog
+        $dlg.Description = 'Pick a folder to share with the other PC'
+        $dlg.ShowNewFolderButton = $true
+        $dlg.RootFolder = 'MyComputer'
+        if ($dlg.ShowDialog() -eq 'OK') { $picked = $dlg.SelectedPath }
+        $dlg.Dispose()
+    } catch { $TxtShareNote.Text = "Could not open the folder picker: $($_.Exception.Message)"; $TxtShareNote.Foreground = $window.FindResource('Bad'); return }
+    if (-not $picked) { return }
+    $why = Add-ShareFolder $picked
+    if ($why) { $TxtShareNote.Text = $why; $TxtShareNote.Foreground = $window.FindResource('Bad') }
+    else { $TxtShareNote.Text = "$picked added."; $TxtShareNote.Foreground = $window.FindResource('Dim') }
+})
+
+$BtnShareCancel.Add_Click({ $ShareOverlay.Visibility = 'Collapsed' })
+
+$ChkShareAnyone.Add_Checked({
+    $TxtShareNote.Text = 'No password: ANY device on this network can read and write what you share. Only use this on a network you trust, and press Stop sharing when the backup is done.'
+    $TxtShareNote.Foreground = $window.FindResource('Warn')
+})
+$ChkShareAnyone.Add_Unchecked({ $TxtShareNote.Text = ''; $TxtShareNote.Foreground = $window.FindResource('Dim') })
+
+$BtnShareOk.Add_Click({
+    if (Test-BatchBusy) { return }
+    $picked = @(@($script:ShareDrives) + @($script:ShareFolders) | Where-Object { $_.IsSelected })
+    if (-not $picked.Count) { $TxtShareNote.Text = 'Tick at least one drive, or add a folder.'; $TxtShareNote.Foreground = $window.FindResource('Bad'); return }
+    # names are decided here for the row labels; the worker decides for real against the live list
+    $all = @(Get-AllShares)
+    $taken = @($all | ForEach-Object { $_.Name })
+    $items = @(); $already = @()
+    foreach ($p in $picked) {
+        $path = [string]$p.UnArgs
+        $key = Get-ShareKey $path
+        $have = @($all | Where-Object { (Get-ShareKey $_.Path) -eq $key })[0]
+        if ($have) { $already += "$path (already shared as `"$($have.Name)`")"; continue }
+        $name = Get-ShareName $path $taken
+        $taken += $name
+        $items += @{ path = $path; name = $name }
+    }
+    if (-not $items.Count) {
+        $TxtShareNote.Text = 'Everything ticked is already shared: ' + ($already -join ', ') + '. The other PC can use those as they are.'
+        $TxtShareNote.Foreground = $window.FindResource('Warn')
+        return
+    }
+    $anyone = [bool]$ChkShareAnyone.IsChecked
+    $ShareOverlay.Visibility = 'Collapsed'
+    if ($already.Count) { Add-Log ('Share this PC: skipped ' + ($already -join ', ')) }
+    Start-ShareBatch 'shareon' $items $anyone
+})
+
+$BtnShareStop.Add_Click({
+    if (Test-BatchBusy) { return }
+    $mine = @(Get-PC2GoShares)
+    if (-not $mine.Count) { Sync-ShareButtons; return }
+    $names = @($mine | ForEach-Object { [string]$_.Name })
+    Show-Confirm 'Stop sharing?' (
+        "These shares this tool created will be removed. The files themselves are not touched.`n`n" +
+        (@($mine | ForEach-Object { "  - $($_.Name)  ->  $($_.Path)" }) -join "`n") +
+        "`n`nIf nothing else on this PC is shared, file sharing is turned back off as well. " +
+        'A share the other PC is still copying into is left in place and reported.'
+    ) ({ Start-ShareBatch 'shareoff' $names }.GetNewClosure())
 })
 
 # The measuring pass runs on the UI thread and pumps the dispatcher to stay alive - which is

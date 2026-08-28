@@ -366,6 +366,83 @@ try {
     Dismiss-Overlay
     $script:Phase = 'Idle'
 
+    # ================================================================== 6. Share this PC (the dialog; the real share is Test-ElevatedShare)
+    Write-Section '6. Share this PC: the dialog, its refusals, and the names it picks'
+
+    Select-Tab 'Migrate'; Select-BackupMode 'folder'
+    $mineBefore = @(Get-PC2GoShares).Count
+    if (-not $mineBefore) { Assert-Equal 'Stop sharing is hidden while this tool has no shares' 'Collapsed' "$($BtnShareStop.Visibility)" }
+    else { Write-Host "  (this PC already has $mineBefore PC2Go share(s) - the hidden-button check is skipped)" -ForegroundColor DarkGray }
+    Invoke-Click $BtnShareThis
+    Assert-Equal 'the dialog opened'                       'Visible' "$($ShareOverlay.Visibility)"
+    Assert-True  'it lists the drives'                     ($script:ShareDrives.Count -ge 1)
+    $sys = @($script:ShareDrives | Where-Object { $_.UnArgs -eq ($env:SystemDrive + '\') })[0]
+    Assert-True  'including the system drive, with its free space' ($sys -and $sys.Publisher -match 'free of')
+    Assert-True  'nothing is ticked to begin with'         (@($script:ShareDrives | Where-Object { $_.IsSelected }).Count -eq 0)
+    Invoke-Click $BtnShareOk
+    Assert-Equal 'Share with nothing ticked is refused'    'Visible' "$($ShareOverlay.Visibility)"
+    Assert-True  'and says so'                             ($TxtShareNote.Text -like '*at least one*')
+    Assert-True  'Windows itself cannot be added'          ((Add-ShareFolder $env:SystemRoot) -like '*will not share*')
+    Assert-True  'nor Program Files'                       ((Add-ShareFolder $env:ProgramFiles) -like '*will not share*')
+    Assert-True  'nor a network path'                      ((Add-ShareFolder '\\PC\Share') -like '*network path*')
+    Assert-True  'nor a folder that does not exist'        ((Add-ShareFolder (Join-Path $sandbox 'nope')) -like '*not a folder that exists*')
+    Assert-Equal 'a real folder is accepted'               '' (Add-ShareFolder $sandbox)
+    Assert-Equal 'and appears ticked'                      1 @($script:ShareFolders | Where-Object { $_.IsSelected }).Count
+    Assert-True  'adding it twice is refused'              ((Add-ShareFolder $sandbox) -like '*already in the list*')
+    Assert-Equal 'a drive root added as a folder ticks the drive instead' '' (Add-ShareFolder ($env:SystemDrive + '\'))
+    Assert-True  'and the drive row is now ticked'         ([bool]$sys.IsSelected)
+    $sys.IsSelected = $false
+    Assert-Equal 'a drive root names itself by its letter' 'C' (Get-ShareName 'C:\')
+    Assert-Equal 'a folder names itself by its leaf'       'My Docs' (Get-ShareName 'D:\Stuff\My Docs')
+    Assert-Equal 'illegal characters are dropped'          'ab' (Get-ShareName 'D:\a:b*?')
+    Assert-Equal 'a taken name gets a number'              'Docs 2' (Get-ShareName 'D:\Docs' @('docs'))
+    Assert-Equal 'and keeps counting'                      'Docs 3' (Get-ShareName 'D:\Docs' @('Docs', 'Docs 2'))
+    Invoke-Click $BtnShareCancel
+    Assert-Equal 'Cancel closes the dialog'                'Collapsed' "$($ShareOverlay.Visibility)"
+    $script:Phase = 'Install'; $script:BatchTab = 'Share'
+    [void](Test-BatchBusy)
+    Assert-True 'Test-BatchBusy names a sharing change'    ($TxtOverlayMsg.Text -like '*A sharing change is still running.*')
+    Dismiss-Overlay
+    $script:Phase = 'Idle'
+
+    # The same worker script the stub launches for every other section, run for the real
+    # actions. Whether it CAN make a share depends on the token this harness runs under - on
+    # this machine an unelevated run went straight through - so both outcomes are accepted;
+    # what is not accepted is a row that never settles, or a share left behind.
+    Invoke-Click $BtnShareThis
+    [void](Add-ShareFolder $sandbox)
+    $logBefore = (Get-LogLines).Count
+    Invoke-Click $BtnShareOk
+    Assert-Equal 'the batch started'                       'Install' "$($script:Phase)"
+    Assert-Equal 'and is filed under Share'                'Share' "$($script:BatchTab)"
+    Assert-True  'the batch settled'                       (Wait-For { $script:Phase -in 'Done', 'Idle' } 180000)
+    foreach ($p in @($script:Pending)) { Write-Host "  row: $($p.Name): $($p.Status) - $($p.StatusDetail)" -ForegroundColor DarkGray }
+    Assert-True  'every row reached a verdict'             (@($script:Pending | Where-Object { $_.Status -notmatch '^(Applied|Failed|Skipped)' }).Count -eq 0)
+    $setup = $script:Pending[0]
+    if ($setup.Status -like 'Failed*') {
+        Assert-True 'refused: the reason is a sentence'    ($setup.StatusDetail.Length -gt 20)
+        Assert-True 'and the share row was skipped, not attempted' ($script:Pending[1].Status -like 'Skipped*')
+        Assert-Equal 'nothing was shared'                  $mineBefore @(Get-PC2GoShares).Count
+        Dismiss-Overlay
+    } else {
+        Write-Host '  (this token could create the share - running the full Stop sharing cycle)' -ForegroundColor DarkGray
+        Assert-True  'the share row reports Applied'       ($script:Pending[1].Status -like 'Applied*')
+        Assert-Equal 'and the share exists, tagged'        ($mineBefore + 1) @(Get-PC2GoShares).Count
+        Assert-Equal 'Stop sharing appeared'               'Visible' "$($BtnShareStop.Visibility)"
+        Dismiss-Overlay
+        Invoke-Click $BtnShareStop
+        Assert-Equal 'the Stop confirm opened'             'Stop sharing?' (Get-OverlayTitle)
+        Invoke-Click $BtnOverlayOk
+        Assert-True  'the Stop batch settled'              (Wait-For { $script:Phase -in 'Done', 'Idle' } 180000)
+        foreach ($p in @($script:Pending)) { Write-Host "  row: $($p.Name): $($p.Status) - $($p.StatusDetail)" -ForegroundColor DarkGray }
+        Assert-True  'the share was removed'               ($script:Pending[0].Status -like 'Applied*')
+        Assert-Equal 'and nothing of ours is left'         $mineBefore @(Get-PC2GoShares).Count
+        Dismiss-Overlay
+    }
+    $log = @((Get-LogLines) | Select-Object -Skip $logBefore)
+    Assert-True  'the log carries the start line'          ([bool]@($log | Where-Object { $_ -like '*Sharing: shareon*' }).Count)
+    Assert-True  'and a verdict for turning sharing on'    ([bool]@($log | Where-Object { $_ -like '*Turn on file sharing -> *' }).Count)
+
     Write-Host ''
     Write-Host ("{0}/{1} passed" -f $script:Pass, ($script:Pass + $script:Fail)) `
                -ForegroundColor $(if ($script:Fail) { 'Red' } else { 'Green' })
