@@ -7390,11 +7390,13 @@ function Start-Tweaks([object[]]$Sel) {
 #
 # Small files stay on BITS. Below the threshold the setup cost outweighs the gain, and BITS
 # survives a reboot, which this does not.
-$script:SegmentStreams  = 8
-$script:SegmentMinBytes = [long]100MB
+$script:SegmentStreams  = 16
+$script:SegmentMinBytes = [long]16MB
 # What the adaptive throttle settled on for the last file (0 = not yet measured). A link that
 # was dropping connections at eight streams is still that link for the next package.
 $script:SegmentActive   = 0
+# a harness may lower the chunk floor to cut a small fixture into many pieces; 0 = the default 8 MB
+$script:SegmentChunkFloor = [long]0
 
 # Downloads that stopped part-way - a reboot, a crash, a closed window - leave a pre-allocated
 # .part beside a .parts journal in the cache. Nothing used to look for them: the technician had
@@ -7427,16 +7429,42 @@ function Offer-ResumeDownloads {
     }.GetNewClosure())
 }
 
+# How big a piece of the file one request asks for. About 64 pieces per file, never smaller
+# than 8 MB (a request has fixed costs) and never larger than 64 MB (a retry re-sends at most
+# this much). Whole megabytes, so the number is readable in a log.
+function Get-SegmentChunkSize([long]$Total) {
+    # the floor is overridable so a harness can cut a 6 MB fixture into many pieces
+    $floor = [long]$(if ($script:SegmentChunkFloor -gt 0) { $script:SegmentChunkFloor } else { 8MB })
+    if ($Total -le 0) { return $floor }
+    $c = [long][Math]::Ceiling($Total / 64.0)
+    $c = [Math]::Max($floor, [Math]::Min([long]64MB, $c))
+    if ($c -ge 1MB) { $c = [long]([Math]::Ceiling($c / 1MB) * 1MB) }
+    return $c
+}
+
 <#
     One file, fetched over several connections at once, straight into its final offsets.
 
-    Ranges write into ONE pre-allocated file rather than into per-part files joined afterwards:
-    concatenating 1.1 GB costs about as long as the download time this saves, which would hand
-    the whole gain straight back. Progress per range is journalled beside it, because sparse
-    writes into a file cannot be read back to work out how far each range got.
+    A QUEUE of chunks, not a fixed split. The file is cut into ~64 pieces and every worker
+    takes the next unfinished piece when it is done with its own - so no connection ever sits
+    idle while a slower one finishes, the last byte arrives at full width, and a connection
+    that turns out to be slow simply completes fewer chunks. A fixed eight-way split ended at
+    the pace of its slowest range with seven sockets idle, which on a high-latency link was
+    most of the tail.
 
-    Throws rather than returning false, so the caller can fall back to BITS - which is what
-    happens when the server will not do Range, or when anything else here objects.
+    Connections are kept alive across chunks, so a 15 GB file costs sixteen TLS handshakes,
+    not a thousand. Pieces write into ONE pre-allocated file rather than into per-part files
+    joined afterwards: concatenating 1.1 GB costs about as long as the download time this
+    saves, which would hand the whole gain straight back. Progress per chunk is journalled
+    beside it, because sparse writes into a file cannot be read back to work out how far each
+    piece got.
+
+    A dropped socket is a retry on that chunk from exactly where it stood - 2, 4, 8, 16, then
+    30 s between attempts, for as long as the batch runs; Stop and Pause end it at once. Only
+    three things are fatal: the server refusing a range, the object having changed underneath
+    (If-Range against the ETag carried in the journal), and a link that expired and could not
+    be refreshed. Those throw, so the caller can fall back to BITS - which is also what
+    happens when the server will not do Range at all.
 
     The SHA-256 the worker verifies afterwards is the real safety net: nothing here has to be
     trusted to have assembled the file correctly, only to say so honestly when it did not.
@@ -7447,7 +7475,6 @@ function Invoke-SegmentedDownload([object]$Item, [string]$Dest, [int]$Streams = 
     # Without a known total there is nothing to divide. The catalog always has one; a URL
     # somebody typed by hand might not.
     if ($total -le 0) { throw 'segmented download needs the size from the catalog' }
-    if ($Streams -gt 1 -and $total -lt $Streams) { $Streams = 1 }
 
     $tmp     = "$Dest.part"
     $journal = "$Dest.parts"
@@ -7468,15 +7495,14 @@ function Invoke-SegmentedDownload([object]$Item, [string]$Dest, [int]$Streams = 
     $pr.Close()
     if ($pcode -ne 206) { throw "the server ignored a Range request (HTTP $pcode)" }
 
-    # ---- where each range starts, and how far it got last time
-    $per = [long][Math]::Floor($total / $Streams)
-    $ranges = @()
-    for ($i = 0; $i -lt $Streams; $i++) {
-        $from = [long]($i * $per)
-        $to   = $(if ($i -eq $Streams - 1) { [long]($total - 1) } else { [long]($from + $per - 1) })
-        $ranges += [pscustomobject]@{ Index = $i; From = $from; To = $to; Done = [long]0 }
-    }
-    # A journal from an earlier attempt is only usable if it describes THIS file at THIS split.
+    # ---- the pieces, and how far each got last time
+    $chunk = Get-SegmentChunkSize $total
+    $count = [int][Math]::Ceiling($total / [double]$chunk)
+    if ($Streams -gt $count) { $Streams = $count }
+    $done  = [long[]]::new($count)
+    $chunkLen = { param([int]$i) [long]([Math]::Min([long]$chunk, $total - ([long]$i * $chunk))) }
+
+    # A journal from an earlier attempt is only usable if it describes THIS file cut THIS way.
     if ((Test-Path -LiteralPath $tmp) -and (Test-Path -LiteralPath $journal)) {
         try {
             $j = (Get-Content -LiteralPath $journal -Raw) | ConvertFrom-Json
@@ -7485,164 +7511,174 @@ function Invoke-SegmentedDownload([object]$Item, [string]$Dest, [int]$Streams = 
                 $sameObject = $false
                 Add-Log "$($Item.Name): the file on the server changed since the last attempt - starting the download over."
             }
-            if ($sameObject -and [long]$j.total -eq $total -and [int]$j.streams -eq $Streams -and
-                (Get-Item -LiteralPath $tmp).Length -eq $total) {
-                for ($i = 0; $i -lt $Streams; $i++) {
+            if ($sameObject -and [long]$j.total -eq $total -and [long]$j.chunk -eq $chunk -and
+                @($j.done).Count -eq $count -and (Get-Item -LiteralPath $tmp).Length -eq $total) {
+                for ($i = 0; $i -lt $count; $i++) {
                     $d = [long]$j.done[$i]
-                    $len = $ranges[$i].To - $ranges[$i].From + 1
-                    if ($d -gt 0 -and $d -le $len) { $ranges[$i].Done = $d }
+                    $len = & $chunkLen $i
+                    if ($d -gt 0 -and $d -le $len) { $done[$i] = $d }
                 }
-                $already = ($ranges | Measure-Object -Property Done -Sum).Sum
+                $already = [long]0
+                foreach ($d in $done) { $already += $d }
                 if ($already -gt 0) { Add-Log "Resuming $($Item.Name) - $(Format-Size $already) of $(Format-Size $total) already here." }
             }
         } catch { }
     }
     if (-not (Test-Path -LiteralPath $tmp) -or (Get-Item -LiteralPath $tmp).Length -ne $total) {
-        # Pre-allocated once, so every range can seek straight to where it belongs.
+        # Pre-allocated once, so every piece can seek straight to where it belongs.
         $fsInit = [IO.File]::Open($tmp, 'Create', 'Write', 'None')
         try { $fsInit.SetLength($total) } finally { $fsInit.Close() }
-        foreach ($r in $ranges) { $r.Done = [long]0 }
+        for ($i = 0; $i -lt $count; $i++) { $done[$i] = [long]0 }
     }
 
+    # How many workers may take a chunk right now. Sixteen sockets is the right answer on a
+    # link that throttles per connection (the common case) and the wrong one on a link that
+    # drops packets - there, sixteen streams each time out and each retry costs the same
+    # again. The loop below halves this when faults cluster and raises it back when things go
+    # quiet; a worker whose ordinal is above it waits rather than taking work. The answer it
+    # settles on is kept for the next file in the batch.
+    $active = [int]$(if ($script:SegmentActive -gt 0) { [Math]::Min($script:SegmentActive, $Streams) } else { $Streams })
+
     $shared = [hashtable]::Synchronized(@{
-        Done   = [long[]]::new($Streams)
-        # Errors are now FATAL only - the server refusing a range, the object changing, a link
-        # that could not be refreshed. A dropped socket is not an error here any more; it is a
-        # retry, counted in Retries and narrated through Log.
+        Done   = $done
+        Next   = [int]0                        # the next chunk nobody has taken yet
+        # Errors are FATAL only - the server refusing a range, the object changing, a link that
+        # could not be refreshed. A dropped socket is a retry, counted in Faults, narrated in Log.
         Errors = [Collections.ArrayList]::Synchronized((New-Object Collections.ArrayList))
         Log    = [Collections.ArrayList]::Synchronized((New-Object Collections.ArrayList))
-        Retries = [int[]]::new($Streams)       # per range: attempts beyond the first
-        Retrying = [int]0                      # ranges currently in a backoff sleep
-        Faults  = [int]0                       # transient faults in the current window (adaptive throttle)
-        Url     = [string]$Item.Url            # re-read by every attempt: a refreshed link lands here
-        NeedUrl = $false                       # a range saw 401/403 and is waiting for a fresh link
+        Retrying = [int]0                      # workers currently in a backoff sleep
+        Faults  = [int]0                       # transient faults in the current window
+        Active  = [int]$active                 # workers allowed to take chunks
+        Url     = [string]$Item.Url            # re-read by every request: a refreshed link lands here
+        NeedUrl = $false                       # a worker saw 401/403 and is waiting for a fresh link
         ETag    = $etag
         Cancel = $false
-        # Pause stops the ranges the same way Cancel does - by ending their reads - rather
+        # Pause stops the workers the same way Cancel does - by ending their reads - rather
         # than holding the sockets open and idle. A held socket dies anyway: ReadWriteTimeout
         # is two minutes, so anything longer than a coffee would come back as a transport
         # error rather than a resumed download. Stopping and re-entering costs nothing here,
-        # because the journal below already knows how to pick each range up where it stopped.
+        # because the journal already knows how far every piece got.
         Pause  = $false
     })
-    for ($i = 0; $i -lt $Streams; $i++) { $shared.Done[$i] = $ranges[$i].Done }
-    $carried = [long](($ranges | Measure-Object -Property Done -Sum).Sum)
+    # skip pieces that are already whole
+    for ($i = 0; $i -lt $count; $i++) { if ($done[$i] -lt (& $chunkLen $i)) { break }; $shared.Next = $i + 1 }
+    $carried = [long]0
+    foreach ($d in $done) { $carried += $d }
 
-    # One range, fetched until it is complete or told to stop.
-    #
-    # A dropped socket used to end the WHOLE download: one range's exception went into Errors,
-    # the caller threw, and the pump fell back to BITS - which starts from byte zero, on one
-    # connection, with the 12 GB already in the .part file ignored. On a link that blips every
-    # ten minutes a 15 GB package could not complete on this path at all. A range now re-opens
-    # from exactly where its counter stands and keeps going: 2, 4, 8, 16, then 30 s between
-    # attempts, for as long as the batch is running - Stop and Pause still end it at once.
-    # Only three things are fatal: the server refusing the range, the object having changed
-    # underneath (If-Range answers 200), and a link that expired and could not be refreshed.
     $work = {
-        param($Path, [int]$Index, [long]$From, [long]$To, $Shared)
+        param([int]$Me, $Path, [long]$Total, [long]$Chunk, [int]$Count, $Shared)
         [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor 3072
-        # .NET allows two connections per host by default, which would quietly turn eight
-        # streams into two and make this whole exercise pointless.
+        # .NET allows two connections per host by default, which would quietly turn sixteen
+        # workers into two and make this whole exercise pointless.
         [Net.ServicePointManager]::DefaultConnectionLimit = 64
-        $attempt = 0
-        while ($true) {
-            if ($Shared.Cancel -or $Shared.Pause) { return }
-            $start = [long]$From + [long]$Shared.Done[$Index]
-            if ($start -gt $To) { return }               # complete
-            $attempt++
-            $resp = $null; $st = $null; $fs = $null
-            try {
-                $req = [Net.HttpWebRequest]::Create([string]$Shared.Url)
-                $req.UserAgent = 'PC2GoDeploy/1.0'
-                $req.Timeout = 60000
-                $req.ReadWriteTimeout = 120000
-                $req.AddRange($start, $To)
-                if ($Shared.ETag) { $req.Headers['If-Range'] = [string]$Shared.ETag }
-                $resp = $req.GetResponse()
-                $code = [int]$resp.StatusCode
-                if ($code -eq 200 -and $Shared.ETag) {
-                    [void]$Shared.Errors.Add("range $Index : the file changed on the server (If-Range answered 200)")
-                    $Shared.Cancel = $true
-                    return
-                }
-                if ($code -ne 206) { throw "expected 206, got $code" }
-                $st = $resp.GetResponseStream()
-                # ReadWrite sharing: every range holds its own handle on the same file at once
-                $fs = [IO.File]::Open($Path, 'Open', 'Write', 'ReadWrite')
-                [void]$fs.Seek($start, 'Begin')
-                $buf = New-Object byte[] 1048576
-                while (($n = $st.Read($buf, 0, $buf.Length)) -gt 0) {
-                    if ($Shared.Cancel -or $Shared.Pause) { return }
-                    $fs.Write($buf, 0, $n)
-                    $Shared.Done[$Index] = [long]$Shared.Done[$Index] + $n
-                }
-                # the server closed the body early: not an error, the loop simply re-asks for the rest
-            } catch {
+        [Net.ServicePointManager]::Expect100Continue = $false
+        [Net.ServicePointManager]::UseNagleAlgorithm = $false
+        # ReadWrite sharing: every worker holds its own handle on the same file at once.
+        # Opened once per worker, not once per chunk.
+        $fs = [IO.File]::Open($Path, 'Open', 'Write', 'ReadWrite')
+        $buf = New-Object byte[] 1048576
+        try {
+            while ($true) {
                 if ($Shared.Cancel -or $Shared.Pause) { return }
-                $msg = '' + $_.Exception.Message
-                $http = 0
-                $we = $_.Exception
-                while ($we -and -not ($we -is [Net.WebException])) { $we = $we.InnerException }
-                if ($we -and $we.Response) { try { $http = [int]$we.Response.StatusCode } catch { $http = 0 } }
-                if ($http -eq 401 -or $http -eq 403) {
-                    # The link, not the network. Ask the window for a fresh one and wait for it;
-                    # the window says no by setting an Error, which ends every range.
-                    $Shared.NeedUrl = $true
-                    $waited = 0
-                    while ($Shared.NeedUrl -and -not $Shared.Cancel -and -not $Shared.Pause -and $waited -lt 90000) {
-                        Start-Sleep -Milliseconds 500; $waited += 500
+                # throttled: an ordinal above the ceiling waits rather than taking work
+                if ($Me -ge [int]$Shared.Active) { Start-Sleep -Milliseconds 500; continue }
+                # take the next piece nobody has - one at a time, under the table's own lock
+                $idx = -1
+                [Threading.Monitor]::Enter($Shared.SyncRoot)
+                try { $idx = [int]$Shared.Next; $Shared.Next = $idx + 1 } finally { [Threading.Monitor]::Exit($Shared.SyncRoot) }
+                if ($idx -ge $Count) { return }
+                $from = [long]$idx * $Chunk
+                $to   = [long][Math]::Min($Total - 1, $from + $Chunk - 1)
+                $attempt = 0
+                while ($true) {
+                    if ($Shared.Cancel -or $Shared.Pause) { return }
+                    $start = $from + [long]$Shared.Done[$idx]
+                    if ($start -gt $to) { break }               # this piece is whole - next
+                    $attempt++
+                    $resp = $null; $st = $null
+                    try {
+                        $req = [Net.HttpWebRequest]::Create([string]$Shared.Url)
+                        $req.UserAgent = 'PC2GoDeploy/1.0'
+                        $req.Timeout = 60000
+                        $req.ReadWriteTimeout = 120000
+                        $req.KeepAlive = $true
+                        $req.AddRange($start, $to)
+                        if ($Shared.ETag) { $req.Headers['If-Range'] = [string]$Shared.ETag }
+                        $resp = $req.GetResponse()
+                        $code = [int]$resp.StatusCode
+                        if ($code -eq 200 -and $Shared.ETag) {
+                            [void]$Shared.Errors.Add("chunk $idx : the file changed on the server (If-Range answered 200)")
+                            $Shared.Cancel = $true
+                            return
+                        }
+                        if ($code -ne 206) { throw "expected 206, got $code" }
+                        $st = $resp.GetResponseStream()
+                        [void]$fs.Seek($start, 'Begin')
+                        while (($n = $st.Read($buf, 0, $buf.Length)) -gt 0) {
+                            if ($Shared.Cancel -or $Shared.Pause) { return }
+                            $fs.Write($buf, 0, $n)
+                            $Shared.Done[$idx] = [long]$Shared.Done[$idx] + $n
+                        }
+                        # the server closed the body early: not an error, the loop re-asks for the rest
+                    } catch {
+                        if ($Shared.Cancel -or $Shared.Pause) { return }
+                        $msg = '' + $_.Exception.Message
+                        $http = 0
+                        $we = $_.Exception
+                        while ($we -and -not ($we -is [Net.WebException])) { $we = $we.InnerException }
+                        if ($we -and $we.Response) { try { $http = [int]$we.Response.StatusCode } catch { $http = 0 } }
+                        if ($http -eq 401 -or $http -eq 403) {
+                            # The link, not the network. Ask the window for a fresh one and wait;
+                            # the window says no by leaving NeedUrl set, which times out here.
+                            $Shared.NeedUrl = $true
+                            $waited = 0
+                            while ($Shared.NeedUrl -and -not $Shared.Cancel -and -not $Shared.Pause -and $waited -lt 90000) {
+                                Start-Sleep -Milliseconds 500; $waited += 500
+                            }
+                            if ($Shared.NeedUrl) {
+                                [void]$Shared.Errors.Add("chunk $idx : the download link expired and could not be refreshed")
+                                $Shared.Cancel = $true
+                                return
+                            }
+                            continue
+                        }
+                        if ($http -eq 416 -or $http -eq 404 -or $http -eq 410) {
+                            [void]$Shared.Errors.Add("chunk $idx : HTTP $http - $msg")
+                            $Shared.Cancel = $true
+                            return
+                        }
+                        # transient: count it, say it, back off, go again from Done
+                        $Shared.Faults = [int]$Shared.Faults + 1
+                        $wait = [Math]::Min(30, [Math]::Pow(2, [Math]::Min($attempt, 5)))
+                        [void]$Shared.Log.Add("chunk $idx attempt $attempt failed ($msg) - retrying in ${wait}s")
+                        $Shared.Retrying = [int]$Shared.Retrying + 1
+                        try {
+                            $until = (Get-Date).AddSeconds($wait)
+                            while ((Get-Date) -lt $until -and -not $Shared.Cancel -and -not $Shared.Pause) { Start-Sleep -Milliseconds 250 }
+                        } finally { $Shared.Retrying = [int]$Shared.Retrying - 1 }
+                        continue
+                    } finally {
+                        if ($st)   { try { $st.Close() } catch { } }
+                        if ($resp) { try { $resp.Close() } catch { } }
                     }
-                    if ($Shared.NeedUrl) {
-                        [void]$Shared.Errors.Add("range $Index : the download link expired and could not be refreshed")
-                        $Shared.Cancel = $true
-                        return
-                    }
-                    continue
                 }
-                if ($http -eq 416 -or $http -eq 404 -or $http -eq 410) {
-                    [void]$Shared.Errors.Add("range $Index : HTTP $http - $msg")
-                    $Shared.Cancel = $true
-                    return
-                }
-                # transient: count it, say it once per attempt, back off, go again from Done
-                $Shared.Retries[$Index] = [int]$Shared.Retries[$Index] + 1
-                $Shared.Faults = [int]$Shared.Faults + 1
-                $wait = [Math]::Min(30, [Math]::Pow(2, [Math]::Min($attempt, 5)))
-                [void]$Shared.Log.Add("range $Index attempt $attempt failed ($msg) - retrying in ${wait}s")
-                $Shared.Retrying = [int]$Shared.Retrying + 1
-                try {
-                    $until = (Get-Date).AddSeconds($wait)
-                    while ((Get-Date) -lt $until -and -not $Shared.Cancel -and -not $Shared.Pause) { Start-Sleep -Milliseconds 250 }
-                } finally { $Shared.Retrying = [int]$Shared.Retrying - 1 }
-                continue
-            } finally {
-                if ($fs)   { try { $fs.Close() } catch { } }
-                if ($st)   { try { $st.Close() } catch { } }
-                if ($resp) { try { $resp.Close() } catch { } }
             }
-        }
+        } finally { try { $fs.Close() } catch { } }
     }
 
-    # The pool's ceiling is the number of ranges running AT ONCE, and it can be changed while
-    # they run: SetMaxRunspaces is the throttle. Eight sockets is the right answer on a link
-    # that throttles per connection (the common case) and the wrong one on a link that drops
-    # packets - there, eight streams each time out and each retry costs the same again. So the
-    # loop below halves the ceiling when faults cluster and raises it back when things go
-    # quiet, and the answer it settles on is kept for the next file in the batch.
-    $active = [int]$(if ($script:SegmentActive -gt 0) { [Math]::Min($script:SegmentActive, $Streams) } else { $Streams })
-    $pool = [runspacefactory]::CreateRunspacePool(1, $active)
+    $pool = [runspacefactory]::CreateRunspacePool(1, $Streams)
     $pool.Open()
+    $jobs = @()
+    for ($w = 0; $w -lt $Streams; $w++) {
+        $ps = [powershell]::Create()
+        $ps.RunspacePool = $pool
+        [void]$ps.AddScript($work).AddArgument($w).AddArgument($tmp).AddArgument($total).
+              AddArgument($chunk).AddArgument($count).AddArgument($shared)
+        $jobs += [pscustomobject]@{ ps = $ps; handle = $ps.BeginInvoke() }
+    }
     $faultWindowStart = Get-Date
     $lastThrottle = Get-Date
     $refreshedUrl = $false
-    $jobs = @()
-    foreach ($r in $ranges) {
-        $ps = [powershell]::Create()
-        $ps.RunspacePool = $pool
-        [void]$ps.AddScript($work).AddArgument($tmp).
-              AddArgument($r.Index).AddArgument($r.From).AddArgument($r.To).AddArgument($shared)
-        $jobs += [pscustomobject]@{ ps = $ps; handle = $ps.BeginInvoke() }
-    }
 
     $lastJournal = Get-Date
     $spPrev = $null
@@ -7651,26 +7687,27 @@ function Invoke-SegmentedDownload([object]$Item, [string]$Dest, [int]$Streams = 
     try {
         while ($true) {
             $running = @($jobs | Where-Object { -not $_.handle.IsCompleted }).Count
-            $done = [long]0
-            for ($i = 0; $i -lt $Streams; $i++) { $done += [long]$shared.Done[$i] }
+            $dn = [long]0
+            for ($i = 0; $i -lt $count; $i++) { $dn += [long]$shared.Done[$i] }
 
             $pct = 0
-            if ($total -gt 0) { $pct = [math]::Floor($done * 100 / $total) }
+            if ($total -gt 0) { $pct = [math]::Floor($dn * 100 / $total) }
             $now = Get-Date
-            if ($null -eq $spPrev) { $spPrev = @{ bytes = $done; time = $now } }
+            if ($null -eq $spPrev) { $spPrev = @{ bytes = $dn; time = $now } }
             else {
                 $dt = ($now - $spPrev.time).TotalSeconds
                 if ($dt -ge 1) {
-                    $delta = $done - [long]$spPrev.bytes
+                    $delta = $dn - [long]$spPrev.bytes
                     if ($delta -gt 0) {
                         $rate   = [double]$delta / $dt
                         $spTxt  = (Format-Size ([long]$rate)) + '/s'
-                        $etaTxt = Format-Eta ($total - $done) $rate
+                        $etaTxt = Format-Eta ($total - $dn) $rate
                     }
-                    $spPrev = @{ bytes = $done; time = $now }
+                    $spPrev = @{ bytes = $dn; time = $now }
                 }
             }
-            # ---- the link: a range saw 401/403 and is waiting for a fresh one (once per file)
+
+            # ---- the link: a worker saw 401/403 and is waiting for a fresh one (once per file)
             if ($shared.NeedUrl) {
                 $fresh = $null
                 if (-not $refreshedUrl) {
@@ -7682,9 +7719,8 @@ function Invoke-SegmentedDownload([object]$Item, [string]$Dest, [int]$Streams = 
                     $shared.Url = [string]$fresh
                     $Item.Url   = [string]$fresh
                     $shared.NeedUrl = $false
-                    Add-Log "$($Item.Name): download link had expired - refreshed, the ranges are carrying on."
+                    Add-Log "$($Item.Name): download link had expired - refreshed, the workers are carrying on."
                 }
-                # not refreshed: leave NeedUrl set; the range times out on it and records the fault
             }
             # ---- the network: say what is actually happening rather than a stale percentage
             $netUp = $true
@@ -7692,22 +7728,21 @@ function Invoke-SegmentedDownload([object]$Item, [string]$Dest, [int]$Streams = 
             $retrying = [int]$shared.Retrying
             foreach ($l in @($shared.Log)) { Add-Log "$($Item.Name): $l" }
             $shared.Log.Clear()
-            # ---- adaptive concurrency: faults cluster -> halve the ceiling; quiet -> raise it
-            $now2 = Get-Date
-            if (($now2 - $faultWindowStart).TotalSeconds -ge 60) {
-                if ([int]$shared.Faults -ge 3 -and $active -gt 2 -and ($now2 - $lastThrottle).TotalSeconds -ge 60) {
+            # ---- adaptive concurrency: faults cluster -> halve the workers; quiet -> raise them
+            if (($now - $faultWindowStart).TotalSeconds -ge 60) {
+                if ([int]$shared.Faults -ge 3 -and $active -gt 2 -and ($now - $lastThrottle).TotalSeconds -ge 60) {
                     $active = [Math]::Max(2, [int][Math]::Floor($active / 2))
-                    try { [void]$pool.SetMaxRunspaces($active) } catch { }
-                    $lastThrottle = $now2
+                    $shared.Active = $active
+                    $lastThrottle = $now
                     Add-Log "$($Item.Name): the link is dropping connections - down to $active at a time."
-                } elseif ([int]$shared.Faults -eq 0 -and $active -lt $Streams -and ($now2 - $lastThrottle).TotalSeconds -ge 120) {
+                } elseif ([int]$shared.Faults -eq 0 -and $active -lt $Streams -and ($now - $lastThrottle).TotalSeconds -ge 120) {
                     $active = [Math]::Min($Streams, $active * 2)
-                    try { [void]$pool.SetMaxRunspaces($active) } catch { }
-                    $lastThrottle = $now2
+                    $shared.Active = $active
+                    $lastThrottle = $now
                     Add-Log "$($Item.Name): the link is steady again - back up to $active at a time."
                 }
                 $shared.Faults = 0
-                $faultWindowStart = $now2
+                $faultWindowStart = $now
                 $script:SegmentActive = $active
             }
 
@@ -7725,10 +7760,8 @@ function Invoke-SegmentedDownload([object]$Item, [string]$Dest, [int]$Streams = 
                 $txt += "  -  reconnecting $retrying of $active"
             }
             # Not over a verdict. Update-UI below is where a Remove or Cancel click runs, and it
-            # sets 'Removed from batch' / 'Cancelled' on this row; the ranges are still mid-read
+            # sets 'Removed from batch' / 'Cancelled' on this row; the workers are still mid-read
             # so the loop comes round once more, and this line rewrote that to "Downloading 43%".
-            # The pump's catch then read the row, saw no 'Removed', and started a full BITS
-            # download of the app the technician had just taken out.
             if (-not $shared.Cancel -and -not $shared.Pause -and
                 $Item.Status -notlike 'Removed*' -and $Item.Status -notlike 'Cancelled*') {
                 Set-Status $Item $txt $kind
@@ -7742,7 +7775,7 @@ function Invoke-SegmentedDownload([object]$Item, [string]$Dest, [int]$Streams = 
             # over, and losing two seconds of progress to a crash costs two seconds of refetch.
             if (($now - $lastJournal).TotalSeconds -ge 2) {
                 try {
-                    (@{ total = $total; streams = $Streams; done = @($shared.Done); etag = [string]$shared.ETag } | ConvertTo-Json -Compress) |
+                    (@{ total = $total; chunk = $chunk; done = @($shared.Done); etag = [string]$shared.ETag } | ConvertTo-Json -Compress) |
                         Set-Content -LiteralPath $journal -Encoding ASCII
                 } catch { }
                 $lastJournal = $now
@@ -7757,7 +7790,7 @@ function Invoke-SegmentedDownload([object]$Item, [string]$Dest, [int]$Streams = 
                 Set-Status $Item 'Paused' 'warn'
             }
             # Update-UI above pumps the dispatcher, so the remove button IS clickable while this
-            # loop runs. The status it sets is how that click reaches the streams.
+            # loop runs. The status it sets is how that click reaches the workers.
             if ($Item.Status -like 'Removed*') { $shared.Cancel = $true }
             if ($running -eq 0) { break }
             Start-Sleep -Milliseconds 200
@@ -7766,31 +7799,34 @@ function Invoke-SegmentedDownload([object]$Item, [string]$Dest, [int]$Streams = 
         foreach ($j in $jobs) { try { [void]$j.ps.EndInvoke($j.handle) } catch { }; $j.ps.Dispose() }
         $pool.Close(); $pool.Dispose()
         try {
-            (@{ total = $total; streams = $Streams; done = @($shared.Done); etag = [string]$shared.ETag } | ConvertTo-Json -Compress) |
+            (@{ total = $total; chunk = $chunk; done = @($shared.Done); etag = [string]$shared.ETag } | ConvertTo-Json -Compress) |
                 Set-Content -LiteralPath $journal -Encoding ASCII
         } catch { }
     }
 
-    # A pause is not a failure and must not be reported as one. Every range stopped on the
-    # flag, the journal in the finally above recorded exactly how far each got, and $false
+    # A pause is not a failure and must not be reported as one. Every worker stopped on the
+    # flag, the journal in the finally above recorded exactly how far each piece got, and $false
     # tells the pump to leave this item where it is - the next entry into this function
-    # resumes it. Checked BEFORE the error list, because a range that was mid-read when it
+    # resumes it. Checked BEFORE the error list, because a worker that was mid-read when it
     # was stopped can report the closed stream as an error.
     if ($shared.Pause) {
         Set-Status $Item 'Paused' 'warn'
         $Item.ProgressVis = 'Collapsed'
-        Add-Log "$($Item.Name): download paused - $(Format-Size (($shared.Done | Measure-Object -Sum).Sum)) of $(Format-Size $total) kept."
+        $kept = [long]0
+        foreach ($d in $shared.Done) { $kept += $d }
+        Add-Log "$($Item.Name): download paused - $(Format-Size $kept) of $(Format-Size $total) kept."
         return $false
     }
     if (@($shared.Errors).Count) { throw ((@($shared.Errors) | Select-Object -First 2) -join '; ') }
+    if ($shared.Cancel) { throw 'the download was stopped' }
 
     # The catalog's size outranks anything the server said - same rule as the single-stream
     # path, and the reason a truncating proxy cannot promote a partial file to a finished one.
     $actual = (Get-Item -LiteralPath $tmp).Length
     if ($actual -ne $total) { throw "incomplete download: got $actual of $total bytes" }
-    $done = [long]0
-    for ($i = 0; $i -lt $Streams; $i++) { $done += [long]$shared.Done[$i] }
-    if ($done -ne $total) { throw "incomplete download: $done of $total bytes accounted for" }
+    $sum = [long]0
+    for ($i = 0; $i -lt $count; $i++) { $sum += [long]$shared.Done[$i] }
+    if ($sum -ne $total) { throw "incomplete download: $sum of $total bytes accounted for" }
 
     Move-Item -LiteralPath $tmp -Destination $Dest -Force
     Remove-Item -LiteralPath $journal -Force -ErrorAction SilentlyContinue

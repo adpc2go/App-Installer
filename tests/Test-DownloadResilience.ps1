@@ -292,7 +292,7 @@ Write-Host ''
     # local transfer never reaches it and the harness stays green while the real thing, on a
     # slow link, is the only place that breaks. Hence the exact-count check.
     # Test-CancelRequested: the download loops now ask it instead of testing the cancel file directly
-    $wanted = @('Invoke-SegmentedDownload', 'Format-Size', 'Format-Eta', 'Test-CancelRequested')
+    $wanted = @('Invoke-SegmentedDownload', 'Get-SegmentChunkSize', 'Format-Size', 'Format-Eta', 'Test-CancelRequested')
     $segFn = @($adAst.FindAll({ param($n)
         $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
         $n.Name -in $wanted }, $true))
@@ -307,6 +307,8 @@ Write-Host ''
     function Update-UI { }
     function Add-Log { param($m) }
     $script:SegmentStreams = 8
+    # a 6 MB fixture cut into 24 pieces, so the chunk queue is genuinely exercised
+    $script:SegmentChunkFloor = [long]256KB
     $script:CancelPath = $null
 
     $segDir = Join-Path $root 'segmented'
@@ -338,22 +340,25 @@ Write-Host ''
         # would ever notice.
         $rdest = Join-Path $segDir 'resumed.bin'
         $rtmp = "$rdest.part"
-        $streams = 8
-        $per = [long][Math]::Floor($payload.Length / $streams)
+        # the journal is per CHUNK now - cut the file the way the downloader will, and leave
+        # exactly half of every piece already written
+        $chunkSz = Get-SegmentChunkSize ([long]$payload.Length)
+        $chunkN  = [int][Math]::Ceiling($payload.Length / [double]$chunkSz)
         $fs = [IO.File]::Open($rtmp, 'Create', 'Write', 'None')
         $doneArr = @()
         try {
             $fs.SetLength($payload.Length)
-            for ($i = 0; $i -lt $streams; $i++) {
-                $from = [long]($i * $per)
-                $to = $(if ($i -eq $streams - 1) { [long]($payload.Length - 1) } else { [long]($from + $per - 1) })
-                $half = [long][Math]::Floor(($to - $from + 1) / 2)
+            for ($i = 0; $i -lt $chunkN; $i++) {
+                $from = [long]($i * $chunkSz)
+                $len  = [long][Math]::Min($chunkSz, $payload.Length - $from)
+                $half = [long][Math]::Floor($len / 2)
                 [void]$fs.Seek($from, 'Begin')
-                $fs.Write($payload, $from, $half)      # genuinely the right bytes, half of each range
+                $fs.Write($payload, $from, $half)      # genuinely the right bytes, half of each piece
                 $doneArr += $half
             }
         } finally { $fs.Close() }
-        (@{ total = [long]$payload.Length; streams = $streams; done = $doneArr } | ConvertTo-Json -Compress) |
+        Assert-Equal 'the fixture is cut into many pieces' $true ($chunkN -ge 8)
+        (@{ total = [long]$payload.Length; chunk = $chunkSz; done = $doneArr } | ConvertTo-Json -Compress) |
             Set-Content -LiteralPath "$rdest.parts" -Encoding ASCII
         $null = Invoke-SegmentedDownload -Item $item -Dest $rdest -Streams 8
         Assert-Equal 'a half-finished download resumes to the same bytes' `
@@ -364,7 +369,7 @@ Write-Host ''
         $stmp = "$sdest.part"
         $sfs = [IO.File]::Open($stmp, 'Create', 'Write', 'None')
         try { $sfs.SetLength($payload.Length) } finally { $sfs.Close() }
-        (@{ total = [long]($payload.Length + 999); streams = 8; done = @(1..8 | ForEach-Object { 99999 }) } |
+        (@{ total = [long]($payload.Length + 999); chunk = 8MB; done = @(1..8 | ForEach-Object { 99999 }) } |
             ConvertTo-Json -Compress) | Set-Content -LiteralPath "$sdest.parts" -Encoding ASCII
         $null = Invoke-SegmentedDownload -Item $item -Dest $sdest -Streams 8
         Assert-Equal 'a journal for another file is discarded, not believed' `
