@@ -1114,13 +1114,38 @@ function Stop-ProcessTree {
 $script:WranglerCmd = $null
 function Resolve-Wrangler {
     if ($script:WranglerCmd) { return $script:WranglerCmd }
-    $direct = Get-Command wrangler -ErrorAction SilentlyContinue
-    if ($direct) { $script:WranglerCmd = @{ Exe = $direct.Source; Pre = @() }; return $script:WranglerCmd }
-    $npx = Get-Command npx -ErrorAction SilentlyContinue
-    if ($npx) {
+    # What npm puts on PATH for wrangler and npx is a SHIM: wrangler.cmd beside a wrangler.ps1
+    # (and a bare extensionless file for POSIX shells). Get-Command lists the .ps1 first, and
+    # neither a .ps1 nor a .cmd can be handed to Start-Process with redirected streams -
+    # that is CreateProcess, which answers "%1 is not a valid Win32 application". A real .exe
+    # is launched directly; the .cmd is launched through cmd.exe; the .ps1 is never chosen.
+    $pick = {
+        param([string]$Name)
+        $all = @(Get-Command $Name -All -ErrorAction SilentlyContinue | Where-Object { $_.Source })
+        $exe = $all | Where-Object { $_.Source -match '(?i)\.(exe|com)$' } | Select-Object -First 1
+        if ($exe) { return @{ Exe = $exe.Source; Pre = @() } }
+        $cmd = $all | Where-Object { $_.Source -match '(?i)\.(cmd|bat)$' } | Select-Object -First 1
+        $cmdPath = $(if ($cmd) { $cmd.Source } else { '' })
+        if (-not $cmdPath) {
+            # only the .ps1 (or the extensionless file) was found: its .cmd twin lives beside it
+            foreach ($c in $all) {
+                $sib = [IO.Path]::Combine((Split-Path -Parent $c.Source), ((Split-Path -Leaf $c.Source) -replace '\.[^.]+$', '') + '.cmd')
+                if (Test-Path -LiteralPath $sib) { $cmdPath = $sib; break }
+            }
+        }
+        if ($cmdPath) {
+            return @{ Exe = (Join-Path $env:SystemRoot 'System32\cmd.exe'); Pre = @('/d', '/c', ('"' + $cmdPath + '"')) }
+        }
+        return $null
+    }
+    $w = & $pick 'wrangler'
+    if ($w) { $script:WranglerCmd = $w; return $script:WranglerCmd }
+    $n = & $pick 'npx'
+    if ($n) {
         # --yes so a missing package is fetched rather than sitting on a confirmation prompt
         # nobody is watching for.
-        $script:WranglerCmd = @{ Exe = $npx.Source; Pre = @('--yes', 'wrangler') }
+        $n.Pre = @($n.Pre) + @('--yes', 'wrangler')
+        $script:WranglerCmd = $n
         return $script:WranglerCmd
     }
     throw ('wrangler is not installed and npx is not available. Install Node.js, then either ' +
