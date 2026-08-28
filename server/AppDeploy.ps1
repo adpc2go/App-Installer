@@ -2883,7 +2883,7 @@ $xaml = @'
                 <TextBlock x:Name="TxtPfHaveNote" Text="" FontSize="11.5" TextWrapping="Wrap"
                            Foreground="{StaticResource Warn}"/>
                 <CheckBox x:Name="ChkPfHave" Margin="0,8,0,0">
-                  <TextBlock Text="Reinstall over the existing copies anyway"
+                  <TextBlock x:Name="TxtPfHaveChk" Text="Reinstall over the existing copies anyway"
                              FontSize="11.5" Foreground="{StaticResource Ink}" TextWrapping="Wrap"/>
                 </CheckBox>
               </StackPanel>
@@ -2978,7 +2978,7 @@ foreach ($n in 'ListApps','BarOverall','TxtOverall','TxtLog','TxtStatus','TxtCat
                'PreflightOverlay','TxtPfTitle','TxtPfSub','ListPf','PfDisk','TxtPfDiskWhere',
                'TxtPfDiskFacts','PfBarUsed','PfBarNeed','TxtPfDiskNote','TxtPfFoot','BtnPfGo','BtnPfCancel',
                'PfDep','TxtPfDepNote','BtnPfAddDep','ChkPfReinstall',
-               'PfHave','TxtPfHaveNote','ChkPfHave',
+               'PfHave','TxtPfHaveNote','ChkPfHave','TxtPfHaveChk',
                'LoadUn','TxtLoadUn','TxtLoadUn2','BtnSubDesktop','BtnSubStore','BtnRescan',
                'BtnColName','BtnColPub','BtnColDate','BtnColSize',
                'BtnSearchClear','EmptyInstall','EmptyUn','BtnForce','BtnOverlayCancel','RowNow','RowProgress',
@@ -13462,6 +13462,18 @@ $BtnInstall.Add_Click({
             Show-Overlay 'Already queued' 'All selected applications are already in the current batch.'
             return
         }
+        # This path skips the pre-flight sheet, so it skipped the already-installed guard
+        # with it: a product that had just finished could be ticked and added straight back
+        # into the same batch. Same rule, without the sheet - and no way to say "anyway" here,
+        # because the sheet is where that decision lives.
+        $here = @($new | Where-Object { Test-CatalogInstalled $_ })
+        foreach ($h in $here) {
+            $h.IsSelected = $false
+            Set-Status $h 'Already installed' 'ok'; Set-Ring $h 'ok'
+            Add-Log "$($h.Name): already installed on this machine - not added. Start a fresh batch and tick 'Reinstall over the existing copies' to force it."
+        }
+        $new = @($new | Where-Object { $here -notcontains $_ })
+        if ($new.Count -eq 0) { return }
         # The disk question again, because adding to a running batch adds real bytes and this
         # path skipped it entirely - Start-Batch checked, and then a technician could queue
         # another 15 GB package onto the same drive with nothing asked. Only the NEW rows are
@@ -13495,6 +13507,16 @@ $BtnInstall.Add_Click({
             Show-Overlay 'Already queued' 'All selected applications are already queued.'
             return
         }
+        # the follow-up batch starts through Start-Batch directly, never through the sheet,
+        # so the already-installed guard has to be applied here or it is not applied at all
+        $here = @($new | Where-Object { Test-CatalogInstalled $_ })
+        foreach ($h in $here) {
+            $h.IsSelected = $false
+            Set-Status $h 'Already installed' 'ok'; Set-Ring $h 'ok'
+            Add-Log "$($h.Name): already installed on this machine - not queued. Start a fresh batch and tick 'Reinstall over the existing copies' to force it."
+        }
+        $new = @($new | Where-Object { $here -notcontains $_ })
+        if ($new.Count -eq 0) { return }
         foreach ($s in $new) { Set-Status $s 'Queued (next batch)' 'neutral'; Set-Ring $s 'queued' }
         $script:Deferred = @($script:Deferred) + $new
         Add-Log "Queued $($new.Count) app(s) - they start automatically when the current batch finishes (one more UAC prompt)."
@@ -13692,14 +13714,29 @@ $script:PfReinstall = $false
 
 function Get-PfHaveItems { return @(@($script:PfItems) | Where-Object { $_ -and $script:PfHave[[string]$_.Id] }) }
 
+# "Already gone" for an uninstall row, the mirror of Test-CatalogInstalled for the Install tab.
+# A registry row's detect target is its own uninstall key; a catalog-upgraded row's is the
+# vendor detect path. A row with NO detect target - a Store app - cannot be judged from here
+# and is never flagged: unknown must not read as "already removed".
+function Test-UnRowGone([object]$Item) {
+    $d = [string]$Item.DetectPath
+    if (-not $d) { return $false }
+    try {
+        if ($d -match '^HK(LM|CU|CR|EY)') { return -not (Test-Path -LiteralPath (ConvertTo-PSRegPath $d)) }
+        return -not (Test-Path -LiteralPath ([Environment]::ExpandEnvironmentVariables($d)))
+    } catch { return $false }
+}
+
 function Get-PfCommitItems {
     $items = @($script:PfItems)
-    if ($script:PfAction -ne 'install') { return $items }
-    # already-installed rows leave the batch here, so every consumer - the disk figure, the
-    # button count, the commit itself - sees the same list
+    # Rows the sheet flagged - already installed, or already removed - leave the batch here,
+    # so every consumer (the disk figure, the button count, the commit itself) sees one list.
+    # Both actions: an uninstall row that is already gone used to go straight back through a
+    # vendor uninstaller that no longer exists, and report Failed for a product that was not there.
     if (-not $script:PfReinstall -and $script:PfHave.Count) {
         $items = @($items | Where-Object { -not $script:PfHave[[string]$_.Id] })
     }
+    if ($script:PfAction -ne 'install') { return $items }
     if (-not $items.Count) { return @() }
     if (-not $script:PfDep) { return (Sort-ByRequires $items) }
     $un = @(); $re = @()
@@ -13769,8 +13806,9 @@ function Sync-Preflight {
     $bytes = [long]0
     foreach ($i in $items) { $bytes += [long]$i.SizeBytes }
 
-    $have = @()
-    if ($install) { $have = Get-PfHaveItems }
+    $have = Get-PfHaveItems
+    $tagOn  = $(if ($install) { 'reinstall' } else { 'run anyway' })
+    $tagOff = $(if ($install) { 'installed - skipped' } else { 'already removed - skipped' })
     $ListPf.ItemsSource = @($items | ForEach-Object {
         [pscustomobject]@{
             Item     = $_
@@ -13778,36 +13816,44 @@ function Sync-Preflight {
             IconText = [string]$_.IconText
             IconBg   = [string]$_.IconBg
             SizeText = $(if ([long]$_.SizeBytes -gt 0) { Format-Size ([long]$_.SizeBytes) } else { 'size unknown' })
-            HaveText = $(if ($have -contains $_) { if ($script:PfReinstall) { 'reinstall' } else { 'installed - skipped' } } else { '' })
+            HaveText = $(if ($have -contains $_) { if ($script:PfReinstall) { $tagOn } else { $tagOff } } else { '' })
         } })
 
     $n = $items.Count
     $word = $(if ($n -eq 1) { 'application' } else { 'applications' })
+    # the number on the button is what will actually run, not what was ticked
+    $nGo = @(Get-PfCommitItems | Where-Object { $_.BatchAction -ne 'uninstall' }).Count
     if ($install) {
-        # the number on the button is what will actually run, not what was ticked
-        $nGo = @(Get-PfCommitItems | Where-Object { $_.BatchAction -ne 'uninstall' }).Count
         $TxtPfTitle.Text = "Install $n $word"
         $TxtPfSub.Text   = 'Nothing has been downloaded yet. Take out anything you did not mean to pick.'
         $BtnPfGo.Content = "Install $nGo"
         $TxtPfFoot.Text  = 'Downloads to %LOCALAPPDATA%\PC2GoDeploy'
-        if ($PfHave) {
-            $PfHave.Visibility = 'Collapsed'
-            if ($have.Count) {
-                $PfHave.Visibility = 'Visible'
-                $names = (@($have | ForEach-Object { $_.Name }) -join ', ')
-                $TxtPfHaveNote.Text = $(if ($have.Count -eq 1) {
-                    "$names is already installed on this machine, so it is skipped."
-                } else {
-                    "$($have.Count) of these are already installed on this machine, so they are skipped: $names."
-                })
-                if ($ChkPfHave.IsChecked -ne [bool]$script:PfReinstall) { $ChkPfHave.IsChecked = [bool]$script:PfReinstall }
-            }
-        }
     } else {
         $TxtPfTitle.Text = "Uninstall $n $word"
         $TxtPfSub.Text   = 'The vendor uninstaller runs for each of these. Take out anything you did not mean to pick.'
-        $BtnPfGo.Content = "Uninstall $n"
+        $BtnPfGo.Content = "Uninstall $nGo"
         $TxtPfFoot.Text  = 'Each one runs in turn; the batch reports as it goes.'
+    }
+    # The already-there / already-gone panel, for either action. Guarded on the control
+    # existing, like PfDep: an older harness name list must get a working sheet, not a throw.
+    if ($PfHave) {
+        $PfHave.Visibility = 'Collapsed'
+        if ($have.Count) {
+            $PfHave.Visibility = 'Visible'
+            $names = (@($have | ForEach-Object { $_.Name }) -join ', ')
+            $TxtPfHaveNote.Text = $(if ($install) {
+                if ($have.Count -eq 1) { "$names is already installed on this machine, so it is skipped." }
+                else { "$($have.Count) of these are already installed on this machine, so they are skipped: $names." }
+            } else {
+                if ($have.Count -eq 1) { "$names is no longer on this machine, so it is skipped." }
+                else { "$($have.Count) of these are no longer on this machine, so they are skipped: $names." }
+            })
+            if ($TxtPfHaveChk) {
+                $TxtPfHaveChk.Text = $(if ($install) { 'Reinstall over the existing copies anyway' }
+                                       else { 'Run the uninstaller anyway' })
+            }
+            if ($ChkPfHave.IsChecked -ne [bool]$script:PfReinstall) { $ChkPfHave.IsChecked = [bool]$script:PfReinstall }
+        }
     }
 
     # ---- dependencies. State was computed once in Show-Preflight; this only filters it
@@ -13821,8 +13867,8 @@ function Sync-Preflight {
         $ChkPfReinstall.Visibility = 'Collapsed'
     }
     $BtnPfGo.IsEnabled = $true
-    # every row already installed and no reinstall asked for: nothing would run
-    if ($install -and -not @(Get-PfCommitItems).Count) { $BtnPfGo.IsEnabled = $false }
+    # every row already installed (or already gone) and nothing asked to run anyway: nothing would run
+    if (-not @(Get-PfCommitItems).Count) { $BtnPfGo.IsEnabled = $false }
     if ($install -and $script:PfDep -and $PfDep) {
         $missing = @(@($script:PfDep.Missing) | Where-Object {
             $items -contains $_.Addon -and $items -notcontains $_.Base -and
@@ -13932,6 +13978,12 @@ function Show-Preflight([object[]]$Items, [string]$Action) {
     $script:PfDep = $null
     $script:PfHave = @{}
     $script:PfReinstall = $false
+    if ($Action -eq 'uninstall') {
+        # the mirror guard: a row whose detect target is already gone is skipped unless asked
+        foreach ($p in $script:PfItems) {
+            if ($p -and $p.Id -and (Test-UnRowGone $p)) { $script:PfHave[[string]$p.Id] = $true }
+        }
+    }
     if ($Action -eq 'install') {
         try {
             $inst = @{}
@@ -14338,12 +14390,17 @@ $BtnPfGo.Add_Click({
     # The rows the sheet left out because they are already here. They are not in the batch,
     # so nothing else will ever write to them: the card says why, the log says why, and the
     # tick comes off so the next press does not offer them all over again.
-    if ($action -eq 'install' -and -not $script:PfReinstall) {
+    if (-not $script:PfReinstall) {
         foreach ($h in @(Get-PfHaveItems)) {
-            Set-Status $h 'Already installed' 'ok'
-            Set-Ring $h 'ok'
             $h.IsSelected = $false
-            Add-Log "$($h.Name): already installed on this machine - skipped (tick 'Reinstall over the existing copies' on the sheet to run it again)."
+            Set-Ring $h 'ok'
+            if ($action -eq 'install') {
+                Set-Status $h 'Already installed' 'ok'
+                Add-Log "$($h.Name): already installed on this machine - skipped (tick 'Reinstall over the existing copies' on the sheet to run it again)."
+            } else {
+                Set-Status $h 'Already removed' 'ok'
+                Add-Log "$($h.Name): no longer on this machine - skipped (tick 'Run the uninstaller anyway' on the sheet to force it)."
+            }
         }
     }
     Hide-Preflight
