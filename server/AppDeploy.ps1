@@ -7596,6 +7596,7 @@ function Invoke-SegmentedDownload([object]$Item, [string]$Dest, [int]$Streams = 
                     if ($start -gt $to) { break }               # this piece is whole - next
                     $attempt++
                     $resp = $null; $st = $null
+                    $gotThisAttempt = [long]0
                     try {
                         $req = [Net.HttpWebRequest]::Create([string]$Shared.Url)
                         $req.UserAgent = 'PC2GoDeploy/1.0'
@@ -7618,6 +7619,7 @@ function Invoke-SegmentedDownload([object]$Item, [string]$Dest, [int]$Streams = 
                             if ($Shared.Cancel -or $Shared.Pause) { return }
                             $fs.Write($buf, 0, $n)
                             $Shared.Done[$idx] = [long]$Shared.Done[$idx] + $n
+                            $gotThisAttempt += $n
                         }
                         # the server closed the body early: not an error, the loop re-asks for the rest
                     } catch {
@@ -7647,9 +7649,15 @@ function Invoke-SegmentedDownload([object]$Item, [string]$Dest, [int]$Streams = 
                             $Shared.Cancel = $true
                             return
                         }
-                        # transient: count it, say it, back off, go again from Done
+                        # Two different failures wear the same exception. A socket that was
+                        # DELIVERING and then died means the link is up and only that connection
+                        # is gone - the right move is to reconnect at once, and 2-8 s of backoff
+                        # there was pure dead time (measured: at 40% cut responses, sixteen workers
+                        # took 44 s where eight took 25 s, all of it waiting). Backoff is for the
+                        # other case: a reconnect that yields NOTHING, which is an outage.
                         $Shared.Faults = [int]$Shared.Faults + 1
-                        $wait = [Math]::Min(30, [Math]::Pow(2, [Math]::Min($attempt, 5)))
+                        if ($gotThisAttempt -gt 0) { $attempt = 0 }
+                        $wait = $(if ($attempt -eq 0) { 0.25 } else { [Math]::Min(30, [Math]::Pow(2, [Math]::Min($attempt, 5))) })
                         [void]$Shared.Log.Add("chunk $idx attempt $attempt failed ($msg) - retrying in ${wait}s")
                         $Shared.Retrying = [int]$Shared.Retrying + 1
                         try {
