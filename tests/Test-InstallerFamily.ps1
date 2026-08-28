@@ -123,6 +123,17 @@ try {
         Assert-True "EmbeddedMsi for $(Split-Path -Leaf $p2) is found@ or not-searched" ($r.EmbeddedMsi -eq 'not-searched' -or $r.EmbeddedMsi -like 'found@0x*')
     }
 
+    Write-Section '6b. One copy: the region inside AppDeploy.ps1 IS this file'
+    $ad = Get-Content -LiteralPath (Join-Path $repo 'server\AppDeploy.ps1') -Raw
+    $mm = [regex]::Match($ad, '(?s)# ---- begin tools\\Installer-Family\.ps1[^\r\n]*\r?\n[^\r\n]*\r?\n(.*?)# ---- end tools\\Installer-Family\.ps1')
+    Assert-True 'AppDeploy.ps1 carries the marked region' $mm.Success
+    if ($mm.Success) {
+        $norm = { param($s) (($s -replace "`r`n", "`n").TrimEnd()) }
+        Assert-Equal 'and it is byte-for-byte this file (run tools\Sync-InstallerFamily.ps1 after editing the detector)' (& $norm $src) (& $norm $mm.Groups[1].Value)
+        Assert-True 'Start-Worker substitutes the detector into the worker' ($ad -match "Replace\('#__INSTALLERFAMILY__', \(Get-InstallerFamilySource\)\)")
+        Assert-True 'and the worker carries the placeholder'               ($ad -match '(?m)^#__INSTALLERFAMILY__\s*$')
+    }
+
     Write-Section '7. The registry side: quiet flags only on positive evidence'
     $u = Get-UninstallFamily -Exe 'C:\Apps\X\unins000.exe' -Arguments '' -RegValues @{ 'Inno Setup: Setup Version' = '6.2' }
     Assert-Equal 'unins000.exe with Inno registry values is Inno'  'inno' $u.Family

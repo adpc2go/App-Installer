@@ -143,7 +143,7 @@ try {
         if ($script:WorkerStarted) { return $true }
         Remove-Item -LiteralPath $script:WorkerPath -Force -ErrorAction SilentlyContinue
         $nvAssign = "`$NvApiSrc = @'" + [Environment]::NewLine + $script:NvApiSource + [Environment]::NewLine + "'@"
-        $built = $workerScript.Replace('#__NVAPISOURCE__', $nvAssign).Replace('#__SHAREDTABLES__', (Get-SharedTablesSource))
+        $built = $workerScript.Replace('#__NVAPISOURCE__', $nvAssign).Replace('#__SHAREDTABLES__', (Get-SharedTablesSource)).Replace('#__INSTALLERFAMILY__', (Get-InstallerFamilySource))
         Set-Content -Path $script:WorkerPath -Value $built -Encoding UTF8
         Remove-Item -LiteralPath $script:StatusPath, $script:CancelPath -ErrorAction SilentlyContinue
         $script:StatusOffset = 0
