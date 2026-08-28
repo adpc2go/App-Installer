@@ -14459,8 +14459,13 @@ $BtnBatchClose.Add_Click({
     # the list, badge and all, until somebody happened to rescan. The Activity tab and the run
     # record keep the sentence; the card goes back to being a catalog row.
     if ($script:Phase -in 'Done', 'Idle') {
-        foreach ($p in @($script:Pending)) {
-            if (-not $p) { continue }
+        # Every row carrying a verdict, not only the batch's own. "Already installed" and
+        # "Already removed" are stamped on rows the sheet SKIPPED - never in $script:Pending -
+        # and those kept their badge after the strip was closed. The catalog and both
+        # uninstall inventories are the only places a row can carry one.
+        $rows = @($script:Pending) + @($script:Items) + @($script:UnItems) + @($script:UnStore)
+        foreach ($p in @($rows | Select-Object -Unique)) {
+            if (-not $p -or -not ('' + $p.Status)) { continue }
             Set-Status $p '' 'neutral'
             Set-Ring $p 'none'
             $p.ProgressVis = 'Collapsed'
