@@ -79,6 +79,7 @@ $runKey      = 'HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run'
 $keyA        = "$unRoot\PC2GoTest-A-$tag"
 $keyB        = "$unRoot\PC2GoTest-B-$tag"
 $keyC        = "$unRoot\PC2GoTest-C-$tag"
+$keyD        = "$unRoot\PC2GoTest-D-$tag"
 $vellumKey   = 'HKCU:\SOFTWARE\VellumSync'
 $appDataC    = Join-Path $env:APPDATA 'VellumSync'
 $localC      = Join-Path $env:LOCALAPPDATA 'VellumSync'
@@ -90,7 +91,7 @@ $sandbox = $null
 function Remove-Artefacts {
     if ($script:Locker) { try { if (-not $script:Locker.HasExited) { $script:Locker.Kill() } } catch {} }
     Start-Sleep -Milliseconds 300
-    foreach ($k in @($keyA, $keyB, $keyC, $vellumKey)) {
+    foreach ($k in @($keyA, $keyB, $keyC, $keyD, $vellumKey)) {
         try { if (Test-Path -LiteralPath $k) { Remove-Item -LiteralPath $k -Recurse -Force -ErrorAction SilentlyContinue } } catch {}
     }
     try { Remove-ItemProperty -LiteralPath $runKey -Name 'VellumSync' -Force -ErrorAction SilentlyContinue } catch {}
@@ -121,7 +122,12 @@ try {
     # protected roots; lifting the caller without it throws CommandNotFound on the first target
     foreach ($n in 'Format-Size', 'Get-FolderSize', 'ConvertTo-PSRegPath', 'AsText', 'Clean-DisplayName',
                    'Parse-UninstallString', 'ConvertTo-Int', 'Get-InstalledPrograms',
-                   'Test-ProtectedPath', 'Scan-Leftovers') {
+                   'Test-ProtectedPath', 'Scan-Leftovers',
+                   # the installer-family detector Get-InstalledPrograms consults for non-quiet rows
+                   'Get-InstallerFamilyLabel', 'Get-FamilySwitches', 'Read-FileRange', 'ConvertTo-Latin1',
+                   'Find-Marker', 'ConvertFrom-HexMarker', 'Get-PeLayout', 'Get-VersionStrings',
+                   'Get-PeResourceLeaves', 'Get-CompanionNames', 'Test-Companion', 'Get-InstallerFamily',
+                   'Get-UninstallFamily', 'New-InstallerFamilyFixture') {
         . ([scriptblock]::Create((Get-Fn $n)))
     }
     # the real AppItem / WipeItem, so a renamed field breaks this rather than passing on a stand-in
@@ -271,6 +277,21 @@ public class Locker {
     Assert-True 'C: Vellum Sync is installed, with registry and profile traces' `
                 ((Test-Path $dirC) -and (Test-Path $vellumKey) -and (Test-Path $appDataC))
 
+    # ---- D: an Inno Setup-shaped product - unins000.exe carrying the Inno signature, a plain
+    # UninstallString with no switch and NO "Inno Setup: *" registry values, so only the file's
+    # own signature can say what it is. Never removed by the worker; discovery only.
+    $dirD = Join-Path $installRoot 'Ember Reader'
+    New-Item -ItemType Directory -Force -Path $dirD | Out-Null
+    $unD = Join-Path $dirD 'unins000.exe'
+    [void](New-InstallerFamilyFixture -Family inno -Path $unD)
+    New-Item -Path $keyD -Force | Out-Null
+    Set-ItemProperty -Path $keyD -Name 'DisplayName'     -Value 'Ember Reader'
+    Set-ItemProperty -Path $keyD -Name 'DisplayVersion'  -Value '3.0'
+    Set-ItemProperty -Path $keyD -Name 'Publisher'       -Value 'PC2Go Test Fixtures'
+    Set-ItemProperty -Path $keyD -Name 'InstallLocation' -Value $dirD
+    Set-ItemProperty -Path $keyD -Name 'UninstallString' -Value "`"$unD`""
+    Assert-True 'D: Ember Reader is installed with an Inno-signed uninstaller' ((Test-Path $unD) -and (Test-Path $keyD))
+
     # ================================================================== discovery
     Write-Section 'The tool finds them the way Control Panel does'
 
@@ -289,6 +310,15 @@ public class Locker {
     Assert-Equal 'A: no stray arguments'        '' $fa.Args
     Assert-True  'B: QuietUninstallString wins over UninstallString' ($fb.Exe -eq $unB -and $fb.Args -eq '')
     Assert-True  'B: and is therefore marked silent'                 $fb.Silent
+    # the family detector: a positive signature earns the documented quiet flags; nothing else does
+    $fd = @($found | Where-Object { $_.Name -eq 'Ember Reader' }) | Select-Object -First 1
+    Assert-True  'D is discovered'                                   $fd
+    Assert-Equal 'D: the uninstaller signature names Inno Setup'     'inno' $fd.Family
+    Assert-True  'D: and the row is silent'                          $fd.Silent
+    Assert-Equal 'D: with the documented Inno quiet flags appended'  '/VERYSILENT /SUPPRESSMSGBOXES /NORESTART' $fd.Args
+    Assert-Equal 'D: the vendor string is kept beside them'          '' $fd.BaseArgs
+    Assert-True  'A: a plain .cmd uninstaller is NOT called silent'  (-not $fa.Silent)
+    Assert-Equal 'A: and names no family'                            '' $fa.Family
 
     Write-Section 'Parse-UninstallString against the shapes vendors actually write'
     $msi = Parse-UninstallString 'MsiExec.exe /I{90160000-008C-0000-1000-0000000FF1CE}'

@@ -5065,6 +5065,19 @@ function Get-InstalledPrograms {
             if (-not $raw) { continue }                                    # nothing to run
             $parsed = Parse-UninstallString $raw
             if (-not $parsed) { continue }
+            # A row that is not already quiet asks which installer wrote its uninstaller - from
+            # the key's own values (Inno writes "Inno Setup: *", Burn writes BundleCachePath)
+            # or the uninstaller file's signature - and only a positive answer appends that
+            # family's documented quiet flags. Everything else keeps the vendor string as-is.
+            $fam = ''; $famArgs = [string]$parsed.args
+            if (-not ($quiet -or $parsed.silent) -and (Get-Command Get-UninstallFamily -ErrorAction SilentlyContinue)) {
+                try {
+                    $vals = @{}
+                    foreach ($pp in $p.PSObject.Properties) { if ($pp.Name -notlike 'PS*') { $vals[$pp.Name] = $pp.Value } }
+                    $uf = Get-UninstallFamily -Exe ([Environment]::ExpandEnvironmentVariables([string]$parsed.exe)) -Arguments ([string]$parsed.args) -RegValues $vals -InstallLocation ([string]$p.InstallLocation)
+                    if ($uf -and $uf.Silent -and $uf.Family) { $fam = [string]$uf.Family; $famArgs = [string]$uf.Args }
+                } catch { $fam = '' }
+            }
             # Deduplicate on the COMMAND, not on name + version.
             #
             # The point of this is that one product registered in both HKLM and HKCU, or under
@@ -5089,8 +5102,10 @@ function Get-InstalledPrograms {
                 Publisher   = ('' + $p.Publisher).Trim()
                 Location    = ('' + $p.InstallLocation).Trim()
                 Exe         = $parsed.exe
-                Args        = $parsed.args
-                Silent      = ($quiet -or $parsed.silent)
+                Args        = $famArgs
+                BaseArgs    = $parsed.args
+                Family      = $fam
+                Silent      = ($quiet -or $parsed.silent -or [bool]$fam)
                 SizeKB      = [Math]::Max(0, (ConvertTo-Int $p.EstimatedSize))
                 # InstallDate is yyyyMMdd when it is there at all, and plenty of installers
                 # never write it. $null means unknown, and unknown is never claimed as recent.
@@ -5374,7 +5389,9 @@ function Refresh-UnList([object]$Manifest) {
         $u.DetectPath = $r.RegKey     # key vanishing = uninstalled; folder may linger as leftovers
         $u.RegKey = $r.RegKey
         $u.IsSilent = $r.Silent
-        $u.Source = $(if ($r.Silent) { 'Silent uninstall' } else { 'Shows installer UI' })
+        $u.UnFamily = [string]$r.Family
+        $u.Source = $(if ($r.Family) { "Silent uninstall ($(Get-InstallerFamilyLabel $r.Family))" }
+                      elseif ($r.Silent) { 'Silent uninstall' } else { 'Shows installer UI' })
         $u.Category = 'Desktop programs  (Control Panel)'
         $u.IconData = $IconMap['default'][0]
         $u.IconBg = $(if ($r.Silent) { '#FF64748B' } else { '#FF8A6A32' })
@@ -9691,6 +9708,8 @@ function Uninstall-One($app) {
         $unWatch['AllowUi'] = $true
         # long enough for somebody to actually read a wizard, short enough to end a hang
     }
+    # named in the record, like the install side: a wrong family flag has to be diagnosable
+    Write-Activity $app.id 'uninstall' 'Started' "$exe $($app.args)$(if ($app.family) { " (silent via $($app.family) flags)" } elseif ($app.silent) { ' (silent)' } else { ' (may show its wizard)' })"
     if ([string]::IsNullOrWhiteSpace($app.args)) {
         $p = Start-InstallerWatched -FilePath $exe @unWatch
     } else {
@@ -17845,7 +17864,8 @@ function Start-Uninstall([object[]]$sel, [bool]$Force) {
         try { $unSid = ([Security.Principal.WindowsIdentity]::GetCurrent()).User.Value } catch {}
         $entry = @{ id = $s.Id; action = 'uninstall'; command = $s.UnCommand; args = $s.UnArgs
                     detect = $s.DetectPath; location = @($s.CleanPaths)[0]
-                    silent = [bool]$s.IsSilent; userSid = $unSid } | ConvertTo-Json -Compress
+                    silent = [bool]$s.IsSilent; userSid = $unSid
+                    family = [string]$s.UnFamily } | ConvertTo-Json -Compress
         Add-Content -Path $script:QueuePath -Value $entry -Encoding UTF8
     }
     if ($script:DeepClean) {

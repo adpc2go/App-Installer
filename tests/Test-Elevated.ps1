@@ -239,7 +239,11 @@ try {
 
         foreach ($n in 'Format-Size', 'Get-FolderSize', 'ConvertTo-PSRegPath', 'AsText',
                        'Clean-DisplayName', 'Parse-UninstallString', 'ConvertTo-Int',
-                       'Get-InstalledPrograms') {
+                       'Get-InstalledPrograms',
+                       'Get-InstallerFamilyLabel', 'Get-FamilySwitches', 'Read-FileRange', 'ConvertTo-Latin1',
+                       'Find-Marker', 'ConvertFrom-HexMarker', 'Get-PeLayout', 'Get-VersionStrings',
+                       'Get-PeResourceLeaves', 'Get-CompanionNames', 'Test-Companion', 'Get-InstallerFamily',
+                       'Get-UninstallFamily') {
             . ([scriptblock]::Create((Get-Fn $n)))
         }
         $mDir = Join-Path $progDir 'Zephyr Lab'
