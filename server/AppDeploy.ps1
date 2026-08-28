@@ -9311,7 +9311,11 @@ public static class UserProfile {
     static extern int CreateProfile(string pszUserSid, string pszUserName,
                                     StringBuilder pathBuf, uint cchPath);
     public static int Create(string sid, string name, out string path) {
-        var sb = new StringBuilder(512);
+        // EXACTLY MAX_PATH. MEASURED on Windows 11 25H2: a buffer of 512 - or 261 - makes the
+        // userenv RPC reject the call with 0x800706F7 "the stub received bad data" and no
+        // folder is built; 260 returns 0 and C:\Users\<name> appears. Every account this tool
+        // ever created was reported "profile folder not created" for this one number.
+        var sb = new StringBuilder(260);
         int hr = CreateProfile(sid, name, sb, (uint)sb.Capacity);
         path = sb.ToString();
         return hr;
@@ -9426,13 +9430,19 @@ function New-LocalAdmin($app) {
 
     # build the profile now so data can be copied in without a first sign-in
     $sid = Get-UserSid $name
-    $profileNote = 'profile folder not created - sign in once before copying data'
+    # The note says WHY when it fails. 'profile folder not created' covered a SID that would
+    # not resolve, a type that did not compile, and a Windows error code alike - and the code
+    # was the one that mattered (see the buffer size above).
+    $profileNote = 'profile folder not created (the account SID could not be resolved) - sign in once before copying data'
     if ($sid) {
         $path = ''
         $hr = 0
-        try { $hr = [UserProfile]::Create($sid, $name, [ref]$path) } catch { $hr = -1 }
+        $threw = ''
+        try { $hr = [UserProfile]::Create($sid, $name, [ref]$path) } catch { $hr = -1; $threw = $_.Exception.Message }
         # 0x800700B7 is "already exists", which is a success for our purposes
         if ($hr -eq 0 -or $hr -eq -2147024713) { $profileNote = "profile created at $path" }
+        elseif ($threw) { $profileNote = "profile folder not created ($threw) - sign in once before copying data" }
+        else { $profileNote = ('profile folder not created (CreateProfile returned 0x{0:X8}) - sign in once before copying data' -f $hr) }
     }
     $role = $(if ($wantAdmin) { "a member of $grp" } else { 'a standard user' })
     Write-Status $app.id 'Applied' "$name created as $role; $profileNote"
@@ -10081,7 +10091,7 @@ function Copy-ProfileData($app) {
                 }
             }
             if (-not $dstPath -or -not (Test-Path -LiteralPath $dstPath)) {
-                Write-Status $app.id 'Failed' 'could not create the destination profile - sign into the account once, then retry'
+                Write-Status $app.id 'Failed' ('could not create the destination profile (CreateProfile returned 0x{0:X8}) - sign into the account once, then retry' -f $hr)
                 return
             }
             # a profile just built by UserProfile::Create is new to ProfileList, so re-read it
