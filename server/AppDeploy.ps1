@@ -1951,6 +1951,12 @@ $xaml = @'
                 <TextBlock x:Name="TxtFromTitle" Text="Back up FROM" FontSize="12" FontWeight="Bold" Foreground="{StaticResource Ink}" Margin="8,0,6,0"/>
                 <TextBlock x:Name="TxtFromWhat" Text="" FontSize="10.5" Foreground="{StaticResource Dim}" VerticalAlignment="Center"/>
               </StackPanel>
+              <!-- WHAT gets backed up: an account's data, or any folders and drives. The second is
+                   the job the tab could not do at all - "grab D:\ before the wipe". -->
+              <StackPanel x:Name="RowSrcKind" Orientation="Horizontal" Margin="8,0,0,6">
+                <Button x:Name="BtnSrcAccounts" Content="An account" Style="{StaticResource TabActive}" Padding="12,5" FontSize="11.5"/>
+                <Button x:Name="BtnSrcPaths" Content="Folders or drives" Style="{StaticResource TabIdle}" Padding="12,5" FontSize="11.5"/>
+              </StackPanel>
               <ScrollViewer MaxHeight="190" VerticalScrollBarVisibility="Auto">
                 <StackPanel>
                   <ItemsControl x:Name="ListSrcUsers">
@@ -1965,6 +1971,20 @@ $xaml = @'
                              TextWrapping="Wrap" Margin="12,8,10,6"/>
                 </StackPanel>
               </ScrollViewer>
+              <StackPanel x:Name="PanelSrcPaths" Visibility="Collapsed">
+                <ScrollViewer MaxHeight="190" VerticalScrollBarVisibility="Auto">
+                  <ItemsControl x:Name="ListSrcPaths">
+                    <ItemsControl.ItemTemplate>
+                      <DataTemplate>
+                        <CheckBox Style="{StaticResource PickRow}"
+                                  IsChecked="{Binding IsSelected, UpdateSourceTrigger=PropertyChanged}"/>
+                      </DataTemplate>
+                    </ItemsControl.ItemTemplate>
+                  </ItemsControl>
+                </ScrollViewer>
+                <Button x:Name="BtnAddSrcPath" Content="Add folder or drive..." Style="{StaticResource GhostBtn}"
+                        HorizontalAlignment="Left" Margin="8,6,0,4"/>
+              </StackPanel>
             </StackPanel>
           </Border>
 
@@ -2007,6 +2027,16 @@ $xaml = @'
                 </WrapPanel>
                 <TextBlock x:Name="TxtFolderNote" Text="" FontSize="11" Foreground="{StaticResource Dim}"
                            TextWrapping="Wrap" Margin="8,4,8,0"/>
+              </StackPanel>
+              <!-- Restoring a folders-and-drives backup: it goes back where it came from, or into
+                   a folder of the technician's choosing. Takes the account list's place. -->
+              <StackPanel x:Name="PanelRestoreTo" Visibility="Collapsed" Margin="2,2,2,6">
+                <TextBlock x:Name="TxtRestoreTo" Text="" FontSize="11.5" Foreground="{StaticResource Ink}"
+                           TextWrapping="Wrap" Margin="8,2,8,0" Visibility="Collapsed"/>
+                <WrapPanel Orientation="Horizontal" Margin="8,8,8,0">
+                  <Button x:Name="BtnRestoreOrig" Content="Where it came from" Style="{StaticResource GhostBtn}" Margin="0,0,6,6"/>
+                  <Button x:Name="BtnRestorePick" Content="Choose folder..." Style="{StaticResource GhostBtn}" Margin="0,0,6,6"/>
+                </WrapPanel>
               </StackPanel>
             </StackPanel>
           </Border>
@@ -3151,6 +3181,8 @@ foreach ($n in 'ListApps','BarOverall','TxtOverall','TxtLog','TxtStatus','TxtCat
                'BtnModeProfile','BtnModeFolder','BtnModeRestore','PanelFolderPick','TxtFolderWhat',
                'TxtFromTitle','TxtFromWhat','TxtToTitle','TxtToWhat','SrcColumn','DstColumn',
                'TxtFolderPath','BtnFolderPick','TxtFolderNote','BtnNetFind',
+               'RowSrcKind','BtnSrcAccounts','BtnSrcPaths','PanelSrcPaths','ListSrcPaths','BtnAddSrcPath',
+               'PanelRestoreTo','TxtRestoreTo','BtnRestoreOrig','BtnRestorePick',
                'NetOverlay','BtnNetScan','BtnNetStop','TxtNetStatus','ListNetHosts','TreeNetShares',
                'TxtNetManual','HintNetManual',
                'TxtNetNote','BtnNetCancel','BtnNetUse',
@@ -3802,15 +3834,21 @@ function Update-Dash {
         $TxtStatus.Text = $(if ($sel.Count) { "$($sel.Count) selected  ($blk already blocked, $($sel.Count - $blk) not)" }
                             else { "$(@($script:FwItems | Where-Object { $_.IsSilent }).Count) of $($script:FwItems.Count) program(s) blocked" })
     } elseif ($PanelMigrate.Visibility -eq 'Visible') {
+        # Data only - what is picked, where it goes, how many items. No instructions here.
         $src = Get-SelectedUser $script:SrcUsers
         $dst = Get-SelectedUser $script:DstUsers
         $n = @($script:MigrateItems | Where-Object { $_.IsSelected }).Count
-        if ($src -and $dst) { $TxtStatus.Text = "$($src.Name)  ->  $($dst.Name)    |    $n item(s) to copy" }
-        elseif ($src) { $TxtStatus.Text = "From $($src.Name) - now pick a destination account" }
-        else { $TxtStatus.Text = $(switch ($script:BackupMode) {
-                                     'folder'  { 'Pick the account to back up, then where to back it up to' }
-                                     'restore' { 'Pick the backup folder, then the account to restore into' }
-                                     default   { 'Pick the account to copy FROM' } }) }
+        $from = $(if ($script:BackupMode -eq 'restore') { $script:FolderPath }
+                  elseif ($script:BackupMode -eq 'folder' -and $script:SrcKind -eq 'paths') {
+                      $k = @($script:SrcPaths | Where-Object { $_.IsSelected }).Count; $n = $k
+                      $(if ($k) { "$k folder(s)/drive(s)" } else { '' }) }
+                  elseif ($src) { $src.Name } else { '' })
+        $to = $(if ($script:BackupMode -eq 'folder') { $script:FolderPath }
+                elseif ($script:BackupMode -eq 'restore' -and $script:RestoreKind -eq 'paths') { $(if ($script:RestoreTo -eq 'orig') { 'where it came from' } else { $script:RestoreTo }) }
+                elseif ($dst) { $dst.Name } else { '' })
+        # for folders and drives the count IS the "from" text, so it is not said twice
+        $cnt = $(if ($script:BackupMode -eq 'folder' -and $script:SrcKind -eq 'paths') { '' } else { "    |    $n item(s)" })
+        $TxtStatus.Text = $(if ($from -and $to) { "$from  ->  $to$cnt" } elseif ($from) { "$from$cnt" } else { '' })
     } else {
         $TxtStatus.Text = ''
     }
@@ -6944,19 +6982,16 @@ function Update-UserEmptyStates {
     $EmptyAccounts.Visibility = $(if ($script:AccountItems.Count) { 'Collapsed' } else { 'Visible' })
     if (-not $script:AccountItems.Count) { $EmptyAccounts.Text = 'No local accounts found on this machine.' }
 
-    # the migrate list is empty for two very different reasons - say which
+    # Only a FACT goes here: an account whose usual data folders do not exist. An empty list
+    # with nothing picked yet is just an empty list - no instruction sits in it.
     $EmptyMigrate.Visibility = 'Collapsed'
-    if ($script:MigrateItems.Count -eq 0) {
-        $EmptyMigrate.Text = $(if ($script:SrcPick) {
-                "Nothing to copy from `"$($script:SrcPick)`" - none of the usual data folders exist in that profile."
-            } else { $(switch ($script:BackupMode) {
-                          'restore' { 'Pick the backup folder on the left.' }
-                          default   { 'Pick an account on the left.' } }) })
+    if ($script:MigrateItems.Count -eq 0 -and $script:SrcPick -and $script:BackupMode -ne 'restore' -and $script:SrcKind -ne 'paths') {
+        $EmptyMigrate.Text = "Nothing to copy from `"$($script:SrcPick)`" - none of the usual data folders exist in that profile."
         $EmptyMigrate.Visibility = 'Visible'
     }
 
     $EmptySrc.Visibility = 'Collapsed'
-    if ($nSrc -eq 0) {
+    if ($nSrc -eq 0 -and -not ($script:BackupMode -eq 'folder' -and $script:SrcKind -eq 'paths')) {
         $EmptySrc.Text = $(if ($script:DstPick) {
                 "`"$($script:DstPick)`" is the destination, so it cannot also be the source.`n`nUntick it on the right to choose it here instead."
             } else { 'No user profiles found on this machine.' })
@@ -6980,12 +7015,35 @@ function Get-SelectedUser([object]$Collection) {
 # actually exist are shown, so the tech is never offered something that is not there.
 function Build-MigrateList {
     $script:MigrateItems.Clear()
+    # Folders and drives are the items themselves - the list on the left IS what gets copied.
+    if ($script:BackupMode -eq 'folder' -and $script:SrcKind -eq 'paths') { Update-Dash; return }
     # A RESTORE lists what is in the backup, not what is on a profile. Reading the source
     # profile here would offer folders the backup does not contain and hide ones it does.
     $root = ''
     if ($script:BackupMode -eq 'restore') {
         $root = $script:FolderPath
         if (-not $root -or -not (Test-Path -LiteralPath $root)) { Update-Dash; return }
+        # A folders-and-drives backup lists its items from the manifest, each with where it came from.
+        $mf = $script:RestoreManifest
+        if ($mf -and "$($mf.kind)" -eq 'paths-backup') {
+            foreach ($it in @($mf.items)) {
+                if (-not (Test-Path -LiteralPath (Join-Path $root "$($it.rel)"))) { continue }
+                $item = New-Object AppItem
+                $item.Id = "mig-$($it.rel)"
+                $item.Name = "$($it.rel)"
+                $item.Publisher = "from $($it.source)"
+                $item.UnArgs = "$($it.rel)"
+                $item.Size = $(if ([long]$it.bytes -gt 0) { Format-Size ([long]$it.bytes) } else { '' })
+                $item.IsSilent = $true
+                $item.Category = 'What to restore'
+                $item.IconBg = '#FF2563EB'
+                $item.IsSelected = $true
+                $item.add_PropertyChanged({ param($s, $e) if ($e.PropertyName -eq 'IsSelected') { Update-Dash } })
+                $script:MigrateItems.Add($item)
+            }
+            Update-Dash
+            return
+        }
     } else {
         $src = Get-SelectedUser $script:SrcUsers
         if (-not $src) { Update-Dash; return }
@@ -7763,7 +7821,9 @@ function Start-UserBatch([string]$Action, [hashtable]$Data) {
         'newuser'       { "Create account `"$($Data.username)`"" }
         # Named for the job. A drive/USB backup has no destination ACCOUNT, so this read
         # 'Back up data to ""' on the card, in the log and in the run record.
-        'migrate'       { $(if ([string]$Data.srcKind -eq 'folder') { "Restore backup into `"$($Data.dstUser)`"" }
+        'migrate'       { $(if ([string]$Data.srcKind -eq 'paths') { "Back up $(@($Data.paths).Count) folder(s)/drive(s) to $($Data.dstPath)" }
+                            elseif ([string]$Data.dstKind -eq 'paths') { $(if ([string]$Data.restoreTo -eq 'orig') { 'Restore folders and drives to where they came from' } else { "Restore folders and drives into $($Data.restoreTo)" }) }
+                            elseif ([string]$Data.srcKind -eq 'folder') { "Restore backup into `"$($Data.dstUser)`"" }
                             elseif ([string]$Data.dstKind -eq 'folder') { "Back up data to $($Data.dstPath)" }
                             else { "Copy profile data to `"$($Data.dstUser)`"" }) }
         'setadmin'      { $(if ($Data.admin) { "Promote `"$($Data.username)`" to Administrator" } else { "Demote `"$($Data.username)`" to Standard" }) }
@@ -10897,12 +10957,15 @@ function Get-RobocopyListing([string]$Root, [string]$LogPath) {
 #   * tmp-then-move, so a manifest is never found half-written. A backup interrupted mid-write
 #     would otherwise leave a file that parses as garbage and reads as corruption.
 function Write-BackupManifest([string]$Root, [string]$SourceProfile, [object[]]$Items,
-                              [datetime]$Started, [int]$Seconds) {
+                              [datetime]$Started, [int]$Seconds, [string]$Kind = 'profile-backup') {
     if (-not $Root -or -not (Test-Path -LiteralPath $Root)) { return $false }
     try {
         $doc = [ordered]@{
             version       = 1
-            kind          = 'profile-backup'
+            # 'profile-backup': an account's data folders, restored into an account.
+            # 'paths-backup': folders and drives picked by hand, each item carrying the path it
+            # came from, restored back there or into a chosen folder.
+            kind          = $Kind
             sourceMachine = "$env:COMPUTERNAME"
             sourceUser    = $(if ($script:UserSid) { "$script:UserSid" } else { '' })
             sourceProfile = "$SourceProfile"
@@ -11035,7 +11098,8 @@ function Copy-ProfileData($app) {
         if ($rootShare -and $script:NetMapped -notcontains $rootShare) { $script:NetMapped += $rootShare }
     }
     try {
-    if (-not (Test-Path -LiteralPath $src)) { Write-Status $app.id 'Failed' "source not found: $src"; return }
+    # 'paths' carries its sources in $app.paths, one per folder or drive; there is no single root
+    if (('' + $app.srcKind).ToLower() -ne 'paths' -and -not (Test-Path -LiteralPath $src)) { Write-Status $app.id 'Failed' "source not found: $src"; return }
 
     # ---- where is this coming FROM?
     #
@@ -11071,6 +11135,24 @@ function Copy-ProfileData($app) {
         }
         Write-Status $app.id 'Applying' (
             "restoring a backup of $($mf.sourceProfile) taken on $($mf.sourceMachine)")
+    } elseif ($srcKind -eq 'paths') {
+        # Folders and drives picked by hand. Each has to exist and be a directory; the drive
+        # Windows is on is refused as a WHOLE (that is imaging, not a backup - pagefile, hiberfil,
+        # WinSxS), as is anything under Windows itself. Folders on C: are fine.
+        $srcPaths = @()
+        foreach ($p in @($app.paths)) {
+            $p = ('' + $p).Trim()
+            if (-not $p) { continue }
+            if ($p.StartsWith('\\')) { Write-Status $app.id 'Failed' "refused: $p is a network path - back it up from the PC it lives on"; return }
+            if (-not (Test-Path -LiteralPath $p -PathType Container)) { Write-Status $app.id 'Failed' "refused: $p is not a folder that exists"; return }
+            $pk = (Get-CanonicalPath $p).ToLower()
+            $sysRoot = (Get-CanonicalPath ($env:SystemDrive + [string][char]92)).ToLower()
+            if ($pk -eq $sysRoot -or $pk -eq ($env:SystemDrive.ToLower())) { Write-Status $app.id 'Failed' "refused: the whole of $env:SystemDrive is Windows itself - back up folders on it instead"; return }
+            $winKey = (Get-CanonicalPath $env:SystemRoot).ToLower()
+            if ($pk -eq $winKey -or $pk.StartsWith($winKey + [string][char]92)) { Write-Status $app.id 'Failed' "refused: $p is inside Windows"; return }
+            $srcPaths += $p
+        }
+        if (-not $srcPaths.Count) { Write-Status $app.id 'Failed' 'refused: no folders or drives were given'; return }
     } else {
         try { $srcKey = [IO.Path]::GetFullPath($src).TrimEnd([char]92).ToLower() } catch { }
         # Checked here rather than trusted from the GUI, and cheap enough that there is no reason
@@ -11151,6 +11233,21 @@ function Copy-ProfileData($app) {
             Write-Status $app.id 'Failed' "refused: $dstPath cannot be written to - $($_.Exception.Message)"
             return
         }
+    } elseif ($dstKind -eq 'paths') {
+        # Restoring a folders-and-drives backup: back to where each item came from ('orig'), or
+        # all of them into one chosen folder. Only a backup of that kind can go this way.
+        if ($srcKind -ne 'folder') { Write-Status $app.id 'Failed' 'refused: only a backup folder can be restored to folders and drives'; return }
+        if ("$($mf.kind)" -ne 'paths-backup') { Write-Status $app.id 'Failed' "refused: $src is a backup of an account, not of folders and drives - restore it into an account"; return }
+        $restoreTo = ('' + $app.restoreTo)
+        if ($restoreTo -ne 'orig') {
+            if (-not $restoreTo) { Write-Status $app.id 'Failed' 'refused: nowhere to restore to was given'; return }
+            if (-not (Test-Path -LiteralPath $restoreTo -PathType Container)) { Write-Status $app.id 'Failed' "refused: $restoreTo is not a folder that exists"; return }
+            $rk = (Get-CanonicalPath $restoreTo).ToLower()
+            if ($rk -eq $srcKey -or $rk.StartsWith($srcKey + [string][char]92)) { Write-Status $app.id 'Failed' "refused: $restoreTo is inside the backup itself"; return }
+            $dstPath = $restoreTo
+        } else {
+            $dstPath = ''
+        }
     } else {
         # destination may be an account that has never signed in - build its profile first
         if (-not $dstPath -or -not (Test-Path -LiteralPath $dstPath)) {
@@ -11202,14 +11299,55 @@ function Copy-ProfileData($app) {
     $started  = Get-Date
     $manifest = @()
     $problems = @()
-    foreach ($rel in @($app.items)) {
-        $s = Resolve-InProfile $src $rel
-        $d = Resolve-InProfile $dstPath $rel
-        if (-not $s -or -not $d) {
-            $failed++
-            $problems += "$rel (refused - not a plain name inside the profile)"
-            continue
+
+    # ---- what gets copied where: one job per item, worked out BEFORE anything is copied, so a
+    # refused item is a line in the result rather than a half-done batch.
+    $jobs = @()
+    if ($srcKind -eq 'paths') {
+        # each folder or drive lands under the backup as its own name - 'Drive D' for D:\, the
+        # folder's own name otherwise, numbered when two picks share a name
+        $taken = @()
+        foreach ($p in $srcPaths) {
+            $pt = $p.TrimEnd([char]92)
+            $name = $(if ($pt -match '^([A-Za-z]):$') { "Drive $($Matches[1].ToUpper())" } else { Split-Path -Leaf $pt })
+            $name = ($name -replace '[\\/:*?"<>|]', '').Trim(); if (-not $name) { $name = 'Folder' }
+            $base = $name; $n = 1
+            while ($taken -contains $name.ToLower()) { $n++; $name = "$base $n" }
+            $taken += $name.ToLower()
+            $pk = (Get-CanonicalPath $p).ToLower()
+            # a source that contains the backup, or is inside it, is the same loop as before
+            if ($dstKey -eq $pk -or $dstKey.StartsWith($pk + [string][char]92)) { $failed++; $problems += "$p (refused - the backup folder is inside it, so it would copy itself for ever)"; continue }
+            if ($pk.StartsWith($dstKey + [string][char]92)) { $failed++; $problems += "$p (refused - it is inside the backup folder)"; continue }
+            $jobs += @{ rel = $name; s = $p; d = (Join-Path $dstPath $name); source = $p }
         }
+    } elseif ($dstKind -eq 'paths') {
+        foreach ($rel in @($app.items)) {
+            $s = Resolve-InProfile $src $rel
+            $it = @($mf.items | Where-Object { "$($_.rel)" -eq "$rel" })[0]
+            $to = $(if ($restoreTo -eq 'orig') { '' + $it.source } else { Join-Path $dstPath $rel })
+            if (-not $s -or -not $it -or -not $to) { $failed++; $problems += "$rel (refused - not an item of this backup)"; continue }
+            if ($to.StartsWith('\\')) { $failed++; $problems += "$rel (refused - its original place is a network path)"; continue }
+            $tk = ''; try { $tk = [IO.Path]::GetFullPath($to).TrimEnd([char]92).ToLower() } catch { }
+            if (-not $tk) { $failed++; $problems += "$rel (refused - $to is not a valid path)"; continue }
+            $winKey = (Get-CanonicalPath $env:SystemRoot).ToLower()
+            if ($tk -eq $winKey -or $tk.StartsWith($winKey + [string][char]92)) { $failed++; $problems += "$rel (refused - $to is inside Windows)"; continue }
+            if ($tk -eq $srcKey -or $tk.StartsWith($srcKey + [string][char]92)) { $failed++; $problems += "$rel (refused - $to is inside the backup)"; continue }
+            $jobs += @{ rel = $rel; s = $s; d = $to; source = '' + $it.source }
+        }
+    } else {
+        foreach ($rel in @($app.items)) {
+            $s = Resolve-InProfile $src $rel
+            $d = Resolve-InProfile $dstPath $rel
+            if (-not $s -or -not $d) {
+                $failed++
+                $problems += "$rel (refused - not a plain name inside the profile)"
+                continue
+            }
+            $jobs += @{ rel = $rel; s = $s; d = $d; source = '' }
+        }
+    }
+    foreach ($job in $jobs) {
+        $rel = [string]$job.rel; $s = [string]$job.s; $d = [string]$job.d
         if (-not (Test-Path -LiteralPath $s)) { continue }
 
         # What this folder weighs, so a percentage means something. Measured with robocopy /L for
@@ -11281,7 +11419,7 @@ function Copy-ProfileData($app) {
             $problems += "$rel (copied, but NOT verified - the file list could not be read)"
             $copied++
             $bytes += $run.Bytes
-            $manifest += [ordered]@{ rel = "$rel"; files = -1; bytes = $run.Bytes; verified = $false }
+            $manifest += [ordered]@{ rel = "$rel"; files = -1; bytes = $run.Bytes; verified = $false; source = "$($job.source)" }
             continue
         }
         $missing = 0; $wrong = 0
@@ -11297,7 +11435,7 @@ function Copy-ProfileData($app) {
         $bytes += $run.Bytes
         # what the manifest will say about this folder - counts and sizes measured, not guessed
         $manifest += [ordered]@{ rel = "$rel"; files = $listSrc.Count; bytes = $wantBytes
-                                 verified = ($missing -eq 0 -and $wrong -eq 0) }
+                                 verified = ($missing -eq 0 -and $wrong -eq 0); source = "$($job.source)" }
         Write-Status $app.id 'Applying' "verified $rel  -  $($listSrc.Count) file(s)" $false @() 100 $run.Bytes $wantBytes -1 $run.Seconds
     }
 
@@ -11308,7 +11446,7 @@ function Copy-ProfileData($app) {
     # Only for a PROFILE destination. A USB stick or a share has no owning user to check for,
     # and FAT32 has no ACLs at all - running this against one would append a problem about a
     # permission entry that could never exist, on a backup that is perfectly fine.
-    if ($dstKind -ne 'folder') {
+    if ($dstKind -notin 'folder', 'paths') {
     try {
         $dsid = Get-UserSid $dstUser
         $acl = Get-Acl -LiteralPath $dstPath -ErrorAction Stop
@@ -11331,7 +11469,7 @@ function Copy-ProfileData($app) {
     # would be litter in somebody's home folder, and a restore that later scanned that profile
     # would find a manifest describing a different machine entirely.
     if ($copied -gt 0 -and $dstKind -eq 'folder') {
-        if (-not (Write-BackupManifest $dstPath $src $manifest $started $elapsed)) {
+        if (-not (Write-BackupManifest $dstPath $(if ($srcKind -eq 'paths') { "$env:COMPUTERNAME - folders and drives" } else { $src }) $manifest $started $elapsed $(if ($srcKind -eq 'paths') { 'paths-backup' } else { 'profile-backup' }))) {
             $problems += 'the backup manifest could not be written - restore will have to be done by hand'
         }
     }
@@ -11340,7 +11478,8 @@ function Copy-ProfileData($app) {
     # used to say 0s for every migration, because $script:RunStarted is only ever set by
     # Start-Batch and a user batch never goes through it.
     $took = $(if ($elapsed -ge 60) { "{0}m {1:00}s" -f [int]($elapsed / 60), ($elapsed % 60) } else { "${elapsed}s" })
-    $detail = "$copied item(s) copied, $(Format-SizeW $bytes) into $dstPath in $took; source left untouched"
+    $where = $(if ($dstKind -eq 'paths' -and $restoreTo -eq 'orig') { 'back where they came from' } else { "into $dstPath" })
+    $detail = "$copied item(s) copied, $(Format-SizeW $bytes) $where in $took; source left untouched"
     if ($dstKind -eq 'folder' -and $copied -gt 0) { $detail += '; a pc2go-backup.json manifest was written beside them' }
     if ($srcKind -eq 'folder') { $detail = $detail -replace 'source left untouched', 'the backup is left untouched' }
     if ($failed) { $detail += "; $failed failed outright" }
@@ -17102,12 +17241,12 @@ function Sync-BackupMode {
 
     switch ($script:BackupMode) {
         'folder' {
-            $TxtFolderWhat.Text = 'Back up to:'
+            $TxtFolderWhat.Text = ''
             $TxtFolderNote.Text = ''
             $BtnMigrate.Content = 'Back Up Data'
         }
         'restore' {
-            $TxtFolderWhat.Text = 'Restore from:'
+            $TxtFolderWhat.Text = ''
             $TxtFolderNote.Text = ''
             $BtnMigrate.Content = 'Restore Data'
         }
@@ -17145,6 +17284,7 @@ function Sync-BackupMode {
     # Whichever column the picker took over, that column's list steps aside.
     $ListSrcUsers.Visibility = $(if ($script:BackupMode -eq 'restore') { 'Collapsed' } else { 'Visible' })
     $ListDstUsers.Visibility = $(if ($script:BackupMode -eq 'folder')  { 'Collapsed' } else { 'Visible' })
+    if (Get-Command Sync-SrcKind -ErrorAction SilentlyContinue) { Sync-SrcKind; Sync-RestoreTarget }
     Sync-UserHint
     Update-UserEmptyStates
     # Guarded: this can run during start-up, before the sharing helpers further down are defined.
@@ -17561,6 +17701,8 @@ function Set-BackupFolder([string]$Path, [string]$User, [string]$Password) {
         $TxtFolderPath.Text = ''
         $TxtFolderPath.Visibility = 'Collapsed'
         $TxtFolderNote.Text = ''
+        $script:RestoreManifest = $null
+        if (Get-Command Sync-RestoreTarget -ErrorAction SilentlyContinue) { Sync-RestoreTarget }
         Build-MigrateList
         Update-Dash
         return
@@ -17580,6 +17722,8 @@ function Set-BackupFolder([string]$Path, [string]$User, [string]$Password) {
         } else {
             $mf = $null
             try { $mf = (Get-Content -LiteralPath $mfPath -Raw).TrimStart([char]0xFEFF) | ConvertFrom-Json } catch { }
+            $script:RestoreManifest = $mf
+            if (Get-Command Sync-RestoreTarget -ErrorAction SilentlyContinue) { Sync-RestoreTarget }
             if ($mf) {
                 $when = [string]$mf.finishedUtc
                 try { $when = ([datetime]$mf.finishedUtc).ToLocalTime().ToString('d MMM yyyy, HH:mm') } catch { }
@@ -17860,6 +18004,122 @@ $BtnNetUse.Add_Click({
     $NetOverlay.Visibility = 'Collapsed'
 })
 
+# ---------- WHAT gets backed up: an account, or folders and drives ----------
+#
+# The tab used to start from an account and nothing else, which made "grab D:\ before the wipe"
+# impossible. Folders or drives is the second kind of source: a list the technician builds with
+# the picker, copied as-is under the backup folder, each item remembering where it came from so
+# a restore can put it back there.
+$script:SrcKind  = 'account'
+$script:SrcPaths = New-Object System.Collections.ObjectModel.ObservableCollection[object]
+$script:RestoreManifest = $null
+$script:RestoreKind = 'account'
+$script:RestoreTo   = ''        # '' = not chosen, 'orig' = where it came from, else a folder
+
+# '' when the path may be backed up, otherwise why not. The whole of the Windows drive is refused
+# (that is imaging, not a backup); folders on it are fine.
+function Test-SourcePathAllowed([string]$Path) {
+    if ([string]::IsNullOrWhiteSpace($Path)) { return 'no folder given' }
+    if ($Path.StartsWith('\\')) { return 'a network path - back it up from the PC it lives on' }
+    $key = Get-ShareKey $Path
+    if (-not $key) { return "'$Path' is not a valid path" }
+    if (-not (Test-Path -LiteralPath $Path -PathType Container)) { return "'$Path' is not a folder that exists" }
+    if ($key -eq (Get-ShareKey ($env:SystemDrive + [string][char]92))) { return "the whole of $env:SystemDrive is Windows itself - add folders on it instead" }
+    $wk = Get-ShareKey $env:SystemRoot
+    if ($key -eq $wk -or $key.StartsWith($wk.TrimEnd([char]92) + [string][char]92)) { return "'$Path' is inside Windows" }
+    return ''
+}
+
+function Add-SrcPath([string]$Path) {
+    $why = Test-SourcePathAllowed $Path
+    if ($why) { return $why }
+    $key = Get-ShareKey $Path
+    if (@($script:SrcPaths | Where-Object { (Get-ShareKey $_.UnArgs) -eq $key }).Count) { return "$Path is already in the list" }
+    $pt = $Path.TrimEnd([char]92)
+    $u = New-Object AppItem
+    $u.Id = "srcp-$($script:SrcPaths.Count + 1)"
+    $u.Name = $(if ($pt -match '^([A-Za-z]):$') { "Drive $($Matches[1].ToUpper())" } else { Split-Path -Leaf $pt })
+    $u.Publisher = $Path
+    $u.UnArgs = $Path
+    $u.RegKey = $(if ($pt -match '^[A-Za-z]:$') { 'drive' } else { 'folder' })
+    $u.IconText = $u.Name.Substring(0, 1).ToUpper()
+    $u.IconBg = $(if ($u.RegKey -eq 'drive') { '#FF2563EB' } else { '#FF34D399' })
+    $u.IconData = $IconMap['default'][0]
+    $u.IsSelected = $true
+    $u.add_PropertyChanged({ param($s, $e) if ($e.PropertyName -eq 'IsSelected') { Update-Dash } })
+    $script:SrcPaths.Add($u)
+    Update-Dash
+    return ''
+}
+
+# Which source list is on screen. The kind switch only exists for a backup; a restore and a
+# copy between accounts have exactly one kind of source each.
+function Sync-SrcKind {
+    $on  = $window.FindResource('TabActive'); $off = $window.FindResource('TabIdle')
+    $isBackup = ($script:BackupMode -eq 'folder')
+    $RowSrcKind.Visibility = $(if ($isBackup) { 'Visible' } else { 'Collapsed' })
+    $paths = ($isBackup -and $script:SrcKind -eq 'paths')
+    $BtnSrcAccounts.Style = $(if ($paths) { $off } else { $on })
+    $BtnSrcPaths.Style    = $(if ($paths) { $on } else { $off })
+    $PanelSrcPaths.Visibility = $(if ($paths) { 'Visible' } else { 'Collapsed' })
+    if ($paths) { $ListSrcUsers.Visibility = 'Collapsed'; $EmptySrc.Visibility = 'Collapsed' }
+    elseif ($script:BackupMode -ne 'restore') { $ListSrcUsers.Visibility = 'Visible' }
+    if ($ListSrcPaths.ItemsSource -eq $null) { $ListSrcPaths.ItemsSource = $script:SrcPaths }
+}
+
+# Where a folders-and-drives backup goes back to. Takes the account list's place on the right.
+function Sync-RestoreTarget {
+    $mf = $script:RestoreManifest
+    $script:RestoreKind = $(if ($script:BackupMode -eq 'restore' -and $mf -and "$($mf.kind)" -eq 'paths-backup') { 'paths' } else { 'account' })
+    $isPaths = ($script:RestoreKind -eq 'paths')
+    $PanelRestoreTo.Visibility = $(if ($isPaths) { 'Visible' } else { 'Collapsed' })
+    if ($script:BackupMode -eq 'restore') { $ListDstUsers.Visibility = $(if ($isPaths) { 'Collapsed' } else { 'Visible' }) }
+    if (-not $isPaths) { $script:RestoreTo = '' }
+    $TxtRestoreTo.Text = $(switch ($script:RestoreTo) { '' { '' } 'orig' { 'Restore to:  where each item came from' } default { "Restore into:  $($script:RestoreTo)" } })
+    $TxtRestoreTo.Visibility = $(if ($script:RestoreTo) { 'Visible' } else { 'Collapsed' })
+    if ($isPaths) { $EmptyDst.Visibility = 'Collapsed' }
+}
+
+$BtnSrcAccounts.Add_Click({ if ($script:SrcKind -ne 'account') { $script:SrcKind = 'account'; Sync-SrcKind; Update-UserEmptyStates; Build-MigrateList } })
+$BtnSrcPaths.Add_Click({ if ($script:SrcKind -ne 'paths') { $script:SrcKind = 'paths'; Sync-SrcKind; Update-UserEmptyStates; Build-MigrateList } })
+
+$BtnAddSrcPath.Add_Click({
+    if (Test-BatchBusy) { return }
+    $picked = ''
+    try {
+        Add-Type -AssemblyName System.Windows.Forms -ErrorAction Stop
+        $dlg = New-Object Windows.Forms.FolderBrowserDialog
+        $dlg.Description = 'Pick a folder or a whole drive to back up'
+        $dlg.ShowNewFolderButton = $false
+        $dlg.RootFolder = 'MyComputer'
+        if ($dlg.ShowDialog() -eq 'OK') { $picked = $dlg.SelectedPath }
+        $dlg.Dispose()
+    } catch { Show-Overlay 'Could not open the folder picker' $_.Exception.Message; return }
+    if (-not $picked) { return }
+    $why = Add-SrcPath $picked
+    if ($why) { Show-Overlay 'Cannot back that up' $why }
+})
+
+$BtnRestoreOrig.Add_Click({
+    if (Test-BatchBusy) { return }
+    $script:RestoreTo = 'orig'; Sync-RestoreTarget; Update-Dash
+})
+$BtnRestorePick.Add_Click({
+    if (Test-BatchBusy) { return }
+    $picked = ''
+    try {
+        Add-Type -AssemblyName System.Windows.Forms -ErrorAction Stop
+        $dlg = New-Object Windows.Forms.FolderBrowserDialog
+        $dlg.Description = 'Pick the folder to restore into'
+        $dlg.ShowNewFolderButton = $true
+        $dlg.RootFolder = 'MyComputer'
+        if ($dlg.ShowDialog() -eq 'OK') { $picked = $dlg.SelectedPath }
+        $dlg.Dispose()
+    } catch { Show-Overlay 'Could not open the folder picker' $_.Exception.Message; return }
+    if (-not $picked) { return }
+    $script:RestoreTo = $picked; Sync-RestoreTarget; Update-Dash
+})
+
 # ---------- Share this PC ----------
 #
 # The GUI half of what the worker's Enable-Sharing / New-PC2GoShare / Remove-PC2GoShare do.
@@ -18122,12 +18382,22 @@ $BtnMigrate.Add_Click({
     # "Restore Data" answer 'No source, pick the profile on the left' against an empty column,
     # and the only way past it was to pick a source in another mode first and carry it over.
     $src = $null
-    if ($mode -ne 'restore') {
+    # Folders and drives: the list on the left is the source, no account is involved.
+    $pathsKind = ($mode -eq 'folder' -and $script:SrcKind -eq 'paths')
+    $srcPaths = @()
+    if ($pathsKind) {
+        $srcPaths = @($script:SrcPaths | Where-Object { $_.IsSelected })
+        if (-not $srcPaths.Count) { Show-Overlay 'Nothing to back up' 'Add a folder or a drive on the left, or tick one that is already there.'; return }
+        foreach ($p in $srcPaths) {
+            $why = Test-SourcePathAllowed ([string]$p.UnArgs)
+            if ($why) { Show-Overlay 'Cannot back that up' $why; return }
+        }
+    } elseif ($mode -ne 'restore') {
         $src = Get-SelectedUser $script:SrcUsers
-        if (-not $src) { Show-Overlay 'No source' 'Pick the profile to copy FROM in the left column.'; return }
+        if (-not $src) { Show-Overlay 'No source' 'Pick the account to copy FROM in the left column.'; return }
     }
     $dst = $null
-    $srcKind = 'profile'; $dstKind = 'profile'; $dstPath = ''; $dstUser = ''
+    $srcKind = 'profile'; $dstKind = 'profile'; $dstPath = ''; $dstUser = ''; $restoreTo = ''
     $srcRoot = $(if ($src) { [string]$src.UnArgs } else { '' })
     $bs = [string][char]92
     switch ($mode) {
@@ -18143,24 +18413,28 @@ $BtnMigrate.Add_Click({
             }
             # What was picked is the PARENT. The backup lands in its own folder inside it.
             $dstKind = 'folder'
-            $dstPath = Join-Path $script:FolderPath (Get-BackupFolderName ([string]$src.Name))
+            $dstPath = Join-Path $script:FolderPath (Get-BackupFolderName $(if ($pathsKind) { 'folders and drives' } else { [string]$src.Name }))
             # The two loops the worker refuses, refused here first - before a 40 GB measuring
-            # pass, not after it. A profile copied into itself grows until the disk fills;
-            # a destination that contains the profile is the same loop from the other end.
-            $sk = ''; $dk = ''
-            try { $sk = [IO.Path]::GetFullPath($srcRoot).TrimEnd([char]92).ToLower() } catch { }
+            # pass, not after it. A folder copied into itself grows until the disk fills; a
+            # destination that contains the source is the same loop from the other end.
+            $dk = ''
             try { $dk = [IO.Path]::GetFullPath($dstPath).TrimEnd([char]92).ToLower() } catch { }
-            if ($sk -and $dk -and ($dk -eq $sk -or $dk.StartsWith($sk + $bs))) {
-                Show-Overlay 'Refused - that folder is inside the profile' (
-                    "$($script:FolderPath) is inside the profile being backed up.`n`n" +
-                    'Copying a folder into itself grows without limit until the disk fills. Pick somewhere outside it - a drive, a stick, or another PC.')
-                return
-            }
-            if ($sk -and $dk -and $sk.StartsWith($dk + $bs)) {
-                Show-Overlay 'Refused - that folder contains the profile' (
-                    "$($script:FolderPath) contains the profile being backed up, so the copy would include its own destination.`n`n" +
-                    'Pick a folder that is not a parent of the profile.')
-                return
+            $roots = $(if ($pathsKind) { @($srcPaths | ForEach-Object { [string]$_.UnArgs }) } else { @($srcRoot) })
+            foreach ($r in $roots) {
+                $sk = ''
+                try { $sk = [IO.Path]::GetFullPath($r).TrimEnd([char]92).ToLower() } catch { }
+                if ($sk -and $dk -and ($dk -eq $sk -or $dk.StartsWith($sk + $bs))) {
+                    Show-Overlay 'Refused - the backup would be inside what it copies' (
+                        "$($script:FolderPath) is inside $r.`n`n" +
+                        'Copying a folder into itself grows without limit until the disk fills. Pick somewhere outside it - another drive, a stick, or another PC.')
+                    return
+                }
+                if ($sk -and $dk -and $sk.StartsWith($dk + $bs)) {
+                    Show-Overlay 'Refused - that folder contains what it would copy' (
+                        "$($script:FolderPath) contains $r, so the copy would include its own destination.`n`n" +
+                        'Pick a folder that is not a parent of it.')
+                    return
+                }
             }
         }
         'restore' {
@@ -18178,11 +18452,20 @@ $BtnMigrate.Add_Click({
                     'Restoring from an unknown folder could pour anything over a profile, so it is refused. Pick the folder a backup was written INTO - it is named "PC2Go Backup - <PC> - <account>".')
                 return
             }
-            # roots swapped: the backup is the source, the picked account is the destination
+            # roots swapped: the backup is the source
             $srcKind = 'folder'; $srcRoot = [string]$script:FolderPath
-            $dst = Get-SelectedUser $script:DstUsers
-            if (-not $dst) { Show-Overlay 'No destination' 'Pick the account to restore INTO in the right-hand column.'; return }
-            $dstKind = 'profile'; $dstPath = [string]$dst.UnArgs; $dstUser = [string]$dst.DetectPath
+            if ($script:RestoreKind -eq 'paths') {
+                # a folders-and-drives backup goes back where it came from, or into one folder
+                if (-not $script:RestoreTo) { Show-Overlay 'Nowhere to restore to' 'Press "Where it came from", or choose a folder to restore into.'; return }
+                if ($script:RestoreTo -ne 'orig' -and -not (Test-Path -LiteralPath $script:RestoreTo -PathType Container)) {
+                    Show-Overlay 'Folder not there' "$($script:RestoreTo) cannot be reached any more. Choose it again."; return
+                }
+                $dstKind = 'paths'; $restoreTo = [string]$script:RestoreTo; $dstPath = $(if ($restoreTo -eq 'orig') { '' } else { $restoreTo })
+            } else {
+                $dst = Get-SelectedUser $script:DstUsers
+                if (-not $dst) { Show-Overlay 'No destination' 'Pick the account to restore INTO in the right-hand column.'; return }
+                $dstKind = 'profile'; $dstPath = [string]$dst.UnArgs; $dstUser = [string]$dst.DetectPath
+            }
         }
         default {
             $dst = Get-SelectedUser $script:DstUsers
@@ -18194,7 +18477,8 @@ $BtnMigrate.Add_Click({
             $dstPath = [string]$dst.UnArgs; $dstUser = [string]$dst.DetectPath
         }
     }
-    $sel = @($script:MigrateItems | Where-Object { $_.IsSelected })
+    # for folders and drives the source rows ARE the items; each row's UnArgs is a full path
+    $sel = $(if ($pathsKind) { @($srcPaths) } else { @($script:MigrateItems | Where-Object { $_.IsSelected }) })
     if ($sel.Count -eq 0) { Show-Overlay 'Nothing selected' 'Tick at least one folder to copy.'; return }
 
     # Measure before promising anything: a profile copy is the one operation here that can
@@ -18219,7 +18503,7 @@ $BtnMigrate.Add_Click({
     try {
         foreach ($m in $sel) {
             if ($script:MeasureStop) { break }
-            $p = Join-Path $srcRoot ([string]$m.UnArgs)
+            $p = $(if ($pathsKind) { [string]$m.UnArgs } else { Join-Path $srcRoot ([string]$m.UnArgs) })
             $done++
             # Measuring a profile walks every file in it, and on a real one that is minutes. It
             # used to happen with the dispatcher blocked: the window printed 'Measuring...' and
@@ -18248,7 +18532,7 @@ $BtnMigrate.Add_Click({
         Update-Dash
         return
     }
-    Add-Log ("$(if ($mode -eq 'restore') { 'Restore' } else { 'Backup' }): measured $($sel.Count) item(s) under $srcRoot - " +
+    Add-Log ("$(if ($mode -eq 'restore') { 'Restore' } else { 'Backup' }): measured $($sel.Count) item(s)$(if ($pathsKind) { '' } else { " under $srcRoot" }) - " +
              "$(Format-Size $total) in $(Format-Elapsed ([int]((Get-Date) - $t0).TotalSeconds)).")
     Update-Dash
     # The DESTINATION drive, not the system drive. A profile can live anywhere - redirected,
@@ -18257,6 +18541,9 @@ $BtnMigrate.Add_Click({
     # For a drive/USB backup the free space that matters is the STICK's, not an account's.
     $dstRoot = $dstPath
     if (-not $dstRoot -and $dst) { $dstRoot = [string]$dst.UnArgs }
+    # restoring to where things came from: the first item's original drive is as good a guess
+    # as any for the free-space check - each item may go to a different drive
+    if (-not $dstRoot -and $restoreTo -eq 'orig' -and $script:RestoreManifest) { $dstRoot = '' + @($script:RestoreManifest.items)[0].source }
     if (-not $dstRoot) { $dstRoot = Split-Path $env:UserProfile }
     $free = 0
     try { $free = [long](New-Object IO.DriveInfo ([IO.Path]::GetPathRoot([IO.Path]::GetFullPath($dstRoot)))).AvailableFreeSpace } catch { $free = 0 }
@@ -18268,10 +18555,11 @@ $BtnMigrate.Add_Click({
     $risky = @($sel | Where-Object { -not $_.IsSilent })
     # Three jobs, three honest descriptions. "to the profile of" was the only wording, and it
     # would have described a USB stick as an account.
-    $fromTxt = $srcRoot
+    $fromTxt = $(if ($pathsKind) { (@($srcPaths | ForEach-Object { [string]$_.UnArgs }) -join "`n  ") } else { $srcRoot })
     $toTxt   = $(switch ($mode) {
                     'folder'  { $dstPath }
-                    default   { "the profile of `"$($dst.Name)`"" } })
+                    default   { $(if ($dstKind -eq 'paths') { $(if ($restoreTo -eq 'orig') { 'where each item came from' } else { $restoreTo }) }
+                                  else { "the profile of `"$($dst.Name)`"" }) } })
     $verb = $(if ($mode -eq 'restore') { 'Restore' } else { 'Copy' })
     $msg = "$verb $($sel.Count) item(s), $(Format-Size $total), from`n  $fromTxt`nto`n  $toTxt.`n`n" +
            $(if ($mode -eq 'restore') {
@@ -18290,12 +18578,16 @@ $BtnMigrate.Add_Click({
     $jobSrc = $srcRoot
     $netU   = [string]$script:NetUser
     $netP   = [string]$script:NetPassword
-    $items  = @($sel | ForEach-Object { [string]$_.UnArgs })
+    $items  = $(if ($pathsKind) { @() } else { @($sel | ForEach-Object { [string]$_.UnArgs }) })
+    $paths  = $(if ($pathsKind) { @($srcPaths | ForEach-Object { [string]$_.UnArgs }) } else { @() })
+    if ($pathsKind) { $srcKind = 'paths' }
     $title  = $(switch ($mode) { 'restore' { 'Restore this backup?' } 'folder' { 'Back up this data?' } default { 'Copy this data?' } })
     Show-Confirm $title $msg ({
         Start-UserBatch 'migrate' @{
             src     = $jobSrc
             srcKind = $srcKind
+            paths   = $paths
+            restoreTo = $restoreTo
             dstUser = $dstUser
             dstPath = $dstPath
             dstKind = $dstKind

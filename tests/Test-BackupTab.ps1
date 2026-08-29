@@ -245,7 +245,7 @@ try {
     try {
         Set-BackupFolder $inside '' ''
         Invoke-Click $BtnMigrate
-        Assert-Equal 'a folder inside the profile is refused'   'Refused - that folder is inside the profile' (Get-OverlayTitle)
+        Assert-Equal 'a folder inside the profile is refused'   'Refused - the backup would be inside what it copies' (Get-OverlayTitle)
         Dismiss-Overlay
     } finally { Remove-Item -LiteralPath $inside -Recurse -Force -ErrorAction SilentlyContinue }
     $gone = Join-Path $sandbox 'unplugged'
@@ -461,6 +461,74 @@ try {
     $log = @((Get-LogLines) | Select-Object -Skip $logBefore)
     Assert-True  'the log carries the start line'          ([bool]@($log | Where-Object { $_ -like '*Sharing: shareon*' }).Count)
     Assert-True  'and a verdict for turning sharing on'    ([bool]@($log | Where-Object { $_ -like '*Turn on file sharing -> *' }).Count)
+
+    # ================================================================== 7. folders and drives
+    Write-Section '7. Folders or drives: back a folder up as itself, then restore it into a chosen folder'
+
+    Select-Tab 'Migrate'; Select-BackupMode 'folder'
+    Assert-Equal 'the kind switch is on screen in Backup'      'Visible' "$($RowSrcKind.Visibility)"
+    Assert-Equal 'no label above the buttons'                  '' "$($TxtFolderWhat.Text)"
+    Assert-Equal 'no instruction under the columns'            'Collapsed' "$($EmptyMigrate.Visibility)"
+    Assert-Equal 'and none in the status bar'                  '' "$($TxtStatus.Text)"
+    Invoke-Click $BtnSrcPaths
+    Assert-Equal 'the paths list is shown'                     'Visible' "$($PanelSrcPaths.Visibility)"
+    Assert-Equal 'the account list is not'                     'Collapsed' "$($ListSrcUsers.Visibility)"
+    Assert-True  'the whole Windows drive is refused'          ((Add-SrcPath ($env:SystemDrive + '\')) -like '*Windows itself*')
+    Assert-True  'a folder inside Windows is refused'          ((Add-SrcPath $env:SystemRoot) -like '*inside Windows*')
+    $data = Join-Path $sandbox 'Clients'
+    New-Item -ItemType Directory -Force -Path (Join-Path $data 'Acme') | Out-Null
+    Set-Content -LiteralPath (Join-Path $data 'Acme\invoice.txt') -Value 'paid' -Encoding ASCII
+    Set-Content -LiteralPath (Join-Path $data 'notes.txt') -Value 'hello' -Encoding ASCII
+    Assert-Equal 'a real folder is accepted'                   '' (Add-SrcPath $data)
+    Assert-True  'adding it twice is refused'                  ((Add-SrcPath $data) -like '*already in the list*')
+    Assert-Equal 'it appears ticked, named by its leaf'        'Clients' "$(@($script:SrcPaths | Where-Object { $_.IsSelected })[0].Name)"
+    $dest = Join-Path $env:PUBLIC "pc2go-bk-paths-$tag"
+    New-Item -ItemType Directory -Force -Path $dest | Out-Null
+    try {
+        Set-BackupFolder $dest '' ''
+        Assert-Equal 'the status bar states the job as data'  "1 folder(s)/drive(s)  ->  $dest" "$($TxtStatus.Text)"
+        Invoke-Click $BtnMigrate
+        Assert-Equal 'the confirm sheet opened'                'Back up this data?' (Get-OverlayTitle)
+        Assert-True  'and lists the folder itself'             ($TxtOverlayMsg.Text -like "*$data*")
+        Invoke-Click $BtnOverlayOk
+        Assert-True  'the batch settled'                       (Wait-For { $script:Phase -in 'Done', 'Idle' } 180000)
+        $row = $script:Pending[0]
+        Write-Host "  row: $($row.Name): $($row.Status) - $($row.StatusDetail)" -ForegroundColor DarkGray
+        Assert-True  'the row reports Applied'                 ($row.Status -like 'Applied*')
+        $bkDir = Join-Path $dest (Get-BackupFolderName 'folders and drives')
+        Assert-True  'the folder landed under its own name'    (Test-Path -LiteralPath (Join-Path $bkDir 'Clients\Acme\invoice.txt'))
+        $mf = Get-Content -LiteralPath (Join-Path $bkDir 'pc2go-backup.json') -Raw | ConvertFrom-Json
+        Assert-Equal 'the manifest says what kind it is'       'paths-backup' "$($mf.kind)"
+        Assert-Equal 'and where the folder came from'          $data "$(@($mf.items)[0].source)"
+        Dismiss-Overlay
+
+        # restore it into a chosen folder, with a marker planted in the backup to prove the copy
+        $marker = "restored-$tag.txt"
+        Set-Content -LiteralPath (Join-Path $bkDir "Clients\$marker") -Value 'from the backup' -Encoding ASCII
+        $into = Join-Path $sandbox 'restored-here'
+        New-Item -ItemType Directory -Force -Path $into | Out-Null
+        Select-BackupMode 'restore'
+        Set-BackupFolder $bkDir '' ''
+        Assert-Equal 'a paths backup swaps the account list for the restore-to buttons' 'Visible' "$($PanelRestoreTo.Visibility)"
+        Assert-Equal 'and hides the account list'              'Collapsed' "$($ListDstUsers.Visibility)"
+        Assert-Equal 'its items are listed, from the manifest' 'Clients' "$($script:MigrateItems[0].Name)"
+        Assert-True  'with where each came from'               ($script:MigrateItems[0].Publisher -like "from $data")
+        Invoke-Click $BtnMigrate
+        Assert-Equal 'nowhere to restore to is refused'        'Nowhere to restore to' (Get-OverlayTitle)
+        Dismiss-Overlay
+        $script:RestoreTo = $into; Sync-RestoreTarget; Update-Dash
+        Assert-True  'the restore-to line shows the folder'    ($TxtRestoreTo.Text -like "Restore into:*$into")
+        Invoke-Click $BtnMigrate
+        Assert-Equal 'the restore confirm opened'              'Restore this backup?' (Get-OverlayTitle)
+        Invoke-Click $BtnOverlayOk
+        Assert-True  'the restore settled'                     (Wait-For { $script:Phase -in 'Done', 'Idle' } 180000)
+        $row = $script:Pending[0]
+        Write-Host "  row: $($row.Name): $($row.Status) - $($row.StatusDetail)" -ForegroundColor DarkGray
+        Assert-True  'the restore reports Applied'             ($row.Status -like 'Applied*')
+        Assert-True  'the marker arrived in the chosen folder' (Test-Path -LiteralPath (Join-Path $into "Clients\$marker"))
+        Assert-True  'and so did the original file'            (Test-Path -LiteralPath (Join-Path $into 'Clients\Acme\invoice.txt'))
+        Dismiss-Overlay
+    } finally { Remove-Item -LiteralPath $dest -Recurse -Force -ErrorAction SilentlyContinue }
 
     Write-Host ''
     Write-Host ("{0}/{1} passed" -f $script:Pass, ($script:Pass + $script:Fail)) `
