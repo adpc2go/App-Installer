@@ -528,6 +528,32 @@ try {
         Assert-True  'the marker arrived in the chosen folder' (Test-Path -LiteralPath (Join-Path $into "Clients\$marker"))
         Assert-True  'and so did the original file'            (Test-Path -LiteralPath (Join-Path $into 'Clients\Acme\invoice.txt'))
         Dismiss-Overlay
+
+        # ---- and back to WHERE IT CAME FROM: the original folder is wiped first, so only the
+        # restore can put the files there. This is the button a technician actually presses.
+        Remove-Item -LiteralPath $data -Recurse -Force
+        Assert-True  'the original folder is gone before the restore' (-not (Test-Path -LiteralPath $data))
+        Select-BackupMode 'folder'; Select-BackupMode 'restore'
+        Set-BackupFolder $bkDir '' ''
+        Invoke-Click $BtnRestoreOrig
+        Assert-True  'the restore-to line says where it came from' ($TxtRestoreTo.Text -like '*where each item came from*')
+        Assert-True  'the status bar states it as data'        ($TxtStatus.Text -like "$bkDir  ->  where it came from*")
+        Invoke-Click $BtnMigrate
+        Assert-Equal 'the restore confirm opened'              'Restore this backup?' (Get-OverlayTitle)
+        Assert-True  'and names the origin'                    ($TxtOverlayMsg.Text -like '*where each item came from*')
+        Invoke-Click $BtnOverlayOk
+        $sw = [Diagnostics.Stopwatch]::StartNew()
+        $settled = Wait-For { $script:Phase -in 'Done', 'Idle' } 420000
+        Write-Host "  restore-to-origin batch took $([int]$sw.Elapsed.TotalSeconds)s (rows: $(@($script:Pending | ForEach-Object { $_.Status }) -join ', '))" -ForegroundColor DarkGray
+        Assert-True  'the restore-to-origin settled'           $settled
+        $row = $script:Pending[0]
+        Write-Host "  row: $($row.Name): $($row.Status) - $($row.StatusDetail)" -ForegroundColor DarkGray
+        Assert-True  'it reports Applied'                      ($row.Status -like 'Applied*')
+        Assert-True  'and says it went back where it came from' ($row.StatusDetail -like '*back where they came from*')
+        Assert-True  'the original folder is back'             (Test-Path -LiteralPath $data)
+        Assert-Equal 'with its file content intact'            'paid' "$(Get-Content -LiteralPath (Join-Path $data 'Acme\invoice.txt') -Raw)".Trim()
+        Assert-True  'and the marker planted in the backup'    (Test-Path -LiteralPath (Join-Path $data $marker))
+        Dismiss-Overlay
     } finally { Remove-Item -LiteralPath $dest -Recurse -Force -ErrorAction SilentlyContinue }
 
     Write-Host ''
