@@ -277,17 +277,8 @@ function Show-AccessBanner {
     $lead2 = [Math]::Max(0, [int](($w - $sub.Length) / 2))
     Write-Host ('  ' + (' ' * $lead2) + $sub) -ForegroundColor Green
     Write-Host $bar -ForegroundColor DarkGreen
-    Write-Host ''
-    Write-Host '   NOTICE TO USERS' -ForegroundColor Green
-    Write-Host ''
-    Write-Host '   This service is the property of PC2Go and is provided solely' -ForegroundColor Gray
-    Write-Host '   for the use of authorized technicians.' -ForegroundColor Gray
-    Write-Host ''
-    Write-Host '   If you are not an authorized user, disconnect IMMEDIATELY.' -ForegroundColor Gray
-    Write-Host ''
-    Write-Host '   Connections to this service may be logged.' -ForegroundColor Gray
-    Write-Host ''
-    Write-Host $bar -ForegroundColor DarkGreen
+    # No "notice to users" paragraph: the person at this console is the owner of the tool, and
+    # the banner is a header with the facts, not a login screen.
     Write-Host ('   node {0}   release {1}   {2}' -f $node, $rel, (Get-Date -Format 'yyyy-MM-dd HH:mm')) -ForegroundColor DarkGray
     Write-Host $bar -ForegroundColor DarkGreen
     Write-Host ''

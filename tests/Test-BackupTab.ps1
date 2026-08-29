@@ -100,7 +100,13 @@ function Wait-For([scriptblock]$Until, [int]$TimeoutMs = 120000, [int]$Step = 25
 # happens, because a bare FAIL on "the batch settled" has been seen three times now and says
 # nothing about which side stopped talking.
 function Dump-Batch([string]$Why) {
-    Write-Host "  ---- batch did not settle: $Why" -ForegroundColor Yellow
+    # to a file as well: a filtered console capture lost the first dump this ever produced
+    $dumpFile = Join-Path $env:TEMP ("pc2go-stall-" + (Get-Date -Format 'yyyyMMdd-HHmmss') + '.txt')
+    try { Start-Transcript -Path $dumpFile -Force | Out-Null } catch { }
+    try { Write-Host "  ---- batch did not settle: $Why   (also in $dumpFile)" -ForegroundColor Yellow; Write-Dump }
+    finally { try { Stop-Transcript | Out-Null } catch { } }
+}
+function Write-Dump {
     Write-Host "  phase=$($script:Phase) tab=$($script:BatchTab) workerStarted=$($script:WorkerStarted) endQueued=$($script:EndQueued) busy=$($script:Busy) faults=$($script:PumpFaults) offset=$($script:StatusOffset)" -ForegroundColor Yellow
     foreach ($p in @($script:Pending)) { Write-Host "  pending: $($p.Id) [$($p.Status)] $($p.StatusDetail)" -ForegroundColor Yellow }
     $alive = @(Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" -ErrorAction SilentlyContinue | Where-Object { $_.CommandLine -like '*worker.ps1*' })

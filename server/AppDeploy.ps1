@@ -2303,9 +2303,7 @@ $xaml = @'
         <Border CornerRadius="14" Background="{StaticResource Raised}" BorderThickness="1" BorderBrush="{StaticResource Line}"
                 Width="640" Padding="28,24" VerticalAlignment="Center" HorizontalAlignment="Center">
           <StackPanel>
-            <TextBlock Text="Find a PC on this network" FontSize="17" FontWeight="SemiBold"/>
-            <TextBlock Text="Windows cannot list the PCs on a network any more, so this asks every address on yours whether it will accept a file. It takes a few seconds. If a PC wants a sign-in, Windows will ask for it."
-                       FontSize="11.5" Foreground="{StaticResource Muted}" Margin="0,6,0,0" TextWrapping="Wrap"/>
+            <TextBlock Text="Network" FontSize="17" FontWeight="SemiBold"/>
 
             <StackPanel Orientation="Horizontal" Margin="0,16,0,0">
               <Button x:Name="BtnNetScan" Content="Scan again" Style="{StaticResource AccentBtn}" Padding="18,7"/>
@@ -2450,7 +2448,7 @@ $xaml = @'
                     </DataTemplate>
                   </ItemsControl.ItemTemplate>
                 </ItemsControl>
-                <TextBlock x:Name="EmptyShareFolders" Text="No folders added yet." FontSize="11.5" Foreground="{StaticResource Dim}"
+                <TextBlock x:Name="EmptyShareFolders" Text="" FontSize="11.5" Foreground="{StaticResource Dim}"
                            Margin="12,4,10,4"/>
                 <Button x:Name="BtnShareAddFolder" Content="Add folder..." Style="{StaticResource GhostBtn}"
                         HorizontalAlignment="Left" Margin="10,6,0,4"/>
@@ -2909,7 +2907,6 @@ $xaml = @'
                 Width="460" Padding="28,24" VerticalAlignment="Center" HorizontalAlignment="Center">
           <StackPanel>
             <TextBlock Text="Add an account" FontSize="17" FontWeight="SemiBold"/>
-            <TextBlock Text="Created as a local account on this PC." FontSize="11.5" Foreground="{StaticResource Muted}" Margin="0,6,0,0"/>
 
             <TextBlock Text="Sign-in name" FontSize="11.5" Foreground="{StaticResource Muted}" Margin="0,18,0,5"/>
             <Grid Height="34">
@@ -2931,8 +2928,6 @@ $xaml = @'
               <TextBlock x:Name="HintNewPw" Text="blank = no password" Foreground="{StaticResource Dim}"
                          FontSize="11.5" Margin="12,0,0,0" VerticalAlignment="Center" IsHitTestVisible="False"/>
             </Grid>
-            <TextBlock Text="Shown as you type on purpose - you are setting this to hand to the client, not entering a secret."
-                       FontSize="10.5" Foreground="{StaticResource Dim}" TextWrapping="Wrap" Margin="0,5,0,0"/>
 
             <CheckBox x:Name="ChkNewAdmin" Content="Administrator (not a standard user)" IsChecked="True"
                       Foreground="{StaticResource Ink}" FontSize="12" Margin="0,14,0,0"/>
@@ -7127,9 +7122,7 @@ function Update-UserEmptyStates {
 
     $EmptySrc.Visibility = 'Collapsed'
     if ($nSrc -eq 0 -and $script:BackupMode -ne 'restore' -and -not ($script:BackupMode -eq 'folder' -and $script:SrcKind -eq 'paths')) {
-        $EmptySrc.Text = $(if ($script:DstPick) {
-                "`"$($script:DstPick)`" is the destination, so it cannot also be the source.`n`nUntick it on the right to choose it here instead."
-            } else { 'No user profiles found on this machine.' })
+        $EmptySrc.Text = $(if ($script:DstPick) { "`"$($script:DstPick)`" is the destination." } else { 'No user profiles on this machine.' })
         $EmptySrc.Visibility = 'Visible'
     }
 
@@ -18539,10 +18532,10 @@ $BtnShareThis.Add_Click({
     $EmptyShareFolders.Visibility = 'Visible'
     $ChkShareAnyone.IsChecked = $false
     $mine = @(Get-PC2GoShares)
-    $TxtShareIntro.Text = "Another PC running this tool can then find this one ($env:COMPUTERNAME) with Network... and back up into what you tick. " +
-                          "Whoever connects signs in with an account of this PC, like $env:COMPUTERNAME\$env:USERNAME." +
-                          $(if ($mine.Count) { "  Already shared: " + (@($mine | ForEach-Object { $_.Name }) -join ', ') + '.' } else { '' })
-    $TxtShareNote.Text = 'Tick at least one drive, or add a folder.'
+    # Facts only: this PC's name and the sign-in the other side will need; what is already shared.
+    $TxtShareIntro.Text = "\\$env:COMPUTERNAME  ·  sign in as $env:COMPUTERNAME\$env:USERNAME" +
+                          $(if ($mine.Count) { "  ·  already shared: " + (@($mine | ForEach-Object { $_.Name }) -join ', ') } else { '' })
+    $TxtShareNote.Text = ''
     $TxtShareNote.Foreground = $window.FindResource('Dim')
     $ShareOverlay.Opacity = 0
     $ShareOverlay.Visibility = 'Visible'
