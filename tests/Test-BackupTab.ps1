@@ -462,6 +462,30 @@ try {
     Assert-True  'the log carries the start line'          ([bool]@($log | Where-Object { $_ -like '*Sharing: shareon*' }).Count)
     Assert-True  'and a verdict for turning sharing on'    ([bool]@($log | Where-Object { $_ -like '*Turn on file sharing -> *' }).Count)
 
+    # ================================================================== 6b. the two account lists
+    Write-Section '6b. The account lists: no placeholder outside Between accounts, no account on both sides'
+
+    Select-Tab 'Migrate'; Select-BackupMode 'folder'
+    $me1 = @($script:SrcUsers | Where-Object { $_.Name -eq [Environment]::UserName })[0]
+    $me1.IsSelected = $true
+    Assert-Equal 'Backup: picking the account shows no "no other account" line' 'Collapsed' "$($EmptyDst.Visibility)"
+    Select-BackupMode 'restore'
+    Assert-Equal 'Restore: the account list holds every account'   $script:DstUsers.Count @($script:DstView).Count
+    Assert-Equal 'and no placeholder under it'                      'Collapsed' "$($EmptyDst.Visibility)"
+    Select-BackupMode 'profile'
+    if ($script:SrcUsers.Count -eq 1) {
+        # one PROFILE: it is never its own destination. Other accounts that have no profile yet
+        # are still offered (their folder gets created), so the list is empty only when this is
+        # the only account on the machine - which is the user's case, not this PC's.
+        Assert-Equal 'Between accounts with one profile: it is NOT offered as its own destination' 0 @($script:DstView | Where-Object { $_.Name -eq $me1.Name }).Count
+        Assert-Equal 'the "no other account" line shows exactly when nothing is left to offer' $(if (@($script:DstView).Count) { 'Collapsed' } else { 'Visible' }) "$($EmptyDst.Visibility)"
+    } else {
+        Assert-True  'Between accounts: the picked source is not offered as a destination' (-not @($script:DstView | Where-Object { $_.Name -eq [Environment]::UserName }).Count)
+        Write-Host "  ($($script:SrcUsers.Count) profiles here - the one-profile case is not reachable on this PC)" -ForegroundColor DarkGray
+    }
+    $me1.IsSelected = $false
+    Select-BackupMode 'folder'
+
     # ================================================================== 7. folders and drives
     Write-Section '7. Folders or drives: back a folder up as itself, then restore it into a chosen folder'
 

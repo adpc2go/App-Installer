@@ -1944,7 +1944,7 @@ $xaml = @'
             <ColumnDefinition Width="*"/>
           </Grid.ColumnDefinitions>
 
-          <Border Grid.Column="0" CornerRadius="10" Background="{StaticResource Panel}" BorderBrush="{StaticResource Line}" BorderThickness="1" Padding="4,6">
+          <Border Grid.Column="0" CornerRadius="10" Background="{StaticResource Panel}" BorderBrush="{StaticResource Line}" BorderThickness="1" Padding="4,6" VerticalAlignment="Top">
             <StackPanel x:Name="SrcColumn">
               <StackPanel Orientation="Horizontal" Margin="10,2,0,4">
                 <Rectangle Width="3" Height="13" Fill="{StaticResource Bad}" RadiusX="1.5" RadiusY="1.5" VerticalAlignment="Center"/>
@@ -1991,7 +1991,7 @@ $xaml = @'
           <TextBlock Grid.Column="1" Text="&#x2192;" FontSize="22" Foreground="{StaticResource Dim}"
                      VerticalAlignment="Center" Margin="12,0,12,0"/>
 
-          <Border Grid.Column="2" CornerRadius="10" Background="{StaticResource Panel}" BorderBrush="{StaticResource Line}" BorderThickness="1" Padding="4,6">
+          <Border Grid.Column="2" CornerRadius="10" Background="{StaticResource Panel}" BorderBrush="{StaticResource Line}" BorderThickness="1" Padding="4,6" VerticalAlignment="Top">
             <StackPanel x:Name="DstColumn">
               <StackPanel Orientation="Horizontal" Margin="10,2,0,4">
                 <Rectangle Width="3" Height="13" Fill="{StaticResource Good}" RadiusX="1.5" RadiusY="1.5" VerticalAlignment="Center"/>
@@ -3322,14 +3322,23 @@ $script:MigrateView.GroupDescriptions.Add((New-Object Windows.Data.PropertyGroup
 $script:SrcPick = ''
 $script:DstPick = ''
 $script:SrcView = [Windows.Data.CollectionViewSource]::GetDefaultView($script:SrcUsers)
+# The two lists only exclude each other's pick when the job is a copy BETWEEN accounts. A
+# backup's destination is a folder and a restore may well go back into the same account, so
+# in those modes no account is hidden for being picked on the other side.
 $script:SrcView.Filter = [Predicate[object]]{
     param($o)
+    if ($script:BackupMode -ne 'profile') { return $true }
     return -not ($script:DstPick -and ('' + $o.Name) -eq $script:DstPick)
 }
 $script:DstView = [Windows.Data.CollectionViewSource]::GetDefaultView($script:DstUsers)
 $script:DstView.Filter = [Predicate[object]]{
     param($o)
-    return -not ($script:SrcPick -and ('' + $o.Name) -eq $script:SrcPick)
+    if ($script:BackupMode -ne 'profile') { return $true }
+    if ($script:SrcPick -and ('' + $o.Name) -eq $script:SrcPick) { return $false }
+    # One profile on the machine: it cannot be copied onto itself, so it is not a destination
+    # even before anything is ticked - listing it on both sides was a lie waiting to be clicked.
+    if ($script:SrcUsers.Count -eq 1 -and ('' + $o.Name) -eq ('' + $script:SrcUsers[0].Name)) { return $false }
+    return $true
 }
 $ListSrcUsers.ItemsSource = $script:SrcView
 $ListDstUsers.ItemsSource = $script:DstView
@@ -6991,18 +7000,23 @@ function Update-UserEmptyStates {
     }
 
     $EmptySrc.Visibility = 'Collapsed'
-    if ($nSrc -eq 0 -and -not ($script:BackupMode -eq 'folder' -and $script:SrcKind -eq 'paths')) {
+    if ($nSrc -eq 0 -and $script:BackupMode -ne 'restore' -and -not ($script:BackupMode -eq 'folder' -and $script:SrcKind -eq 'paths')) {
         $EmptySrc.Text = $(if ($script:DstPick) {
                 "`"$($script:DstPick)`" is the destination, so it cannot also be the source.`n`nUntick it on the right to choose it here instead."
             } else { 'No user profiles found on this machine.' })
         $EmptySrc.Visibility = 'Visible'
     }
 
+    # "No other account to copy into" is a fact about a copy BETWEEN accounts and nothing else -
+    # it was showing under a backup's Choose folder... button and under a restore's account list.
     $EmptyDst.Visibility = 'Collapsed'
-    if ($nDst -eq 0) {
-        $EmptyDst.Text = $(if ($script:SrcPick) {
-                "No other account to copy into.`n`nThis machine has only `"$($script:SrcPick)`", and a profile cannot be copied onto itself.`n`nCreate the new admin using the form above - it will appear here as soon as it exists."
+    if ($nDst -eq 0 -and $script:BackupMode -eq 'profile') {
+        $EmptyDst.Text = $(if ($script:SrcUsers.Count -le 1 -or $script:SrcPick) {
+                "No other account to copy into - this machine has only one. Create the new one on the User Accounts tab; it appears here as soon as it exists."
             } else { 'No accounts found.' })
+        $EmptyDst.Visibility = 'Visible'
+    } elseif ($nDst -eq 0 -and $script:BackupMode -eq 'restore' -and $script:RestoreKind -ne 'paths') {
+        $EmptyDst.Text = 'No accounts found.'
         $EmptyDst.Visibility = 'Visible'
     }
 }
@@ -17284,6 +17298,8 @@ function Sync-BackupMode {
     # Whichever column the picker took over, that column's list steps aside.
     $ListSrcUsers.Visibility = $(if ($script:BackupMode -eq 'restore') { 'Collapsed' } else { 'Visible' })
     $ListDstUsers.Visibility = $(if ($script:BackupMode -eq 'folder')  { 'Collapsed' } else { 'Visible' })
+    # the list filters read the mode, so they are re-run when it changes
+    try { $script:SrcView.Refresh(); $script:DstView.Refresh() } catch { }
     if (Get-Command Sync-SrcKind -ErrorAction SilentlyContinue) { Sync-SrcKind; Sync-RestoreTarget }
     Sync-UserHint
     Update-UserEmptyStates
