@@ -1944,7 +1944,7 @@ $xaml = @'
             <ColumnDefinition Width="*"/>
           </Grid.ColumnDefinitions>
 
-          <Border Grid.Column="0" CornerRadius="10" Background="{StaticResource Panel}" BorderBrush="{StaticResource Line}" BorderThickness="1" Padding="4,6" VerticalAlignment="Top">
+          <Border Grid.Column="0" CornerRadius="10" Background="{StaticResource Panel}" BorderBrush="{StaticResource Line}" BorderThickness="1" Padding="4,6">
             <StackPanel x:Name="SrcColumn">
               <StackPanel Orientation="Horizontal" Margin="10,2,0,4">
                 <Rectangle Width="3" Height="13" Fill="{StaticResource Bad}" RadiusX="1.5" RadiusY="1.5" VerticalAlignment="Center"/>
@@ -1991,12 +1991,17 @@ $xaml = @'
           <TextBlock Grid.Column="1" Text="&#x2192;" FontSize="22" Foreground="{StaticResource Dim}"
                      VerticalAlignment="Center" Margin="12,0,12,0"/>
 
-          <Border Grid.Column="2" CornerRadius="10" Background="{StaticResource Panel}" BorderBrush="{StaticResource Line}" BorderThickness="1" Padding="4,6" VerticalAlignment="Top">
+          <Border Grid.Column="2" CornerRadius="10" Background="{StaticResource Panel}" BorderBrush="{StaticResource Line}" BorderThickness="1" Padding="4,6">
             <StackPanel x:Name="DstColumn">
               <StackPanel Orientation="Horizontal" Margin="10,2,0,4">
                 <Rectangle Width="3" Height="13" Fill="{StaticResource Good}" RadiusX="1.5" RadiusY="1.5" VerticalAlignment="Center"/>
                 <TextBlock x:Name="TxtToTitle" Text="Back up TO" FontSize="12" FontWeight="Bold" Foreground="{StaticResource Ink}" Margin="8,0,6,0"/>
                 <TextBlock x:Name="TxtToWhat" Text="" FontSize="10.5" Foreground="{StaticResource Dim}" VerticalAlignment="Center"/>
+              </StackPanel>
+              <!-- WHERE a restore goes: the mirror of the switch on the left. -->
+              <StackPanel x:Name="RowDstKind" Orientation="Horizontal" Margin="8,0,0,6" Visibility="Collapsed">
+                <Button x:Name="BtnDstAccount" Content="An account" Style="{StaticResource TabActive}" Padding="12,5" FontSize="11.5"/>
+                <Button x:Name="BtnDstFolder" Content="A folder or drive" Style="{StaticResource TabIdle}" Padding="12,5" FontSize="11.5"/>
               </StackPanel>
               <ScrollViewer MaxHeight="190" VerticalScrollBarVisibility="Auto">
                 <StackPanel>
@@ -2034,8 +2039,9 @@ $xaml = @'
                 <TextBlock x:Name="TxtRestoreTo" Text="" FontSize="11.5" Foreground="{StaticResource Ink}"
                            TextWrapping="Wrap" Margin="8,2,8,0" Visibility="Collapsed"/>
                 <WrapPanel Orientation="Horizontal" Margin="8,8,8,0">
-                  <Button x:Name="BtnRestoreOrig" Content="Where it came from" Style="{StaticResource GhostBtn}" Margin="0,0,6,6"/>
                   <Button x:Name="BtnRestorePick" Content="Choose folder..." Style="{StaticResource GhostBtn}" Margin="0,0,6,6"/>
+                  <Button x:Name="BtnRestoreOrig" Content="Where it came from" Style="{StaticResource GhostBtn}" Margin="0,0,6,6"
+                          Visibility="Collapsed"/>
                 </WrapPanel>
               </StackPanel>
             </StackPanel>
@@ -3182,7 +3188,7 @@ foreach ($n in 'ListApps','BarOverall','TxtOverall','TxtLog','TxtStatus','TxtCat
                'TxtFromTitle','TxtFromWhat','TxtToTitle','TxtToWhat','SrcColumn','DstColumn',
                'TxtFolderPath','BtnFolderPick','TxtFolderNote','BtnNetFind',
                'RowSrcKind','BtnSrcAccounts','BtnSrcPaths','PanelSrcPaths','ListSrcPaths','BtnAddSrcPath',
-               'PanelRestoreTo','TxtRestoreTo','BtnRestoreOrig','BtnRestorePick',
+               'PanelRestoreTo','TxtRestoreTo','BtnRestoreOrig','BtnRestorePick','RowDstKind','BtnDstAccount','BtnDstFolder',
                'NetOverlay','BtnNetScan','BtnNetStop','TxtNetStatus','ListNetHosts','TreeNetShares',
                'TxtNetManual','HintNetManual',
                'TxtNetNote','BtnNetCancel','BtnNetUse',
@@ -7011,9 +7017,7 @@ function Update-UserEmptyStates {
     # it was showing under a backup's Choose folder... button and under a restore's account list.
     $EmptyDst.Visibility = 'Collapsed'
     if ($nDst -eq 0 -and $script:BackupMode -eq 'profile') {
-        $EmptyDst.Text = $(if ($script:SrcUsers.Count -le 1 -or $script:SrcPick) {
-                "No other account to copy into - this machine has only one. Create the new one on the User Accounts tab; it appears here as soon as it exists."
-            } else { 'No accounts found.' })
+        $EmptyDst.Text = $(if ($script:SrcUsers.Count -le 1 -or $script:SrcPick) { 'No other account to copy to.' } else { 'No accounts found.' })
         $EmptyDst.Visibility = 'Visible'
     } elseif ($nDst -eq 0 -and $script:BackupMode -eq 'restore' -and $script:RestoreKind -ne 'paths') {
         $EmptyDst.Text = 'No accounts found.'
@@ -7836,7 +7840,7 @@ function Start-UserBatch([string]$Action, [hashtable]$Data) {
         # Named for the job. A drive/USB backup has no destination ACCOUNT, so this read
         # 'Back up data to ""' on the card, in the log and in the run record.
         'migrate'       { $(if ([string]$Data.srcKind -eq 'paths') { "Back up $(@($Data.paths).Count) folder(s)/drive(s) to $($Data.dstPath)" }
-                            elseif ([string]$Data.dstKind -eq 'paths') { $(if ([string]$Data.restoreTo -eq 'orig') { 'Restore folders and drives to where they came from' } else { "Restore folders and drives into $($Data.restoreTo)" }) }
+                            elseif ([string]$Data.dstKind -eq 'paths') { $(if ([string]$Data.restoreTo -eq 'orig') { 'Restore to where it came from' } else { "Restore backup into $($Data.restoreTo)" }) }
                             elseif ([string]$Data.srcKind -eq 'folder') { "Restore backup into `"$($Data.dstUser)`"" }
                             elseif ([string]$Data.dstKind -eq 'folder') { "Back up data to $($Data.dstPath)" }
                             else { "Copy profile data to `"$($Data.dstUser)`"" }) }
@@ -11250,9 +11254,11 @@ function Copy-ProfileData($app) {
     } elseif ($dstKind -eq 'paths') {
         # Restoring a folders-and-drives backup: back to where each item came from ('orig'), or
         # all of them into one chosen folder. Only a backup of that kind can go this way.
-        if ($srcKind -ne 'folder') { Write-Status $app.id 'Failed' 'refused: only a backup folder can be restored to folders and drives'; return }
-        if ("$($mf.kind)" -ne 'paths-backup') { Write-Status $app.id 'Failed' "refused: $src is a backup of an account, not of folders and drives - restore it into an account"; return }
+        if ($srcKind -ne 'folder') { Write-Status $app.id 'Failed' 'refused: only a backup folder can be restored to a folder'; return }
         $restoreTo = ('' + $app.restoreTo)
+        # "where it came from" needs an origin per item, which only a folders-and-drives backup
+        # records; an account's backup can still be poured into a folder of the technician's choosing
+        if ($restoreTo -eq 'orig' -and "$($mf.kind)" -ne 'paths-backup') { Write-Status $app.id 'Failed' "refused: $src is a backup of an account - it has no 'where it came from'; restore it into an account or a chosen folder"; return }
         if ($restoreTo -ne 'orig') {
             if (-not $restoreTo) { Write-Status $app.id 'Failed' 'refused: nowhere to restore to was given'; return }
             if (-not (Test-Path -LiteralPath $restoreTo -PathType Container)) { Write-Status $app.id 'Failed' "refused: $restoreTo is not a folder that exists"; return }
@@ -11338,6 +11344,7 @@ function Copy-ProfileData($app) {
         foreach ($rel in @($app.items)) {
             $s = Resolve-InProfile $src $rel
             $it = @($mf.items | Where-Object { "$($_.rel)" -eq "$rel" })[0]
+            # an account backup restored into a folder keeps the profile's shape under it
             $to = $(if ($restoreTo -eq 'orig') { '' + $it.source } else { Join-Path $dstPath $rel })
             if (-not $s -or -not $it -or -not $to) { $failed++; $problems += "$rel (refused - not an item of this backup)"; continue }
             if ($to.StartsWith('\\')) { $failed++; $problems += "$rel (refused - its original place is a network path)"; continue }
@@ -17718,6 +17725,7 @@ function Set-BackupFolder([string]$Path, [string]$User, [string]$Password) {
         $TxtFolderPath.Visibility = 'Collapsed'
         $TxtFolderNote.Text = ''
         $script:RestoreManifest = $null
+        $script:RestoreKindPicked = ''; $script:RestoreTo = ''
         if (Get-Command Sync-RestoreTarget -ErrorAction SilentlyContinue) { Sync-RestoreTarget }
         Build-MigrateList
         Update-Dash
@@ -17739,6 +17747,8 @@ function Set-BackupFolder([string]$Path, [string]$User, [string]$Password) {
             $mf = $null
             try { $mf = (Get-Content -LiteralPath $mfPath -Raw).TrimStart([char]0xFEFF) | ConvertFrom-Json } catch { }
             $script:RestoreManifest = $mf
+            # a new backup means a fresh choice of where it goes
+            $script:RestoreKindPicked = ''; $script:RestoreTo = ''
             if (Get-Command Sync-RestoreTarget -ErrorAction SilentlyContinue) { Sync-RestoreTarget }
             if ($mf) {
                 $when = [string]$mf.finishedUtc
@@ -18083,18 +18093,31 @@ function Sync-SrcKind {
     if ($ListSrcPaths.ItemsSource -eq $null) { $ListSrcPaths.ItemsSource = $script:SrcPaths }
 }
 
-# Where a folders-and-drives backup goes back to. Takes the account list's place on the right.
+# WHERE a restore goes: an account, or a folder or drive - the same two kinds Backup starts
+# from, mirrored. A folders-and-drives backup also offers "where it came from". Takes the
+# account list's place on the right when a folder is the target.
+$script:RestoreKindPicked = ''     # what the technician chose for THIS backup; '' = not yet
 function Sync-RestoreTarget {
     $mf = $script:RestoreManifest
-    $script:RestoreKind = $(if ($script:BackupMode -eq 'restore' -and $mf -and "$($mf.kind)" -eq 'paths-backup') { 'paths' } else { 'account' })
+    $isRestore = ($script:BackupMode -eq 'restore')
+    $hasOrig = [bool]($mf -and "$($mf.kind)" -eq 'paths-backup')
+    if (-not $script:RestoreKindPicked) { $script:RestoreKindPicked = $(if ($hasOrig) { 'paths' } else { 'account' }) }
+    $script:RestoreKind = $(if ($isRestore) { $script:RestoreKindPicked } else { 'account' })
     $isPaths = ($script:RestoreKind -eq 'paths')
-    $PanelRestoreTo.Visibility = $(if ($isPaths) { 'Visible' } else { 'Collapsed' })
-    if ($script:BackupMode -eq 'restore') { $ListDstUsers.Visibility = $(if ($isPaths) { 'Collapsed' } else { 'Visible' }) }
-    if (-not $isPaths) { $script:RestoreTo = '' }
+    $on  = $window.FindResource('TabActive'); $off = $window.FindResource('TabIdle')
+    $RowDstKind.Visibility = $(if ($isRestore) { 'Visible' } else { 'Collapsed' })
+    $BtnDstAccount.Style = $(if ($isPaths) { $off } else { $on })
+    $BtnDstFolder.Style  = $(if ($isPaths) { $on } else { $off })
+    $PanelRestoreTo.Visibility = $(if ($isRestore -and $isPaths) { 'Visible' } else { 'Collapsed' })
+    $BtnRestoreOrig.Visibility = $(if ($hasOrig) { 'Visible' } else { 'Collapsed' })
+    if ($isRestore) { $ListDstUsers.Visibility = $(if ($isPaths) { 'Collapsed' } else { 'Visible' }) }
+    if (-not $isPaths -or ($script:RestoreTo -eq 'orig' -and -not $hasOrig)) { $script:RestoreTo = '' }
     $TxtRestoreTo.Text = $(switch ($script:RestoreTo) { '' { '' } 'orig' { 'Restore to:  where each item came from' } default { "Restore into:  $($script:RestoreTo)" } })
     $TxtRestoreTo.Visibility = $(if ($script:RestoreTo) { 'Visible' } else { 'Collapsed' })
     if ($isPaths) { $EmptyDst.Visibility = 'Collapsed' }
 }
+$BtnDstAccount.Add_Click({ if (Test-BatchBusy) { return }; $script:RestoreKindPicked = 'account'; Sync-RestoreTarget; Update-UserEmptyStates; Update-Dash })
+$BtnDstFolder.Add_Click({ if (Test-BatchBusy) { return }; $script:RestoreKindPicked = 'paths'; Sync-RestoreTarget; Update-UserEmptyStates; Update-Dash })
 
 $BtnSrcAccounts.Add_Click({ if ($script:SrcKind -ne 'account') { $script:SrcKind = 'account'; Sync-SrcKind; Update-UserEmptyStates; Build-MigrateList } })
 $BtnSrcPaths.Add_Click({ if ($script:SrcKind -ne 'paths') { $script:SrcKind = 'paths'; Sync-SrcKind; Update-UserEmptyStates; Build-MigrateList } })
@@ -18471,8 +18494,8 @@ $BtnMigrate.Add_Click({
             # roots swapped: the backup is the source
             $srcKind = 'folder'; $srcRoot = [string]$script:FolderPath
             if ($script:RestoreKind -eq 'paths') {
-                # a folders-and-drives backup goes back where it came from, or into one folder
-                if (-not $script:RestoreTo) { Show-Overlay 'Nowhere to restore to' 'Press "Where it came from", or choose a folder to restore into.'; return }
+                # into one folder - or, for a folders-and-drives backup, back where each item came from
+                if (-not $script:RestoreTo) { Show-Overlay 'Nowhere to restore to' 'Choose the folder to restore into.'; return }
                 if ($script:RestoreTo -ne 'orig' -and -not (Test-Path -LiteralPath $script:RestoreTo -PathType Container)) {
                     Show-Overlay 'Folder not there' "$($script:RestoreTo) cannot be reached any more. Choose it again."; return
                 }

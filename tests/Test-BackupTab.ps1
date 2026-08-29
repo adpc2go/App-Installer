@@ -578,6 +578,31 @@ try {
         Assert-Equal 'with its file content intact'            'paid' "$(Get-Content -LiteralPath (Join-Path $data 'Acme\invoice.txt') -Raw)".Trim()
         Assert-True  'and the marker planted in the backup'    (Test-Path -LiteralPath (Join-Path $data $marker))
         Dismiss-Overlay
+
+        # ---- an ACCOUNT's backup poured into a folder: the mirror of "Folders or drives" on the
+        # restore side. The fake profile backup from section 1 goes into a chosen folder.
+        $into2 = Join-Path $sandbox 'account-into-folder'
+        New-Item -ItemType Directory -Force -Path $into2 | Out-Null
+        Select-BackupMode 'folder'; Select-BackupMode 'restore'
+        Set-BackupFolder $bk '' ''
+        Assert-Equal 'the restore kind switch is on screen'     'Visible' "$($RowDstKind.Visibility)"
+        Assert-Equal 'an account backup starts on An account'   'Visible' "$($ListDstUsers.Visibility)"
+        Assert-Equal 'with no "where it came from" (it has none)' 'Collapsed' "$($BtnRestoreOrig.Visibility)"
+        Invoke-Click $BtnDstFolder
+        Assert-Equal 'A folder or drive swaps in the folder buttons' 'Visible' "$($PanelRestoreTo.Visibility)"
+        Assert-Equal 'and hides the account list'               'Collapsed' "$($ListDstUsers.Visibility)"
+        $script:RestoreTo = $into2; Sync-RestoreTarget; Update-Dash
+        Invoke-Click $BtnMigrate
+        Assert-Equal 'the restore confirm opened'               'Restore this backup?' (Get-OverlayTitle)
+        Invoke-Click $BtnOverlayOk
+        Assert-True  'the account-to-folder restore settled'    (Wait-For { $script:Phase -in 'Done', 'Idle' } 420000)
+        $row = $script:Pending[0]
+        Write-Host "  row: $($row.Name): $($row.Status) - $($row.StatusDetail)" -ForegroundColor DarkGray
+        Assert-True  'it reports Applied'                       ($row.Status -like 'Applied*')
+        Assert-True  "the account's Documents landed under the folder" (Test-Path -LiteralPath (Join-Path $into2 'Documents\hello.txt'))
+        Dismiss-Overlay
+        Invoke-Click $BtnDstAccount
+        Assert-Equal 'An account brings the account list back'  'Visible' "$($ListDstUsers.Visibility)"
     } finally { Remove-Item -LiteralPath $dest -Recurse -Force -ErrorAction SilentlyContinue }
 
     Write-Host ''
