@@ -181,6 +181,21 @@ try {
     Assert-True  'the drawer opened on the new app'   $script:DrawerOpen
     Assert-True  'and it is the one selected'         ($ListApps.SelectedItem.App -eq $script:Catalog.apps[2])
 
+    # The minimal drawer: one icon (the header tile, clickable), the name as a real field, the
+    # id derived from the name and shown as a grey line - no ID box, no second ICON section.
+    $panel = $DrawerHost.Content
+    Assert-True  'the drawer has a panel'                         ($null -ne $panel)
+    Assert-Equal 'the ID box is hidden'                           'Collapsed' "$($panel.FindName('DlgIdPanel').Visibility)"
+    Assert-Equal 'the big ICON section is hidden'                 'Collapsed' "$($panel.FindName('DlgIconSlotBig').Parent.Parent.Parent.Visibility)"
+    Assert-Equal 'the header tile is the icon control'            'Hand' "$($panel.FindName('DlgIconTile').Cursor)"
+    $panel.FindName('DlgName').Text = 'My New App'
+    Assert-Equal 'typing a name derives the id'                   'my-new-app' ([string](Get-Field $script:Catalog.apps[2] 'id'))
+    Assert-Equal 'and the grey line shows it'                     'my-new-app' "$($panel.FindName('DlgIdText').Text)"
+    $panel.FindName('DlgName').Text = 'My New App 2'
+    Assert-Equal 'it follows the name while the app is not live'  'my-new-app-2' ([string](Get-Field $script:Catalog.apps[2] 'id'))
+    Assert-Equal 'nothing is said under the URL before a hash'    '' "$($panel.FindName('DlgHashInfo').Text)"
+    Assert-Equal 'nor under the switch before a fetch'            '' "$($panel.FindName('DlgSilentHint').Text)"
+
     # fill it the way the drawer does, so the rest of the run has a complete third app
     $newApp = $script:Catalog.apps[2]
     Set-Field $newApp 'name'        'Injected 1'

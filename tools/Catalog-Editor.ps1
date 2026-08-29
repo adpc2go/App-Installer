@@ -2583,17 +2583,19 @@ $dialogXaml = @'
          printed label, so nobody tried to click it - it looked hardcoded. It now carries a soft
          rule underneath at rest, fills in under the cursor, and becomes an ordinary bordered
          field once focused. -->
+    <!-- A field that LOOKS like a field. Styled flat as a heading it read as neither: a title
+         nobody knew was editable, an input nobody could find. -->
     <Style x:Key="TitleBox" TargetType="TextBox">
-      <Setter Property="Background" Value="Transparent"/>
+      <Setter Property="Background" Value="{StaticResource Sunken}"/>
       <Setter Property="Foreground" Value="{StaticResource Ink}"/>
       <Setter Property="CaretBrush" Value="{StaticResource Ink}"/>
       <Setter Property="BorderBrush" Value="{StaticResource Line}"/>
-      <Setter Property="BorderThickness" Value="0,0,0,1"/>
-      <Setter Property="Padding" Value="3,1"/>
-      <Setter Property="Margin" Value="-4,0,0,1"/>
+      <Setter Property="BorderThickness" Value="1"/>
+      <Setter Property="Padding" Value="7,5"/>
+      <Setter Property="Margin" Value="0"/>
       <Setter Property="FontSize" Value="13.5"/>
       <Setter Property="FontWeight" Value="SemiBold"/>
-      <Setter Property="ToolTip" Value="The name a technician sees. Click to rename it."/>
+      <Setter Property="ToolTip" Value="Name"/>
       <Style.Triggers>
         <Trigger Property="IsMouseOver" Value="True">
           <Setter Property="Background" Value="{StaticResource Sunken}"/>
@@ -2723,22 +2725,27 @@ $dialogXaml = @'
     <Border DockPanel.Dock="Top" BorderBrush="{StaticResource LineSoft}"
             BorderThickness="0,0,0,1" Padding="14,10">
       <DockPanel LastChildFill="True">
-        <Grid x:Name="DlgIconTile" DockPanel.Dock="Left" Width="30" Height="30" Margin="0,0,11,0">
-          <Border x:Name="DlgIconSlot" CornerRadius="7" Background="#FF23232B"
+        <!-- THE icon - the only one. Click it to pick a PNG; the separate ICON section with a
+             second, bigger copy of the same picture is gone. -->
+        <Grid x:Name="DlgIconTile" DockPanel.Dock="Left" Width="46" Height="46" Margin="0,0,12,0"
+              Cursor="Hand" ToolTip="Click to pick a PNG icon" Background="Transparent">
+          <Border x:Name="DlgIconSlot" CornerRadius="10" Background="#FF23232B"
                   BorderThickness="1" BorderBrush="#FF3E3E49"/>
-          <Border x:Name="DlgIconLetter" CornerRadius="7" Background="#FF3A3A44" Visibility="Collapsed">
-            <TextBlock x:Name="DlgIconText" FontSize="11" FontWeight="Bold" Foreground="White"
+          <Border x:Name="DlgIconLetter" CornerRadius="10" Background="#FF3A3A44" Visibility="Collapsed">
+            <TextBlock x:Name="DlgIconText" FontSize="16" FontWeight="Bold" Foreground="White"
                        HorizontalAlignment="Center" VerticalAlignment="Center"/>
-          </Border>          <Border x:Name="DlgIconImageBox" CornerRadius="7" Background="Transparent"
+          </Border>          <Border x:Name="DlgIconImageBox" CornerRadius="10" Background="Transparent"
                   Visibility="Collapsed">
             <Image x:Name="DlgIconImage" Stretch="Uniform"/>
           </Border>
         </Grid>
         <StackPanel VerticalAlignment="Center">
-          <!-- The name, and only the name. The id used to sit under it as grey text: not a
-               heading, not editable, and derived from whatever the app happened to be called
-               when it was first added. It is a field now, further down, where fields live. -->
           <TextBox x:Name="DlgName" Style="{StaticResource TitleBox}"/>
+          <!-- The id, derived from the name and frozen once the app is live. Nobody types it;
+               a double-click opens the box for the one case that needs it - two apps with the
+               same name. -->
+          <TextBlock x:Name="DlgIdText" FontSize="10.5" Foreground="{StaticResource Dim}" Margin="1,4,0,0"
+                     Cursor="Hand" ToolTip="Double-click to change the id"/>
         </StackPanel>
       </DockPanel>
     </Border>
@@ -2764,14 +2771,18 @@ $dialogXaml = @'
         </Grid.RowDefinitions>
 
         <StackPanel x:Name="DlgLeft" Grid.Column="0" Grid.Row="0">
-          <TextBlock Text="ID" Style="{StaticResource FieldLabel}"/>
-        <TextBox x:Name="DlgId" Margin="0,0,0,12"/>
+          <!-- Hidden unless the id line in the header is double-clicked. -->
+          <StackPanel x:Name="DlgIdPanel" Visibility="Collapsed">
+            <TextBlock Text="ID" Style="{StaticResource FieldLabel}"/>
+            <TextBox x:Name="DlgId" Margin="0,0,0,12"/>
+          </StackPanel>
 
         <TextBlock Text="CATEGORY" Style="{StaticResource FieldLabel}"/>
           <ComboBox x:Name="DlgCategory" Margin="0,0,0,11"/>
 
-          <TextBlock Text="ICON" Style="{StaticResource FieldLabel}"/>
-          <Border Background="{StaticResource Sunken}" BorderBrush="{StaticResource Line}"
+          <!-- Kept for the code that paints it, never shown: the header tile is the icon now. -->
+          <TextBlock Text="ICON" Style="{StaticResource FieldLabel}" Visibility="Collapsed"/>
+          <Border Background="{StaticResource Sunken}" BorderBrush="{StaticResource Line}" Visibility="Collapsed"
                   BorderThickness="1" CornerRadius="6" Padding="9" Margin="0,0,0,11">
             <DockPanel LastChildFill="True">
               <Grid DockPanel.Dock="Left" Width="56" Height="56" Margin="0,0,11,0">
@@ -2910,7 +2921,7 @@ function Show-AppDialog($App, $Owner, [string]$LocalFile = '') {
                    'DlgPostList','DlgPostAdd','DlgPostRemove','DlgPostUp','DlgPostDown','DlgPostEdit',
                    'DlgPostMove','DlgPostRun','DlgPostPs','DlgPostFilePanel','DlgPostPsPanel','DlgPostCmd',
                    'DlgPostFrom','DlgPostDestLabel','DlgPostDest','DlgPostWhere',
-                   'DlgStatus','DlgId','DlgCategory',
+                   'DlgStatus','DlgId','DlgIdPanel','DlgIdText','DlgIconTile','DlgCategory',
                    'DlgIconSlot','DlgIconLetter','DlgIconText','DlgIconImageBox','DlgIconImage',
                    'DlgIconSlotBig','DlgIconLetterBig','DlgIconTextBig','DlgIconImageBoxBig',
                    'DlgIconImageBig','DlgIconPick','DlgIconState',
@@ -3036,7 +3047,8 @@ function Show-AppDialog($App, $Owner, [string]$LocalFile = '') {
             $c.DlgHashInfo.Text = "$(Format-Size $state.size)   sha256 $($state.sha256.Substring(0,16))..."
         } else {
             $c.DlgHashInfo.Foreground = '#FFF87171'
-            $c.DlgHashInfo.Text = 'Not hashed yet'
+            # nothing to say until there is a hash; the amber chip on the card already says "not ready"
+            $c.DlgHashInfo.Text = ''
         }
     }.GetNewClosure()
     # Says in words what the selected row will do. The destination is offered, not demanded:
@@ -3262,8 +3274,8 @@ function Show-AppDialog($App, $Owner, [string]$LocalFile = '') {
         if (-not $d -and [string]$state.familyError) {
             $c.DlgSilentHint.Text = "The installer could not be inspected - $($state.familyError). Type the switch this installer documents, or leave it blank for the guard."
         } elseif (-not $d) {
-            $c.DlgSilentHint.Text = $(if ($state.sha256) { 'No known installer signature - nothing is proposed. ' } else { 'Fetch and hash to read the installer. ' }) +
-                'Type the switch this installer documents, or leave it blank and the client''s window guard stops it if it opens a window.'
+            # a result or nothing: "fetch and hash to read the installer" was an instruction, not a fact
+            $c.DlgSilentHint.Text = $(if ($state.sha256) { 'No known installer signature - nothing is proposed.' } else { '' })
         } elseif (-not $d.silent) {
             $c.DlgSilentHint.Text = "Detected: $($d.label) ($($d.evidence)) - this family has no universal silent switch" +
                 $(if (@($d.notes).Count) { ": $(@($d.notes) -join '; ')" } else { '.' }) +
@@ -3547,6 +3559,15 @@ function Show-AppDialog($App, $Owner, [string]$LocalFile = '') {
         $wantId = ConvertTo-Id (Get-BoxText $c.DlgId)
         if (-not $wantId) { $wantId = ConvertTo-Id $name }
         $haveId = [string](Get-Field $App 'id')
+        # Nobody types the id: while its box is hidden it FOLLOWS the name - until the app is
+        # live, when it freezes, because renaming would orphan the files/<id>/ key, the icon and
+        # the sidecar that the published catalog points at. Double-clicking the id line opens
+        # the box, and a typed id wins as before.
+        if ("$($c.DlgIdPanel.Visibility)" -eq 'Collapsed') {
+            $live = $false
+            try { $live = ("$((Get-AppLive $App).Text)" -eq 'live') } catch { }
+            $wantId = $(if ($live -and $haveId) { $haveId } elseif ($name) { ConvertTo-Id $name } else { $haveId })
+        }
         if ($wantId -and $wantId -ne $haveId) {
             # Refuse an id another app already owns. Two apps sharing an id share one icon
             # file, one files/<id>/ key in the bucket and one sidecar entry - Test-App warns
@@ -3580,6 +3601,8 @@ function Show-AppDialog($App, $Owner, [string]$LocalFile = '') {
                 Set-Field $App 'id' $wantId
             }
         }
+        # the grey line under the name always shows the id the entry actually has
+        try { $c.DlgIdText.Text = [string](Get-Field $App 'id') } catch { }
         if (-not (Get-Field $App 'category')) { Set-Field $App 'category' (Get-DefaultCategory) }
         # iconText / iconColor are deliberately NOT touched - an existing app keeps the icon it
         # already has, and a new one simply has none until somebody sets one
@@ -3724,6 +3747,9 @@ function Show-AppDialog($App, $Owner, [string]$LocalFile = '') {
     # drawer at peek width still reads as the design it came from. They are wired here, inside
     # the per-application tree, so they die with it like everything else.
     $c.DlgId.Text = [string](Get-Field $App 'id')
+    $c.DlgIdText.Text = [string](Get-Field $App 'id')
+    # the one way to type an id: double-click the grey line, and the box appears where fields live
+    $c.DlgIdText.Add_MouseLeftButtonDown({ param($s, $e) if ($e.ClickCount -ge 2) { $c.DlgIdPanel.Visibility = 'Visible'; [void]$c.DlgId.Focus(); $c.DlgId.SelectAll() } }.GetNewClosure())
     $state.openId = [string](Get-Field $App 'id')
     $state.loading = $true
     $c.DlgCategory.ItemsSource   = @(Get-CategoryNames)
@@ -5178,6 +5204,9 @@ function Update-Inspector {
         # by the harnesses. It copies YOUR png in - nothing is fetched, generated or extracted.
         $pick = $panel.FindName('DlgIconPick')
         if ($pick) { $pick.Add_Click({ Invoke-Guarded { Set-AppIconFromFile $a $panel } 'Pick icon' }.GetNewClosure()) }
+        # the header tile IS the icon control now: clicking it picks the PNG
+        $tile = $panel.FindName('DlgIconTile')
+        if ($tile) { $tile.Add_MouseLeftButtonUp({ Invoke-Guarded { Set-AppIconFromFile $a $panel } 'Pick icon' }.GetNewClosure()) }
     }
 }
 
