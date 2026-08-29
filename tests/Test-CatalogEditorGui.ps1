@@ -283,6 +283,18 @@ try {
     # is written by Update-List, so refresh before reading it.
     Update-List
     Assert-True  'and the summary says what is ready to publish' ($TxtSummary.Text -like '*ready to publish*')
+    Assert-True  'with a real plural, not app(s)'                 ($TxtSummary.Text -match '^\d+ apps?  ·  ')
+    # A failed read of what is live is said in amber with the reason on the tooltip, and the dot
+    # agrees - it used to stay green under "could not read what is live", reason never shown.
+    $keepLive = $script:LiveApps; $keepErr = $script:LiveError
+    $script:LiveApps = $null; $script:LiveError = 'HTTP 503 from the edge'
+    Update-List
+    Assert-True  'a failed live read says so, briefly'            ($TxtSummary.Text -like '*live copy unreadable*')
+    Assert-True  'with the reason on the tooltip'                 ("$($TxtSummary.ToolTip)" -like '*HTTP 503*')
+    Assert-Equal 'and the dot goes amber'                         '#FFFBBF24' "$($DotStatus.Fill)"
+    $script:LiveApps = $keepLive; $script:LiveError = $keepErr
+    Update-List
+    Assert-True  'and back to normal when it can read again'      ($TxtSummary.Text -notlike '*unreadable*')
     Assert-True  'while the status line is left for what just happened' `
                  ($TxtStatus.Text -notlike '*not ready to publish*')
     $script:Catalog.apps = @(@($script:Catalog.apps) | Where-Object { $_ -ne $rough })

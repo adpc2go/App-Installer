@@ -2296,18 +2296,27 @@ function Update-List {
         $ls = Get-AppLive $a
         if ($ls.Text -and $ls.Text -ne 'live') { $behind++ }
     }
-    $tail = ''
+    # Three facts, one separator, and the colour says the state: a failed read of what is live
+    # used to be spliced onto a plain count line as "- could not read what is live", with the
+    # REASON (held in $script:LiveError) never shown and the dot beside it still green.
+    $tail = ''; $tone = 'Dim'; $tip = ''
     if ($null -eq $script:LiveApps) {
         # Only worth a word if the check actually FAILED; while it is still in flight, silence.
-        if ($script:LiveError) { $tail = ' - could not read what is live' }
+        if ($script:LiveError) { $tail = '  ·  live copy unreadable'; $tone = 'Warn'; $tip = "Could not read what is live: $($script:LiveError)" }
     } elseif ($behind -gt 0) {
-        $tail = ", $behind not yet live"
+        $tail = "  ·  $behind not yet live"
     } else {
-        $tail = ' - everything ready is live'
+        $tail = '  ·  all live'
     }
+    $apps = $(if ($all.Count -eq 1) { '1 app' } else { "$($all.Count) apps" })
     # The SUMMARY slot, never the activity slot. This line ran on every keystroke and was
     # wiping every confirmation the user had just been given - see Show-Activity's comment.
-    Set-CatalogSummary "$($all.Count) app(s), $ready ready to publish$tail"
+    Set-CatalogSummary "$apps  ·  $ready ready to publish$tail"
+    try {
+        $TxtSummary.Foreground = $(if ($tone -eq 'Warn') { [Windows.Media.BrushConverter]::new().ConvertFromString('#FFFBBF24') } else { $window.FindResource('Dim') })
+        $TxtSummary.ToolTip = $(if ($tip) { $tip } else { $TxtSummary.Text })
+        $DotStatus.Fill = $(if ($tone -eq 'Warn') { '#FFFBBF24' } else { '#FF4ADE80' })
+    } catch { }
 }
 
 # ---------------------------------------------------------------- after-install rows
@@ -4392,7 +4401,8 @@ $xaml = @'
                still fresh. They shared one control until now, so the refresh won every time and
                "Icon set for Revit." lived for about a keystroke. -->
           <TextBlock x:Name="TxtSummary" DockPanel.Dock="Right" Foreground="{StaticResource Dim}"
-                     FontSize="11" VerticalAlignment="Center" Margin="12,0,0,0"/>
+                     FontSize="11" VerticalAlignment="Center" Margin="12,0,14,0" MaxWidth="420"
+                     TextTrimming="CharacterEllipsis"/>
           <TextBlock x:Name="TxtStatus" Foreground="{StaticResource Muted}" FontSize="11.5"
                      TextWrapping="Wrap" VerticalAlignment="Center" Margin="0,0,12,0"/>
         </DockPanel>
