@@ -92,7 +92,30 @@ function Wait-For([scriptblock]$Until, [int]$TimeoutMs = 120000, [int]$Step = 25
         Wait-Dispatcher $Step
         $waited += $Step
     }
-    return [bool](& $Until)
+    $ok = [bool](& $Until)
+    if (-not $ok) { Dump-Batch "wait of $([int]($TimeoutMs / 1000))s ran out" }
+    return $ok
+}
+# Everything there is to know about a batch that did not settle - printed at the moment it
+# happens, because a bare FAIL on "the batch settled" has been seen three times now and says
+# nothing about which side stopped talking.
+function Dump-Batch([string]$Why) {
+    Write-Host "  ---- batch did not settle: $Why" -ForegroundColor Yellow
+    Write-Host "  phase=$($script:Phase) tab=$($script:BatchTab) workerStarted=$($script:WorkerStarted) endQueued=$($script:EndQueued) busy=$($script:Busy) faults=$($script:PumpFaults) offset=$($script:StatusOffset)" -ForegroundColor Yellow
+    foreach ($p in @($script:Pending)) { Write-Host "  pending: $($p.Id) [$($p.Status)] $($p.StatusDetail)" -ForegroundColor Yellow }
+    $alive = @(Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" -ErrorAction SilentlyContinue | Where-Object { $_.CommandLine -like '*worker.ps1*' })
+    Write-Host "  worker processes alive: $($alive.Count)" -ForegroundColor Yellow
+    foreach ($w in $alive) { Write-Host "    pid $($w.ProcessId) started $($w.CreationDate)" -ForegroundColor Yellow }
+    foreach ($f in @($script:QueuePath, $script:StatusPath, $script:CancelPath)) {
+        if (Test-Path -LiteralPath $f) {
+            Write-Host "  $(Split-Path -Leaf $f):" -ForegroundColor Yellow
+            foreach ($l in @(Get-Content -LiteralPath $f -ErrorAction SilentlyContinue | Select-Object -Last 8)) { Write-Host "    $l" -ForegroundColor DarkYellow }
+        } else { Write-Host "  $(Split-Path -Leaf $f): (absent)" -ForegroundColor Yellow }
+    }
+    $act = Join-Path (Split-Path -Parent $script:StatusPath) 'activity.jsonl'
+    if (Test-Path -LiteralPath $act) { Write-Host '  activity.jsonl:' -ForegroundColor Yellow; foreach ($l in @(Get-Content -LiteralPath $act | Select-Object -Last 6)) { Write-Host "    $l" -ForegroundColor DarkYellow } }
+    Write-Host '  last log lines:' -ForegroundColor Yellow
+    foreach ($l in @((Get-LogLines) | Select-Object -Last 8)) { Write-Host "    $l" -ForegroundColor DarkYellow }
 }
 function Invoke-Click($Button) {
     $Button.RaiseEvent((New-Object Windows.RoutedEventArgs([Windows.Controls.Primitives.ButtonBase]::ClickEvent)))
