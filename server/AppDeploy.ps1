@@ -510,6 +510,46 @@ public class WipeItem {
     // component shared with sibling products of the same suite - removing it breaks them
     public bool Shared { get { return _shared; } set { _shared = value; } }
     public string SharedVis { get { return _shared ? "Visible" : "Collapsed"; } }
+    // The preview groups a product's leftovers the way an uninstaller's report does: files
+    // and folders first, then registry, then services and tasks. Section and its order come
+    // from Type, so every row of a kind lands under the same heading without a lookup.
+    public bool IsDir { get; set; }
+    public int SectionOrder { get {
+        switch (Type ?? "") {
+            case "file": return 0;
+            case "reg": case "regvalue": return 1;
+            case "service": case "task": return 2;
+            case "hosts": return 3;
+            default: return 4;
+        } } }
+    public string Section { get {
+        switch (SectionOrder) {
+            case 0: return "Files and folders";
+            case 1: return "Registry entries";
+            case 2: return "Services and tasks";
+            case 3: return "Hosts file";
+            default: return "Removal tool";
+        } } }
+    // Segoe MDL2 Assets glyphs, as escapes so the file's encoding cannot mangle them:
+    // folder, key, gear, globe, run
+    public string SectionGlyph { get {
+        switch (SectionOrder) {
+            case 0: return "\uE8B7";
+            case 1: return "\uE8D7";
+            case 2: return "\uE713";
+            case 3: return "\uE774";
+            default: return "\uE7EF";
+        } } }
+    // per row: folder / shortcut / page for files, clock for a task, the section's own otherwise
+    public string Glyph { get {
+        if (Type == "file") {
+            if (IsDir) return "\uE8B7";
+            if ((Path ?? "").EndsWith(".lnk", StringComparison.OrdinalIgnoreCase)) return "\uE71B";
+            return "\uE7C3";
+        }
+        if (Type == "task") return "\uE823";
+        return SectionGlyph;
+    } }
 }
 '@
 
@@ -2821,7 +2861,7 @@ $xaml = @'
       <Border x:Name="WipeOverlay" Grid.Row="0" Grid.RowSpan="3" CornerRadius="16" Background="#DD0E0E12"
               Visibility="Collapsed">
         <Border CornerRadius="14" Background="{StaticResource Raised}" BorderThickness="1" BorderBrush="{StaticResource Line}"
-                Width="620" MaxHeight="520" Padding="26,22" VerticalAlignment="Center" HorizontalAlignment="Center">
+                Width="700" MaxHeight="560" Padding="26,22" VerticalAlignment="Center" HorizontalAlignment="Center">
           <Grid>
             <Grid.RowDefinitions>
               <RowDefinition Height="Auto"/>
@@ -2836,22 +2876,40 @@ $xaml = @'
               <ScrollViewer VerticalScrollBarVisibility="Auto" Margin="4">
                 <ItemsControl x:Name="ListWipe">
                   <ItemsControl.GroupStyle>
+                    <!-- level 0: the product -->
                     <GroupStyle>
                       <GroupStyle.HeaderTemplate>
                         <DataTemplate>
-                          <StackPanel Orientation="Horizontal" Margin="8,10,0,4">
+                          <StackPanel Orientation="Horizontal" Margin="8,12,0,2">
                             <Rectangle Width="3" Height="12" Fill="{StaticResource Bad}" RadiusX="1.5" RadiusY="1.5" VerticalAlignment="Center"/>
-                            <TextBlock Text="{Binding Name}" FontSize="11.5" FontWeight="Bold" Foreground="{StaticResource Ink}"
-                                       Margin="7,0,6,0" VerticalAlignment="Center"/>
-                            <TextBlock Text="{Binding ItemCount}" FontSize="10.5" Foreground="{StaticResource Dim}" VerticalAlignment="Center"/>
+                            <TextBlock Text="{Binding Name}" FontSize="12" FontWeight="Bold" Foreground="{StaticResource Ink}"
+                                       Margin="7,0,0,0" VerticalAlignment="Center"/>
                           </StackPanel>
+                        </DataTemplate>
+                      </GroupStyle.HeaderTemplate>
+                    </GroupStyle>
+                    <!-- level 1: files and folders / registry entries / services and tasks, with the
+                         section's glyph taken from its first row -->
+                    <GroupStyle>
+                      <GroupStyle.HeaderTemplate>
+                        <DataTemplate>
+                          <Border BorderThickness="0,0,0,1" BorderBrush="{StaticResource Raised}" Margin="18,6,8,2" Padding="0,0,0,4">
+                            <StackPanel Orientation="Horizontal">
+                              <TextBlock Text="{Binding Items[0].SectionGlyph}" FontFamily="Segoe MDL2 Assets" FontSize="13"
+                                         Foreground="{StaticResource Accent}" VerticalAlignment="Center" Margin="0,0,8,0"/>
+                              <TextBlock FontSize="11.5" Foreground="{StaticResource Ink}" VerticalAlignment="Center">
+                                <Run Text="{Binding Name, Mode=OneWay}"/>
+                                <Run Text=" (" Foreground="{StaticResource Muted}"/><Run Text="{Binding ItemCount, Mode=OneWay}" Foreground="{StaticResource Muted}"/><Run Text=" items)" Foreground="{StaticResource Muted}"/>
+                              </TextBlock>
+                            </StackPanel>
+                          </Border>
                         </DataTemplate>
                       </GroupStyle.HeaderTemplate>
                     </GroupStyle>
                   </ItemsControl.GroupStyle>
                   <ItemsControl.ItemTemplate>
                     <DataTemplate>
-                      <Grid Margin="8,4" Opacity="{Binding RowOpacity}">
+                      <Grid Margin="26,3,8,3" Opacity="{Binding RowOpacity}">
                         <Grid.ColumnDefinitions>
                           <ColumnDefinition Width="Auto"/>
                           <ColumnDefinition Width="Auto"/>
@@ -2859,11 +2917,8 @@ $xaml = @'
                           <ColumnDefinition Width="Auto"/>
                         </Grid.ColumnDefinitions>
                         <CheckBox Grid.Column="0" IsChecked="{Binding Del, Mode=TwoWay}" VerticalAlignment="Center"/>
-                        <Border Grid.Column="1" CornerRadius="4" Padding="5,1" Margin="8,0,0,0" Background="{StaticResource Raised}"
-                                VerticalAlignment="Center" Width="62">
-                          <TextBlock Text="{Binding Kind}" FontSize="9.5" Foreground="{StaticResource Ink}" FontWeight="SemiBold"
-                                     HorizontalAlignment="Center"/>
-                        </Border>
+                        <TextBlock Grid.Column="1" Text="{Binding Glyph}" FontFamily="Segoe MDL2 Assets" FontSize="13" Width="18"
+                                   Foreground="{StaticResource Dim}" VerticalAlignment="Center" Margin="8,0,0,0" ToolTip="{Binding Kind}"/>
                         <StackPanel Grid.Column="2" Margin="8,0,8,0" VerticalAlignment="Center">
                           <TextBlock Text="{Binding Path}" FontSize="11.5" Foreground="{StaticResource Ink}"
                                      TextTrimming="CharacterEllipsis" ToolTip="{Binding Path}"/>
@@ -2884,17 +2939,23 @@ $xaml = @'
                 </ItemsControl>
               </ScrollViewer>
             </Border>
-            <DockPanel Grid.Row="3" Margin="0,16,0,0">
-              <TextBlock Text="Checked = known app data, will be deleted. Unchecked = name match only, tick to include."
-                         Foreground="{StaticResource Muted}" FontSize="11" VerticalAlignment="Center" TextWrapping="Wrap" MaxWidth="300"/>
-              <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+            <!-- buttons only, on their own row, wrapping to a second line rather than
+                 running under each other; the instruction lives in the subtitle -->
+            <Grid Grid.Row="3" Margin="0,16,0,0">
+              <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="Auto"/>
+              </Grid.ColumnDefinitions>
+              <StackPanel Grid.Column="0" Orientation="Horizontal" HorizontalAlignment="Left">
                 <Button x:Name="BtnWipeAll" Content="Select all" Style="{StaticResource GhostBtn}"/>
                 <Button x:Name="BtnWipeNone" Content="Clear all" Style="{StaticResource GhostBtn}"/>
                 <Button x:Name="BtnWipeWeak" Content="Show possible matches" Style="{StaticResource GhostBtn}" Visibility="Collapsed"/>
+              </StackPanel>
+              <StackPanel Grid.Column="1" Orientation="Horizontal">
                 <Button x:Name="BtnWipeSkip" Content="Skip cleanup" Style="{StaticResource GhostBtn}"/>
                 <Button x:Name="BtnWipeGo" Content="Wipe checked" Style="{StaticResource AccentBtn}"/>
               </StackPanel>
-            </DockPanel>
+            </Grid>
           </Grid>
         </Border>
       </Border>
@@ -3341,11 +3402,17 @@ $script:GameView.Filter = $unFilter
 # leftovers group under the app that owns them, so attribution is obvious in the preview
 $script:WipeView = [Windows.Data.CollectionViewSource]::GetDefaultView($script:WipeFindings)
 $script:WipeView.GroupDescriptions.Add((New-Object Windows.Data.PropertyGroupDescription 'OwnerName'))
-# Within each app: what will be deleted first, then the name-only guesses last. Weak matches are
+# ...and inside the app, by what the row is: files and folders, registry, services and tasks.
+# The sections appear in the order of their first row, so SectionOrder sorts first.
+$script:WipeView.GroupDescriptions.Add((New-Object Windows.Data.PropertyGroupDescription 'Section'))
+# Within each section: what will be deleted first, then the name-only guesses last. Weak matches are
 # hidden until the technician asks for them - see Complete-LeftoverScan and BtnWipeWeak.
 $script:WipeShowWeak = $false
+$script:WipeView.SortDescriptions.Add((New-Object ComponentModel.SortDescription 'SectionOrder', 'Ascending'))
 $script:WipeView.SortDescriptions.Add((New-Object ComponentModel.SortDescription 'Del', 'Descending'))
 $script:WipeView.SortDescriptions.Add((New-Object ComponentModel.SortDescription 'Weak', 'Ascending'))
+# then by path, so a folder is listed above the files inside it
+$script:WipeView.SortDescriptions.Add((New-Object ComponentModel.SortDescription 'Path', 'Ascending'))
 $script:WipeView.Filter = [Predicate[object]]{ param($o) if ($script:WipeShowWeak) { return $true }; return -not $o.Weak }
 
 # Bind the controls to the VIEWS, not the raw collections. Handing an ItemsControl a
@@ -4303,11 +4370,13 @@ function Scan-Leftovers([object]$Item, [bool]$PreCheck = $true, [scriptblock]$St
                else { $path.ToLower() })
         if ($found.ContainsKey($k)) { return }
         $sz = 0
+        $isDir = $false
         if ($type -eq 'file') {
             $exp = [Environment]::ExpandEnvironmentVariables($path)
             if (Test-ProtectedPath $exp) { return }
             if (-not (Test-Path -LiteralPath $exp)) { return }
             if (Test-Path -LiteralPath $exp -PathType Container) {
+                $isDir = $true
                 $sz = Get-FolderSize $exp
                 $empty = -not @(Get-ChildItem -LiteralPath $exp -Force -ErrorAction SilentlyContinue).Count
                 if ($empty) { $kind = 'EMPTY' }
@@ -4346,6 +4415,9 @@ function Scan-Leftovers([object]$Item, [bool]$PreCheck = $true, [scriptblock]$St
         # a regvalue shows the entry's own name where a size would go - every autostart entry
         # shares one key path, so without it two rows read identically
         $w.SizeText = switch ($type) { 'reg' { 'key' } 'regvalue' { ('' + $name) } 'service' { 'service' } 'task' { 'task' } 'hosts' { 'line' } default { Format-Size $sz } }
+        $w.IsDir = $isDir
+        # an empty folder says so - "0 KB" reads as a size that was not measured
+        if ($kind -eq 'EMPTY') { $w.SizeText = 'empty' }
         $w.Del = [bool]$preChecked
         $w.Weak = [bool]$weak
         # Suite-shared components stay behind on purpose - Revit and the rest of the CC
@@ -14794,15 +14866,19 @@ function Complete-LeftoverScan {
     try { $script:WipeView.Refresh() } catch { }
     $shown = @($script:WipeFindings | Where-Object { $script:WipeShowWeak -or -not $_.Weak })
     $bytes = ($shown | Measure-Object -Property SizeBytes -Sum).Sum
-    $pre = @($script:WipeFindings | Where-Object { $_.Del }).Count
+    # counted over the rows ON SCREEN, the same set the item count and total come from - a
+    # hidden weak row is never pre-checked, but a shared component is unchecked while shown
+    $pre = @($shown | Where-Object { $_.Del }).Count
     # nothing pre-checked has two very different causes, and the technician has to be told
     # which one: no curated targets to offer, or curated targets that may not be rubbish
     $held = $dirtyScan -and [bool]$ctl.Held
-    $tail = $(if ($pre) { "$pre are known app data and already checked; the rest matched by name only - review before wiping." }
+    $tail = $(if ($pre -eq $shown.Count) { "All $pre are known app data and checked." }
+              elseif ($pre) { "$pre are known app data and checked; the other $($shown.Count - $pre) matched by name only." }
               elseif ($held) { 'Nothing is pre-checked: these products were already installed before this batch, so some of what is listed may belong to the copy that was working. Tick only what should go.' }
               else { 'Nothing is pre-checked - every item here matched by name only. Tick what should go.' })
     if ($weak -and -not $script:WipeShowWeak) { $tail += " $weak name-only guess(es) are listed behind the Show button." }
     if ($cut) { $tail += ' The scan was stopped early, so this list may be incomplete.' }
+    $tail += ' Review the list, then click Wipe checked to finish.'
     $TxtWipeSub.Text = $(if ($dirtyScan) { "$($shown.Count) item(s) were left on disk by the failed install(s), totalling $(Format-Size $bytes). $tail" }
                          else { "$($shown.Count) leftover item(s) survived the uninstaller, totalling $(Format-Size $bytes). $tail" })
     Add-Log "Leftover scan: $($script:WipeFindings.Count) item(s) found ($(Format-Size $bytes))."
