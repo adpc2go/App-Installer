@@ -15907,6 +15907,20 @@ function Test-PfDepBlocked {
     return $false
 }
 
+# One rule for every disk figure the tool paints, so the colour means the same thing on the
+# pre-flight sheet, the Backup tab and anywhere else: what the drive will look like AFTER the
+# job. Red when it will not fit; amber when it leaves under 10% (or under 2 GB) free, which is
+# where Windows itself starts to misbehave; green otherwise. The bar was a permanently grey
+# 'used' stripe with a coloured sliver for the job - 25 MB on a terabyte is zero pixels - so it
+# read as "grey" on every machine regardless of how full the drive was.
+function Get-DiskVerdict([long]$Free, [long]$Total, [long]$Need = 0) {
+    if ($Total -le 0) { return 'Muted' }
+    if ($Need -gt $Free) { return 'Bad' }
+    $after = $Free - $Need
+    if ($after -lt 2GB -or ($after / [double]$Total) -lt 0.10) { return 'Warn' }
+    return 'Good'
+}
+
 function Get-DiskFacts([string]$Path) {
     try {
         $full = [IO.Path]::GetFullPath($Path)
@@ -16078,22 +16092,32 @@ function Sync-Preflight {
     if ($total -lt 1) { $total = 1 }
     $usedW = [Math]::Max(0, [Math]::Min($w, $w * $used / $total))
     $needW = [Math]::Max(0, [Math]::Min(($w - $usedW), $w * $need / $total))
+    # the job's share is never invisible: 25 MB on a terabyte is zero pixels, so a floor of 4
+    if ($need -gt 0 -and $needW -lt 4) { $needW = [Math]::Min(4, $w - $usedW) }
     $PfBarUsed.Width = $usedW
     $PfBarNeed.Width = $needW
 
+    # The whole bar carries the verdict - the used stripe in the verdict's colour, the job's
+    # share in a brighter accent on top - so a full drive reads red before anybody reads the
+    # sentence under it, and a roomy one reads green.
+    $verdict = Get-DiskVerdict $disk.Free $disk.Total $need
+    $PfBarUsed.Background = $window.FindResource($verdict)
+    $PfBarUsed.Opacity = 0.55
+    $PfBarNeed.Background = $window.FindResource($(if ($verdict -eq 'Good') { 'Accent' } else { $verdict }))
     if ($need -gt $disk.Free) {
-        $PfBarNeed.Background      = $window.FindResource('Bad')
         $TxtPfDiskFacts.Foreground = $window.FindResource('Bad')
         $TxtPfDiskNote.Foreground  = $window.FindResource('Bad')
         $TxtPfDiskNote.Text = "This will not fit - it needs $(Format-Size $need) with room to unpack, which is $(Format-Size ($need - $disk.Free)) short, and installers need room beyond that again. Take something out, or free up space."
-    } elseif ($need -gt ($disk.Free / 2)) {
-        $PfBarNeed.Background      = $window.FindResource('Warn')
+    } elseif ($verdict -eq 'Warn' -or $need -gt ($disk.Free / 2)) {
         $TxtPfDiskFacts.Foreground = $window.FindResource('Warn')
         $TxtPfDiskNote.Foreground  = $window.FindResource('Muted')
-        $TxtPfDiskNote.Text = "That is over half the free space on this drive. $(Format-Size $need) covers the download and room to unpack it - each installer then writes its own files on top of that."
+        $TxtPfDiskNote.Text = $(if ($need -gt ($disk.Free / 2)) {
+            "That is over half the free space on this drive. $(Format-Size $need) covers the download and room to unpack it - each installer then writes its own files on top of that."
+        } else {
+            "It fits, but the drive is nearly full: $(Format-Size ($disk.Free - $need)) would be left, and Windows slows down and fails updates below about 10% free. Worth clearing space first."
+        })
     } else {
-        $PfBarNeed.Background      = $window.FindResource('Accent')
-        $TxtPfDiskFacts.Foreground = $window.FindResource('Muted')
+        $TxtPfDiskFacts.Foreground = $window.FindResource('Good')
         $TxtPfDiskNote.Foreground  = $window.FindResource('Dim')
         $TxtPfDiskNote.Text = "Room for the download and for unpacking it ($(Format-Size $need)). What each installer then writes is its own, and is not counted here."
     }
@@ -17960,8 +17984,11 @@ function Set-BackupFolder([string]$Path, [string]$User, [string]$Password) {
     } else {
         $facts = Get-DiskFacts $script:FolderPath
         if ($facts) {
-            $TxtFolderNote.Text = "Disk $($facts.Name) - $(Format-Size $facts.Free) free of $(Format-Size $facts.Total)."
-            $TxtFolderNote.Foreground = $window.FindResource('Muted')
+            # the same colour rule as the pre-flight sheet: how the drive stands, not just a number
+            $v = Get-DiskVerdict $facts.Free $facts.Total 0
+            $TxtFolderNote.Text = "Disk $($facts.Name) - $(Format-Size $facts.Free) free of $(Format-Size $facts.Total)" +
+                                  $(if ($v -eq 'Warn') { ' - nearly full' } elseif ($v -eq 'Bad') { ' - full' } else { '' }) + '.'
+            $TxtFolderNote.Foreground = $window.FindResource($(if ($v -eq 'Muted') { 'Muted' } else { $v }))
         } elseif ($script:FolderPath.StartsWith('\\')) {
             # IO.DriveInfo has no answer for a UNC path, so the free space genuinely cannot be
             # measured from here. Saying so is the honest reading; the space check in BtnMigrate
