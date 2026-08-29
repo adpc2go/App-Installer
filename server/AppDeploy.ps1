@@ -2311,8 +2311,25 @@ $xaml = @'
               <Button x:Name="BtnNetScan" Content="Scan again" Style="{StaticResource AccentBtn}" Padding="18,7"/>
               <Button x:Name="BtnNetStop" Content="Stop" Style="{StaticResource GhostBtn}" Padding="18,7"
                       Margin="8,0,0,0" Visibility="Collapsed"/>
+              <!-- turning while the sweep runs: the first answer can take a couple of seconds, and a
+                   dialog that opens onto a blank line for that long reads as hung -->
+              <Path x:Name="NetSpinner" Data="M 11,2 A 9,9 0 0 1 20,11" Stroke="{StaticResource Lift}" StrokeThickness="2.2"
+                    Width="22" Height="22" StrokeStartLineCap="Round" Stretch="None" RenderTransformOrigin="0.5,0.5"
+                    VerticalAlignment="Center" Margin="12,0,0,0" Visibility="Collapsed">
+                <Path.RenderTransform><RotateTransform/></Path.RenderTransform>
+                <Path.Triggers>
+                  <EventTrigger RoutedEvent="FrameworkElement.Loaded">
+                    <BeginStoryboard>
+                      <Storyboard>
+                        <DoubleAnimation Storyboard.TargetProperty="(UIElement.RenderTransform).(RotateTransform.Angle)"
+                                         From="0" To="360" Duration="0:0:0.9" RepeatBehavior="Forever"/>
+                      </Storyboard>
+                    </BeginStoryboard>
+                  </EventTrigger>
+                </Path.Triggers>
+              </Path>
               <TextBlock x:Name="TxtNetStatus" Text="" FontSize="11.5" Foreground="{StaticResource Muted}"
-                         VerticalAlignment="Center" Margin="12,0,0,0" TextWrapping="Wrap"/>
+                         VerticalAlignment="Center" Margin="8,0,0,0" TextWrapping="Wrap"/>
             </StackPanel>
 
             <Grid Margin="0,14,0,0">
@@ -3128,6 +3145,33 @@ $xaml = @'
         </Border>
       </Border>
 
+      <!-- "Working" - shown BEFORE any slow, synchronous load (accounts, firewall rules, the toolbox)
+           and painted by a dispatcher pump, so a click never lands on a window that looks frozen.
+           It swallows clicks while up: a tab pressed twice mid-load is what re-enters loaders. -->
+      <Border x:Name="BusyOverlay" Grid.Row="0" Grid.RowSpan="3" Background="#66121216" Visibility="Collapsed">
+        <Border CornerRadius="12" Background="{StaticResource Raised}" BorderThickness="1" BorderBrush="{StaticResource Line}"
+                Padding="22,14" VerticalAlignment="Center" HorizontalAlignment="Center">
+          <StackPanel Orientation="Horizontal">
+            <Path Data="M 11,2 A 9,9 0 0 1 20,11" Stroke="{StaticResource Lift}" StrokeThickness="2.4" Width="22" Height="22"
+                  StrokeStartLineCap="Round" Stretch="None" RenderTransformOrigin="0.5,0.5" VerticalAlignment="Center">
+              <Path.RenderTransform><RotateTransform/></Path.RenderTransform>
+              <Path.Triggers>
+                <EventTrigger RoutedEvent="FrameworkElement.Loaded">
+                  <BeginStoryboard>
+                    <Storyboard>
+                      <DoubleAnimation Storyboard.TargetProperty="(UIElement.RenderTransform).(RotateTransform.Angle)"
+                                       From="0" To="360" Duration="0:0:0.9" RepeatBehavior="Forever"/>
+                    </Storyboard>
+                  </BeginStoryboard>
+                </EventTrigger>
+              </Path.Triggers>
+            </Path>
+            <TextBlock x:Name="TxtBusy" Text="" FontSize="13" FontWeight="SemiBold" Foreground="{StaticResource Ink}"
+                       VerticalAlignment="Center" Margin="12,0,0,0"/>
+          </StackPanel>
+        </Border>
+      </Border>
+
       <Border x:Name="Overlay" Grid.Row="0" Grid.RowSpan="3" CornerRadius="16" Background="#CC121216"
               Visibility="Collapsed">
         <Border CornerRadius="14" Background="{StaticResource Raised}" BorderThickness="1" BorderBrush="{StaticResource Line}"
@@ -3191,7 +3235,7 @@ foreach ($n in 'ListApps','BarOverall','TxtOverall','TxtLog','TxtStatus','TxtCat
                'PanelRestoreTo','TxtRestoreTo','BtnRestoreOrig','BtnRestorePick','RowDstKind','BtnDstAccount','BtnDstFolder',
                'NetOverlay','BtnNetScan','BtnNetStop','TxtNetStatus','ListNetHosts','TreeNetShares',
                'TxtNetManual','HintNetManual',
-               'TxtNetNote','BtnNetCancel','BtnNetUse',
+               'TxtNetNote','BtnNetCancel','BtnNetUse','NetSpinner','BusyOverlay','TxtBusy',
                'BtnShareThis','BtnShareStop','ShareOverlay','TxtShareIntro','ListShareDrives','ListShareFolders',
                'EmptyShareFolders','BtnShareAddFolder','ChkShareAnyone','TxtShareNote','BtnShareCancel','BtnShareOk',
                'BtnTabTools','PanelTools','ListFix','PanelGrid','BtnRunFix',
@@ -4505,6 +4549,23 @@ function Scan-Leftovers([object]$Item, [bool]$PreCheck = $true, [scriptblock]$St
     return @($found.Values)
 }
 
+# The "working" pill. Called BEFORE a slow load, pumped so it is actually painted, and always
+# taken down in a finally - a busy screen that outlives its work is worse than none.
+$script:BusyDepth = 0
+function Show-Busy([string]$What) {
+    $script:BusyDepth++
+    $TxtBusy.Text = $What
+    $BusyOverlay.Visibility = 'Visible'
+    try { $window.Cursor = [Windows.Input.Cursors]::Wait } catch { }
+    Update-UI; Update-UI
+}
+function Hide-Busy {
+    if ($script:BusyDepth -gt 0) { $script:BusyDepth-- }
+    if ($script:BusyDepth -gt 0) { return }
+    $BusyOverlay.Visibility = 'Collapsed'
+    try { $window.Cursor = $null } catch { }
+}
+
 function Show-Overlay([string]$Title, [string]$Message) {
     $script:ConfirmAction = $null
     $BtnOverlayCancel.Visibility = 'Collapsed'
@@ -4627,13 +4688,19 @@ function Select-Tab([string]$Which) {
             $BtnTabUsers.Style = $window.FindResource('TabActive')
             # accounts change under us constantly (one was just created, someone signed in)
             # so the list is built on first visit rather than at startup
-            if (-not $script:UsersLoaded) { $script:UsersLoaded = $true; Load-Users }
+            if (-not $script:UsersLoaded) {
+                Show-Busy 'Reading the accounts on this PC...'
+                try { $script:UsersLoaded = $true; Load-Users } finally { Hide-Busy }
+            }
         }
         'Migrate' {
             $PanelMigrate.Visibility = 'Visible'
             $BtnTabMigrate.Style = $window.FindResource('TabActive')
             $BtnMigrate.Visibility = 'Visible'
-            if (-not $script:UsersLoaded) { $script:UsersLoaded = $true; Load-Users }
+            if (-not $script:UsersLoaded) {
+                Show-Busy 'Reading the accounts on this PC...'
+                try { $script:UsersLoaded = $true; Load-Users } finally { Hide-Busy }
+            }
             # The XAML is drawn for one mode and $script:BackupMode names another; nothing lined
             # them up until the first mode switch, so the tab opened saying "Copy FROM the broken
             # profile" under a Backup button. Sync once, the first time the tab is shown.
@@ -4647,7 +4714,10 @@ function Select-Tab([string]$Which) {
             $PanelTools.Visibility = 'Visible'
             $BtnTabTools.Style = $window.FindResource('TabActive')
             $BtnRunFix.Visibility = 'Visible'
-            if (-not $script:ToolsLoaded) { $script:ToolsLoaded = $true; Load-Toolbox }
+            if (-not $script:ToolsLoaded) {
+                Show-Busy 'Loading the toolbox...'
+                try { $script:ToolsLoaded = $true; Load-Toolbox } finally { Hide-Busy }
+            }
         }
         'Fw' {
             $PanelFw.Visibility = 'Visible'
@@ -4656,7 +4726,10 @@ function Select-Tab([string]$Which) {
             $BtnFwUnblock.Visibility = 'Visible'
             $BtnFwRemoveAll.Visibility = 'Visible'
             # rules change outside this tool, so the list is rebuilt whenever it is stale
-            if ($script:FwDirty) { Load-Firewall }
+            if ($script:FwDirty) {
+                Show-Busy 'Reading the firewall rules...'
+                try { Load-Firewall } finally { Hide-Busy }
+            }
         }
         default {
             $PanelLog.Visibility = 'Visible'
@@ -4666,7 +4739,8 @@ function Select-Tab([string]$Which) {
             # Rebuilt on the way in rather than kept live: a run written while you were on
             # another tab has to be here when you arrive, and this is the only moment that
             # matters. It also costs nothing on the tabs you are actually working in.
-            Sync-RunList
+            Show-Busy 'Reading the activity log...'
+            try { Sync-RunList } finally { Hide-Busy }
         }
     }
     # explicit: during a running batch Update-SearchCount returns before reaching this,
@@ -17880,6 +17954,11 @@ function Start-NetScan {
     $BtnNetScan.IsEnabled  = $false
     $BtnNetStop.Visibility = 'Visible'
     Show-NetNote '' 'Dim'
+    # Said and painted BEFORE the sweep: working out which networks this PC is on takes a
+    # couple of seconds on its own, and until now the dialog sat on a blank line for them.
+    $NetSpinner.Visibility = 'Visible'
+    $TxtNetStatus.Text = 'Checking your network...'
+    Update-UI; Update-UI
     $found = @()
     try {
         # A percentage, not a raw address count. "Asked 312 of 508 addresses" answers a question
@@ -17915,6 +17994,7 @@ function Start-NetScan {
         $script:NetScanning    = $false
         $BtnNetScan.IsEnabled  = $true
         $BtnNetStop.Visibility = 'Collapsed'
+        $NetSpinner.Visibility = 'Collapsed'
     }
     if ($script:NetStop) {
         $TxtNetStatus.Text = "Stopped - $($ListNetHosts.Items.Count) PC(s) found so far"

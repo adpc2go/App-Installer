@@ -508,6 +508,29 @@ try {
     $me2.IsSelected = $false
     Select-BackupMode 'folder'
 
+    # ================================================================== 6d. the working pill
+    Write-Section '6d. "Working": up before a slow load, down after it, nested calls balance'
+
+    Assert-Equal 'nothing busy to begin with'                 'Collapsed' "$($BusyOverlay.Visibility)"
+    Show-Busy 'Testing...'
+    Assert-Equal 'Show-Busy shows the pill'                   'Visible' "$($BusyOverlay.Visibility)"
+    Assert-Equal 'with its text'                              'Testing...' "$($TxtBusy.Text)"
+    Assert-True  'and the wait cursor'                        ([object]::ReferenceEquals($window.Cursor, [Windows.Input.Cursors]::Wait))
+    Show-Busy 'Nested...'
+    Hide-Busy
+    Assert-Equal 'a nested Hide leaves the outer one up'      'Visible' "$($BusyOverlay.Visibility)"
+    Hide-Busy
+    Assert-Equal 'the last Hide takes it down'                'Collapsed' "$($BusyOverlay.Visibility)"
+    Assert-True  'and restores the cursor'                    ($null -eq $window.Cursor)
+    # the tabs that load something take it up and down around the load, even on a throw
+    $script:ToolsLoaded = $false
+    Select-Tab 'Tools'
+    Assert-Equal 'after the Toolbox loaded the pill is down'  'Collapsed' "$($BusyOverlay.Visibility)"
+    Select-Tab 'Log'
+    Assert-Equal 'and after the Activity tab'                 'Collapsed' "$($BusyOverlay.Visibility)"
+    Select-Tab 'Migrate'
+    Assert-Equal 'the scan dialog spinner is hidden until a scan runs' 'Collapsed' "$($NetSpinner.Visibility)"
+
     # ================================================================== 7. folders and drives
     Write-Section '7. Folders or drives: back a folder up as itself, then restore it into a chosen folder'
 
