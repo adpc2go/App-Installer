@@ -160,6 +160,9 @@ try {
     function Show-Warn([string]$Text) { $script:LastStatus = $Text }
     function Show-Done([string]$Text) { $script:LastStatus = $Text }
     function Show-Notice([string]$Title, [string]$Body) { $script:LastNotice = "$Title :: $Body" }
+    # The drawer asks whether the app is live to decide if its id may still follow the name.
+    # Nothing here is live, so the id follows the name - which is what these sections expect.
+    function Get-AppLive($a) { [pscustomobject]@{ Text = '' } }
     # Confirming immediately is the honest stand-in: the question cannot be asked without a
     # window, and what these tests are about is what happens AFTER it is answered yes.
     function Show-Confirm([string]$Title, [string]$Body, [string]$OkText, [scriptblock]$OnConfirm) {
