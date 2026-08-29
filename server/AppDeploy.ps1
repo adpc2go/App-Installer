@@ -4725,11 +4725,9 @@ function Select-Tab([string]$Which) {
             $BtnFwBlock.Visibility = 'Visible'
             $BtnFwUnblock.Visibility = 'Visible'
             $BtnFwRemoveAll.Visibility = 'Visible'
-            # rules change outside this tool, so the list is rebuilt whenever it is stale
-            if ($script:FwDirty) {
-                Show-Busy 'Reading the firewall rules...'
-                try { Load-Firewall } finally { Hide-Busy }
-            }
+            # rules change outside this tool, so the list is rebuilt whenever it is stale.
+            # No busy pill here: Load-Firewall paints its own spinner inside the panel.
+            if ($script:FwDirty) { Load-Firewall }
         }
         default {
             $PanelLog.Visibility = 'Visible'
