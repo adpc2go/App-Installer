@@ -298,7 +298,7 @@ try {
     # is written by Update-List, so refresh before reading it.
     Update-List
     Assert-True  'and the summary says what is ready to publish' ($TxtSummary.Text -like '*ready to publish*')
-    Assert-True  'with a real plural, not app(s)'                 ($TxtSummary.Text -match '^\d+ apps?  ·  ')
+    Assert-True  'with a real plural, not app(s)'                 ($TxtSummary.Text -match '^\d+ apps? - ')
     # A failed read of what is live is said in amber with the reason on the tooltip, and the dot
     # agrees - it used to stay green under "could not read what is live", reason never shown.
     $keepLive = $script:LiveApps; $keepErr = $script:LiveError

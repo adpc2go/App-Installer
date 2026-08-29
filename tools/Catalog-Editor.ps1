@@ -1299,7 +1299,7 @@ function Complete-BulkOne {
 # The fix is a priority, not more text. Every message carries a level and an expiry, and a
 # lower level cannot overwrite a higher one while it is still fresh:
 #
-#   0 idle · 1 ambient (autosave, a background check) · 2 busy · 3 a user action's result
+#   0 idle - 1 ambient (autosave, a background check) - 2 busy - 3 a user action's result
 #   4 failure
 #
 # So a live-check landing 200ms after you saved credentials loses to the confirmation, and the
@@ -2302,16 +2302,16 @@ function Update-List {
     $tail = ''; $tone = 'Dim'; $tip = ''
     if ($null -eq $script:LiveApps) {
         # Only worth a word if the check actually FAILED; while it is still in flight, silence.
-        if ($script:LiveError) { $tail = '  ·  live copy unreadable'; $tone = 'Warn'; $tip = "Could not read what is live: $($script:LiveError)" }
+        if ($script:LiveError) { $tail = ' - live copy unreadable'; $tone = 'Warn'; $tip = "Could not read what is live: $($script:LiveError)" }
     } elseif ($behind -gt 0) {
-        $tail = "  ·  $behind not yet live"
+        $tail = " - $behind not yet live"
     } else {
-        $tail = '  ·  all live'
+        $tail = ' - all live'
     }
     $apps = $(if ($all.Count -eq 1) { '1 app' } else { "$($all.Count) apps" })
     # The SUMMARY slot, never the activity slot. This line ran on every keystroke and was
     # wiping every confirmation the user had just been given - see Show-Activity's comment.
-    Set-CatalogSummary "$apps  ·  $ready ready to publish$tail"
+    Set-CatalogSummary "$apps - $ready ready to publish$tail"
     try {
         $TxtSummary.Foreground = $(if ($tone -eq 'Warn') { [Windows.Media.BrushConverter]::new().ConvertFromString('#FFFBBF24') } else { $window.FindResource('Dim') })
         $TxtSummary.ToolTip = $(if ($tip) { $tip } else { $TxtSummary.Text })
@@ -4624,7 +4624,7 @@ $BtnAdd.Add_Click({ Invoke-Guarded {
     $new = @($ListApps.Items | Where-Object { $_.App -eq $app })
     if ($new.Count) { $ListApps.SelectedItem = $new[0] }
     Open-Drawer
-    Set-StatusText 'New application added. Fill it in on the right, starting with the package.'
+    Set-StatusText 'New application added.'
 } 'Add application' })
 
 $BtnAddFolder.Add_Click({ Invoke-Guarded {
