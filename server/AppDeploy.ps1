@@ -16039,14 +16039,16 @@ function Sync-Preflight {
     $nGo = @(Get-PfCommitItems | Where-Object { $_.BatchAction -ne 'uninstall' }).Count
     if ($install) {
         $TxtPfTitle.Text = "Install $n $word"
-        $TxtPfSub.Text   = 'Nothing has been downloaded yet. Take out anything you did not mean to pick.'
+        # no explainer under the title: the list IS the sheet, and the x on each row says how
+        # to take one out
+        $TxtPfSub.Text   = ''
         $BtnPfGo.Content = "Install $nGo"
         $TxtPfFoot.Text  = 'Downloads to %LOCALAPPDATA%\PC2GoDeploy'
     } else {
         $TxtPfTitle.Text = "Uninstall $n $word"
-        $TxtPfSub.Text   = 'The vendor uninstaller runs for each of these. Take out anything you did not mean to pick.'
+        $TxtPfSub.Text   = ''
         $BtnPfGo.Content = "Uninstall $nGo"
-        $TxtPfFoot.Text  = 'Each one runs in turn; the batch reports as it goes.'
+        $TxtPfFoot.Text  = ''
     }
     # The already-there / already-gone panel, for either action. Guarded on the control
     # existing, like PfDep: an older harness name list must get a working sheet, not a throw.
@@ -16140,7 +16142,8 @@ function Sync-Preflight {
         $PfBarUsed.Width = 0
         $PfBarNeed.Width = 0
         $TxtPfDiskNote.Foreground = $window.FindResource('Dim')
-        $TxtPfDiskNote.Text = 'Windows reports these sizes itself and they are often estimates - some programs report none at all.'
+        # "up to" already says the figure is Windows' estimate; no paragraph under it
+        $TxtPfDiskNote.Text = ''
         return
     }
 
