@@ -184,6 +184,7 @@ tool cannot be open while they run.
 | Test-Categories | 234 | 0 |
 | Test-CatalogEditorGui | 97 | 0 |
 | Test-DirtyCleanup | 83 | 0 |
+| Test-FirewallTab (elevated; also green on the Pro VM) | 71 | 0 |
 | Test-Wrangler | 75 | 0 |
 | Test-CatalogScenarios | 66 | 0 |
 | Test-AccessCode | 54 | 0 |

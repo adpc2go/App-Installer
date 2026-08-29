@@ -6339,7 +6339,7 @@ function Start-FixBatch([object[]]$Sel, [hashtable]$Extra) {
 # Renaming it later is safe: unblocking matches rules by the PROGRAM PATH, not by group, so
 # rules written under an older name (or by a hand-rolled batch file) are still found and
 # removed. That is deliberate - the .bat left 68 orphans precisely because it had no group.
-$script:FwGroup = 'PC2Go Application Block'
+$script:FwGroup = 'Application Block'
 
 # Every outbound block rule that names a program, as path -> rule name. One pass over the
 # rule table and one over the application filters, joined by InstanceID; enumerating
@@ -6351,9 +6351,17 @@ function Get-FirewallBlockMap {
         foreach ($af in @(Get-NetFirewallApplicationFilter -ErrorAction Stop)) {
             $p = ('' + $af.AppPath)
             if (-not $p) { $p = ('' + $af.Program) }
-            if ($p -and $p -ne 'Any') { $filters[[string]$af.InstanceID] = $p }
+            # Most rules on a real machine name their program as %ProgramFiles%\... or
+            # %SystemRoot%\... (291 of 339 on the dev box). Matched raw, none of those ever
+            # sat under an install folder, so a blocked program read as "not blocked" and its
+            # rules showed up as strays named "%programfiles%\...". Expand once, here, so every
+            # comparison downstream is against the path the firewall itself resolves.
+            if ($p -and $p -ne 'Any' -and $p -ne 'System') { $filters[[string]$af.InstanceID] = [Environment]::ExpandEnvironmentVariables($p) }
         }
-        foreach ($r in @(Get-NetFirewallRule -Direction Outbound -Action Block -ErrorAction Stop)) {
+        # SilentlyContinue, not Stop: a machine with NO outbound block rules - every clean client -
+        # makes this cmdlet throw "No matching MSFT_NetFirewallRule objects found", which read as
+        # "Firewall rules could not be read" in the log. An empty result is the normal case.
+        foreach ($r in @(Get-NetFirewallRule -Direction Outbound -Action Block -ErrorAction SilentlyContinue)) {
             $p = $filters[[string]$r.InstanceID]
             if (-not $p) { continue }
             $key = $p.ToLower()
@@ -6395,15 +6403,20 @@ function Get-ForeignRuleCount([object[]]$Rows) {
     return $n
 }
 
-function Get-BlockCountUnder([hashtable]$Map, [string]$Root) {
-    if (-not $Root) { return 0 }
+function Get-RulesUnder([hashtable]$Map, [string]$Root) {
+    # On = rules that actually cut the program off. Off = rules that exist but are disabled
+    # (wf.msc, a GPO, or a technician flipped them). A disabled rule blocks nothing, so it
+    # must not paint a program "BLOCKED - no internet access"; it is still counted, because
+    # Remove ALL has to be able to clear it and the detail view has to be able to name it.
+    $c = [pscustomobject]@{ On = 0; Off = 0 }
+    if (-not $Root) { return $c }
     $r = $Root.TrimEnd('\').ToLower()
-    if ($r.Length -lt 4) { return 0 }        # refuse to treat "C:\" as an app folder
-    $n = 0
+    if ($r.Length -lt 4) { return $c }        # refuse to treat "C:\" as an app folder
     foreach ($k in $Map.Keys) {
-        if ($k.StartsWith($r + '\')) { $n += @($Map[$k]).Count }
+        if (-not $k.StartsWith($r + '\')) { continue }
+        foreach ($rule in @($Map[$k])) { if ($rule.Enabled) { $c.On++ } else { $c.Off++ } }
     }
-    return $n
+    return $c
 }
 
 # Where an installed program actually lives. InstallLocation is often blank, so fall back
@@ -6479,7 +6492,6 @@ function Load-Firewall {
 
         $seen = @{}
         $matchedRoots = @()
-        $matchedRules = 0
         foreach ($r in @(Get-InstalledPrograms | Where-Object { $_ -and $_.Name })) {
             $root = Resolve-AppRoot $r
             if (-not $root) { continue }
@@ -6487,9 +6499,12 @@ function Load-Firewall {
             $key = $root.ToLower()
             if ($seen.ContainsKey($key)) { continue }     # several entries share one folder
             $seen[$key] = $true
-            $n = Get-BlockCountUnder $map $root
-            $matchedRules += $n
-            if ($n) { $matchedRoots += ($key + '\') }
+            $c = Get-RulesUnder $map $root
+            $n = $c.On
+            $off = $c.Off
+            # a program's folder owns every rule under it, disabled ones included - those must
+            # not fall through to the stray list as if nobody knew what they were
+            if ($n -or $off) { $matchedRoots += ($key + '\') }
 
             $u = New-Object AppItem
             $u.Id = Get-RowId 'fw' $key
@@ -6497,10 +6512,13 @@ function Load-Firewall {
             $u.Publisher = $root
             $u.Version = Clean-DisplayName $r.Publisher
             # badge, not a coloured tile: the real program icon replaces the tile entirely
-            $u.Size = $(if ($n) { "BLOCKED  $n" } else { '' })
-            $u.BadgeBg = '#FFF87171'
+            $u.Size = $(if ($n) { "BLOCKED  $n" + $(if ($off) { "  ($off off)" }) } elseif ($off) { "RULES OFF  $off" } else { '' })
+            $u.BadgeBg = $(if ($n) { '#FFF87171' } else { '#FFF59E0B' })
             $u.UnArgs = $root
             $u.DetectPath = "$n"
+            # the disabled count rides in OrigState (unused outside the Tweaks tab): Unblock and
+            # Remove ALL read it so a folder with only switched-off rules can still be cleared
+            $u.OrigState = "$off"
             $u.IsSilent = ($n -gt 0)
             $u.Category = $(if ($n) { 'Blocked - no internet access' } else { 'Not blocked' })
             $u.Source = '1'
@@ -6540,6 +6558,7 @@ function Load-Firewall {
             $u.BadgeBg = '#FFF59E0B'
             $u.UnArgs = $grp.Path
             $u.DetectPath = "$($rules.Count)"
+            $u.OrigState = '0'
             $u.IsSilent = $true
             # the exact rule names to delete - these rows cannot go through the root-based
             # worker action, because that deliberately refuses shared roots
@@ -6562,7 +6581,10 @@ function Load-Firewall {
         $orphans = 0
         foreach ($vk in $unmatched.Keys) { $orphans += @($unmatched[$vk].Rules).Count }
         $TxtFwHint.Text = "$ruleTotal outbound block rule(s) on this machine"
-        if ($orphans -gt 0) { $TxtFwHint.Text += "; $orphans belong to no installed program - see the Unmatched section" }
+        if ($orphans -gt 0) { $TxtFwHint.Text += "; $orphans belong to no installed program - listed as stray at the end of the Blocked column" }
+        $offTotal = 0
+        foreach ($i in $script:FwItems) { $offTotal += [int]('0' + $i.OrigState) }
+        if ($offTotal -gt 0) { $TxtFwHint.Text += "; $offTotal are switched off and block nothing" }
         Add-Log "Firewall: $($script:FwItems.Count) row(s), $ruleTotal outbound block rule(s), $(@($script:FwItems | Where-Object { $_.IsSilent }).Count) blocked, $orphans unmatched."
     } catch {
         Add-Log "Firewall scan failed: $($_.Exception.Message)"
@@ -6583,9 +6605,10 @@ function Update-FwFilters {
     $blocked = @($script:FwItems | Where-Object { $_.IsSilent -and $_.RegKey -ne 'unmatched' }).Count
     $open = @($script:FwItems | Where-Object { -not $_.IsSilent }).Count
     $orph = @($script:FwItems | Where-Object { $_.RegKey -eq 'unmatched' }).Count
+    $offOnly = @($script:FwItems | Where-Object { -not $_.IsSilent -and [int]('0' + $_.OrigState) -gt 0 }).Count
     $TxtFwBlockedHdr.Text = "Blocked   $blocked" + $(if ($orph) { "   +   $orph stray" })
     $TxtFwOpenHdr.Text = "Not blocked   $open"
-    $BtnFwRemoveAll.IsEnabled = (($blocked + $orph) -gt 0)
+    $BtnFwRemoveAll.IsEnabled = (($blocked + $orph + $offOnly) -gt 0)
 }
 
 # What a row covers, exactly. For something already blocked this lists the executables that
@@ -6614,6 +6637,8 @@ function Show-FwDetail([object]$Row) {
             $rules = @($script:FwMap[$k])
             $mine = @($rules | Where-Object { ('' + $_.Group) -eq $script:FwGroup }).Count
             $tag = $(if ($mine -eq $rules.Count) { 'this tool' } elseif ($mine -eq 0) { 'another tool' } else { 'mixed' })
+            $offN = @($rules | Where-Object { -not $_.Enabled }).Count
+            if ($offN) { $tag += ", $offN switched OFF" }
             $lines += ("{0}    ({1} rule(s), {2})" -f $k, $rules.Count, $tag)
         }
         $TxtFwDetailTitle.Text = "$($Row.Name) - blocked"
@@ -12062,7 +12087,7 @@ $script:FwProtected = @(
     $env:SystemRoot, (Join-Path $env:SystemRoot 'System32'), (Join-Path $env:SystemRoot 'SysWOW64'),
     $env:ProgramFiles, ${env:ProgramFiles(x86)}, $env:ProgramData, $env:SystemDrive,
     (Join-Path $env:ProgramFiles 'Common Files'), (Join-Path ${env:ProgramFiles(x86)} 'Common Files'),
-    $env:UserProfile, $env:LocalAppData, $env:AppData
+    (Join-Path $env:ProgramFiles 'WindowsApps'), $env:UserProfile, $env:LocalAppData, $env:AppData
 ) | Where-Object { $_ } | ForEach-Object { $_.TrimEnd('\').ToLower() }
 
 function Test-FwRoot([string]$Root) {
@@ -12090,7 +12115,9 @@ function Get-FwFilterMap {
     try {
         foreach ($af in @(Get-NetFirewallApplicationFilter -ErrorAction Stop)) {
             $p = ('' + $af.AppPath); if (-not $p) { $p = ('' + $af.Program) }
-            if ($p -and $p -ne 'Any') { $m[[string]$af.InstanceID] = $p }
+            # expanded, same as the GUI's map: a %ProgramFiles%\... rule covers the exe just as
+            # well as a literal one, and must count as "already blocked" / be found by Unblock
+            if ($p -and $p -ne 'Any' -and $p -ne 'System') { $m[[string]$af.InstanceID] = [Environment]::ExpandEnvironmentVariables($p) }
         }
     } catch {}
     return $m
@@ -12108,56 +12135,83 @@ function Block-AppNetwork($app) {
     try { $exes = @([IO.Directory]::EnumerateFiles($root, '*.exe', 'AllDirectories')) } catch {}
     if (-not $exes.Count) { Write-Status $app.id 'Skipped' 'no executables found in that folder'; return }
 
-    # skip anything already covered, so re-running does not pile up duplicates
+    # Skip anything already covered, so re-running does not pile up duplicates. Only an
+    # ENABLED rule covers an exe: a disabled one blocks nothing, and a "skipped, already
+    # blocked" verdict on top of it would leave the program online while the tool says
+    # otherwise. A disabled rule of OUR OWN is switched back on instead of duplicated - its
+    # deterministic name would collide anyway.
     $existing = @{}
+    $ours = @{}
     $fmap = Get-FwFilterMap
     try {
-        foreach ($r in @(Get-NetFirewallRule -Direction Outbound -Action Block -ErrorAction Stop)) {
+        # SilentlyContinue: zero outbound block rules is a normal state, not an error (see the GUI map)
+        foreach ($r in @(Get-NetFirewallRule -Direction Outbound -Action Block -ErrorAction SilentlyContinue)) {
             $p = $fmap[[string]$r.InstanceID]
-            if ($p) { $existing[$p.ToLower()] = $true }
+            if (-not $p) { continue }
+            if ("$($r.Enabled)" -eq 'True') { $existing[$p.ToLower()] = $true }
+            elseif (('' + $r.Name).StartsWith('Block-')) { $ours[$p.ToLower()] = ('' + $r.Name) }
         }
     } catch {}
 
     $stamp = (Get-Date -Format 'yyyy-MM-dd HH:mm')
     $pub = [string]$app.publisher
-    $added = 0; $skipped = 0; $failed = 0
+    $added = 0; $skipped = 0; $failed = 0; $revived = 0; $firstErr = ''
     foreach ($exe in $exes) {
-        if ($existing.ContainsKey($exe.ToLower())) { $skipped++; continue }
+        $lk = $exe.ToLower()
+        if ($existing.ContainsKey($lk)) { $skipped++; continue }
+        if ($ours.ContainsKey($lk)) {
+            try { Set-NetFirewallRule -Name $ours[$lk] -Enabled True -ErrorAction Stop; $revived++; continue }
+            catch { $failed++; if (-not $firstErr) { $firstErr = "$([IO.Path]::GetFileName($exe)): $($_.Exception.Message)" }; continue }
+        }
         try {
             # -Name is the rule's identity and must be unique. Deriving it from a hash of
             # the exe path makes it deterministic, so Windows itself rejects a duplicate
             # even if the path check above ever misses one - idempotency enforced by the
             # system rather than only by our own bookkeeping.
-            $rid = 'PC2Go-Block-' + (Get-PathId $exe)
+            $rid = 'Block-' + (Get-PathId $exe)
             # Everything a technician needs is in the Description, where wf.msc shows it and
             # an export preserves it - including how to undo this without the tool.
-            $desc = "Outbound block created by PC2Go App Installer ($([string]$app.build)) on $stamp." +
+            $desc = "Outbound block created by App Installer ($([string]$app.build)) on $stamp." +
                     "`r`nApplication: $name" + $(if ($pub) { " ($pub)" }) +
                     "`r`nExecutable: $exe" +
                     "`r`nRemove from the Firewall tab, or run:  Remove-NetFirewallRule -Group `"$group`""
+            # The DisplayName is what wf.msc sorts and searches by. No branding: "Blocked" first
+            # so every rule of ours lines up together and the verdict reads before anything
+            # else, then the program, then the exact executable. The full path is one column
+            # over (Program) and in the Description, so it is not repeated in the name, which
+            # wf.msc truncates. Dashes, not pipes: a rule name may not contain '|' (Windows
+            # rejects it as an invalid character), and the first version of this line used
+            # exactly that, so no rule was ever created.
             New-NetFirewallRule -Name $rid `
-                                -DisplayName "PC2Go | $name | $([IO.Path]::GetFileName($exe))" `
+                                -DisplayName "Blocked - $($name -replace '[|]', '-') - $([IO.Path]::GetFileName($exe))" `
                                 -Description $desc `
                                 -Group $group -Direction Outbound -Action Block -Program $exe `
                                 -Profile Any -Enabled True -ErrorAction Stop | Out-Null
             $added++
         } catch {
             # a name clash means the rule already exists - that is a skip, not a failure
-            if ("$($_.Exception.Message)" -match 'already exists|duplicate') { $skipped++ } else { $failed++ }
+            if ("$($_.Exception.Message)" -match 'already exists|duplicate') { $skipped++ }
+            else {
+                $failed++
+                # "1 failed" with no reason sent the technician to wf.msc to guess. The first
+                # reason travels with the count (error 87 on an 8.3-style path, for one).
+                if (-not $firstErr) { $firstErr = "$([IO.Path]::GetFileName($exe)): $($_.Exception.Message.Trim())" }
+            }
         }
     }
     # ONE wording for both outcomes. The batch summary parses these counts, and having a
     # separate sentence for the fully-blocked case is exactly how the totals silently came
     # out empty - the phrase the parser looked for only existed in one of the two branches.
     $detail = "$added rule(s) added, $skipped already blocked"
-    if ($failed) { $detail += ", $failed failed" }
-    if ($added -eq 0 -and $failed -eq 0 -and $skipped -gt 0) {
+    if ($revived) { $detail += ", $revived switched back on" }
+    if ($failed) { $detail += ", $failed failed ($firstErr)" }
+    if ($added -eq 0 -and $revived -eq 0 -and $failed -eq 0 -and $skipped -gt 0) {
         # nothing new is its own outcome: amber, so a repeat run never looks like fresh work
         Write-Status $app.id 'Skipped' "$detail - nothing to do, this app was already fully blocked"
         return
     }
     $detail += '. Running copies keep their current connections until restarted.'
-    if ($failed -and -not $added) { Write-Status $app.id 'Failed' $detail } else { Write-Status $app.id 'Applied' $detail }
+    if ($failed -and -not $added -and -not $revived) { Write-Status $app.id 'Failed' $detail } else { Write-Status $app.id 'Applied' $detail }
 }
 
 function Unblock-AppNetwork($app) {
@@ -12168,7 +12222,10 @@ function Unblock-AppNetwork($app) {
     $fmap = Get-FwFilterMap
     $removed = 0; $failed = 0; $foreign = 0
     try {
-        foreach ($r in @(Get-NetFirewallRule -Direction Outbound -Action Block -ErrorAction Stop)) {
+        # SilentlyContinue: on a machine with no outbound block rules at all this cmdlet throws
+        # "No matching objects", and that used to come back as Failed "could not read firewall
+        # rules" for what is simply nothing to remove
+        foreach ($r in @(Get-NetFirewallRule -Direction Outbound -Action Block -ErrorAction SilentlyContinue)) {
             $p = $fmap[[string]$r.InstanceID]
             if (-not $p) { continue }
             if (-not $p.ToLower().StartsWith($prefix)) { continue }
@@ -14917,6 +14974,7 @@ function Finish-Batch {
         foreach ($p in $script:Pending) {
             $s = '' + $p.Status
             if ($s -match '(\d+) rule\(s\) added')     { $fwAdd  += [int]$Matches[1] }
+            if ($s -match '(\d+) switched back on')    { $fwAdd  += [int]$Matches[1] }
             if ($s -match '(\d+) already blocked')     { $fwSkip += [int]$Matches[1] }
             if ($s -match '(\d+) rule\(s\) removed')   { $fwDel  += [int]$Matches[1] }
             if ($s -match 'no block rules pointed|no executables found') { $fwNone++ }
@@ -16872,13 +16930,14 @@ $BtnFwUnblock.Add_Click({
     if (Test-BatchBusy) { return }
     $sel = @($script:FwItems | Where-Object { $_.IsSelected })
     if ($sel.Count -eq 0) { Show-Overlay 'Nothing selected' 'Tick the programs whose block rules you want removed.'; return }
-    $withRules = @($sel | Where-Object { $_.IsSilent })
+    # a row whose only rules are switched off still has rules to clear
+    $withRules = @($sel | Where-Object { $_.IsSilent -or [int]('0' + $_.OrigState) -gt 0 })
     if ($withRules.Count -eq 0) {
         Show-Overlay 'Nothing to unblock' 'None of the selected programs currently has an outbound block rule.'
         return
     }
     $total = 0
-    foreach ($s in $withRules) { $total += [int]([string]$s.DetectPath) }
+    foreach ($s in $withRules) { $total += [int]([string]$s.DetectPath) + [int]('0' + $s.OrigState) }
     $foreign = Get-ForeignRuleCount $withRules
     $msg = "$total rule(s) across $($withRules.Count) entr(y/ies) will be deleted, restoring internet access.`n`n"
     $msg += $(if ($foreign) {
@@ -16890,9 +16949,9 @@ $BtnFwUnblock.Add_Click({
 
 $BtnFwRemoveAll.Add_Click({
     if (Test-BatchBusy) { return }
-    $blocked = @($script:FwItems | Where-Object { $_.IsSilent })
+    $blocked = @($script:FwItems | Where-Object { $_.IsSilent -or [int]('0' + $_.OrigState) -gt 0 })
     $total = 0
-    foreach ($s in $blocked) { $total += [int]([string]$s.DetectPath) }
+    foreach ($s in $blocked) { $total += [int]([string]$s.DetectPath) + [int]('0' + $s.OrigState) }
     if ($total -eq 0) { Show-Overlay 'Nothing to remove' 'No outbound block rules were found for any installed program.'; return }
     $foreign = Get-ForeignRuleCount $blocked
     $unmatched = @($blocked | Where-Object { $_.RegKey -eq 'unmatched' }).Count

@@ -872,6 +872,7 @@ computing it at the edge would make the check worthless.
 | `tests\Test-AfterInstallList.ps1` | Asserts the editor's after-install list — order, steps it cannot edit, and its output run by the real worker |
 | `tests\Test-CatalogScenarios.ps1` | Whole journeys: real zip → real dialog → real `apps.json` → re-edit → the real worker installing it |
 | `tests\Test-RealUninstall.ps1` | Installs three real per-user products on this machine, removes them with the tool, deep-cleans, and cleans up after itself |
+| `tests\Test-FirewallTab.ps1` | Elevated. Blocks, unblocks and re-blocks a throwaway program folder through the real worker against the real Windows firewall - same rule names each time - plus disabled, foreign and `%ENV%`-form rules and every refusal rail. Removes everything it made |
 | `tests\Test-GuiBatch.ps1` | Clicks the real Install and Uninstall tab buttons — the pre-flight sheet and its disk check, batch, Add to Queue, Cancel, the leftover preview and the wipe, the run record a finished batch writes, and the uninstall table's sorting |
 | `tests\Test-DeepBatch.ps1` | A real BITS download over loopback HTTP, Pause/Resume, the full exit-code matrix, and elevation declined |
 | `tests\Test-Elevated.ps1` | **Run this elevated, by hand.** The real elevated worker, HKLM products, hosts lines, services, tasks, other profiles |
