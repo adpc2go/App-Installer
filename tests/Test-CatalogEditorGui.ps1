@@ -201,6 +201,24 @@ try {
     Assert-True 'and it can be shut'  (-not $script:DrawerOpen)
     Assert-Equal 'without adding another' 3 @($script:Catalog.apps).Count
 
+    # A new PAGE starts with the drawer shut. It used to ride along from category to category,
+    # still showing the previous application, because the click-away handler exempted every
+    # ListBox - the category rail included - and the category handler never closed it.
+    $ListApps.SelectedIndex = 0
+    Update-Inspector
+    Open-Drawer
+    Assert-True  'the drawer is open on an app'                      ($script:DrawerOpen -and "$($DrawerLayer.Visibility)" -eq 'Visible')
+    $otherCat = @($ListCats.Items | Where-Object { -not $_.IsAll })[0]
+    if ($otherCat) {
+        $ListCats.SelectedItem = $otherCat
+        Assert-True  'switching to a category page shuts the drawer'  (-not $script:DrawerOpen)
+        Assert-Equal 'and hides it'                                   'Collapsed' "$($DrawerLayer.Visibility)"
+        # (the grid may re-select the same app if it is on the new page too - the drawer stays
+        # shut regardless, which is the point; its content is only pre-loaded for the next click)
+        $ListCats.SelectedIndex = 0
+        Assert-True  'back on All it stays shut until an app is clicked' (-not $script:DrawerOpen)
+    } else { Write-Host '  (no category besides All in this catalog - page-switch check skipped)' -ForegroundColor DarkGray }
+
     [void](Complete-Save -Force)   # the "Save catalog" button is gone; Ctrl+S calls this
     Assert-True 'Save wrote the catalog' (Test-Path -LiteralPath $catPath)
     Assert-True 'and kept a .bak'        (Test-Path -LiteralPath "$catPath.bak")

@@ -4818,6 +4818,10 @@ $ListCats.Add_SelectionChanged({ Invoke-Guarded {
     if ($script:SuspendCatSelect) { return }
     $row = $ListCats.SelectedItem
     $script:SelectedCategory = $(if ($row -and -not $row.IsAll) { [string]$row.Name } else { '' })
+    # A new page starts with the drawer shut. It used to ride along from page to page, still
+    # showing the previous application - one that was not even on the page being looked at -
+    # because the click-away handler ignored the category rail and nothing here closed it.
+    if ($script:DrawerOpen) { Stop-Drawer; $script:InspApp = $null; $DrawerHost.Content = $null; Close-Drawer }
     Update-List
 } 'Choose category' })
 
@@ -5241,10 +5245,12 @@ Add-WheelForwarding $ListManageCats $null -OnlyAtEdge
 $ListApps.Add_SelectionChanged({ Invoke-Guarded { Update-Inspector } 'Select application' })
 
 # Clicking anywhere that is not the drawer shuts it. ListApps is excluded because the handler
-# above has already decided what that click means.
+# above has already decided what that click means - ONLY ListApps: exempting every ListBox let
+# a click on the category rail keep the drawer open across pages.
 $window.Add_PreviewMouseLeftButtonDown({ param($src, $e) Invoke-Guarded {
     if (-not $script:DrawerOpen) { return }
-    if (Get-AncestorOfType $e.OriginalSource ([Windows.Controls.ListBox])) { return }
+    $lb = Get-AncestorOfType $e.OriginalSource ([Windows.Controls.ListBox])
+    if ($lb -and $lb -eq $ListApps) { return }
     # the title bar is for moving the window, not for dismissing things
     $d0 = $e.OriginalSource
     while ($d0) {
