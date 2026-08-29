@@ -127,8 +127,12 @@ try {
     $srcRoot = Join-Path $root 'src'
     $deepRel = ('a' * 80) + '\' + ('b' * 80) + '\' + ('c' * 80)
     $deepDir = Join-Path $srcRoot $deepRel
-    New-Item -ItemType Directory -Force -Path $deepDir | Out-Null
-    Set-Content -LiteralPath (Join-Path $deepDir 'deepfile.txt') -Value 'i am very deep' -Encoding ASCII
+    # Through the \\?\ door, not New-Item/Set-Content: on a Windows that has not switched
+    # LongPathsEnabled on - which is every client machine and both lab VMs - PowerShell's own
+    # cmdlets cannot create a path over 260 characters, and the harness died in its fixture
+    # before testing anything. The tool copies with robocopy, which has no such limit.
+    [void][IO.Directory]::CreateDirectory('\\?\' + $deepDir)
+    [IO.File]::WriteAllText('\\?\' + (Join-Path $deepDir 'deepfile.txt'), "i am very deep`r`n", [Text.Encoding]::ASCII)
     1..30 | ForEach-Object { Set-Content -LiteralPath (Join-Path $srcRoot "f$_.bin") -Value ('x' * 20000) -Encoding ASCII }
     New-Item -ItemType Directory -Force -Path (Join-Path $srcRoot 'sub\deeper') | Out-Null
     Set-Content -LiteralPath (Join-Path $srcRoot 'sub\deeper\nested.txt') -Value 'nested' -Encoding ASCII
@@ -136,7 +140,7 @@ try {
     $deepFull = Join-Path $deepDir 'deepfile.txt'
     Write-Section '0. The fixture really is the hard case'
     Assert-True 'the deep path is over 260 characters' ($deepFull.Length -gt 260)
-    Assert-True 'and the file exists at that path'     (Test-Path -LiteralPath $deepFull)
+    Assert-True 'and the file exists at that path'     ([IO.File]::Exists('\\?\' + $deepFull))
     Assert-True '%TEMP% really is an 8.3 short name here (else section 3 proves nothing)' `
                 ($env:TEMP -ne (Get-Item -LiteralPath $env:TEMP).FullName)
 
@@ -178,7 +182,7 @@ try {
     Write-Section '2. A path over 260 characters - copied AND verified'
 
     $deepDst = Join-Path (Join-Path $dstRoot $deepRel) 'deepfile.txt'
-    Assert-True 'the deep file arrived at the destination' (Test-Path -LiteralPath $deepDst)
+    Assert-True 'the deep file arrived at the destination' ([IO.File]::Exists('\\?\' + $deepDst))
 
     $ls = Get-RobocopyListing $srcRoot (Join-Path $root 's.log')
     $ld = Get-RobocopyListing $dstRoot (Join-Path $root 'd.log')
@@ -851,7 +855,7 @@ finally {
     } else {
         # [IO.Directory]::Delete, not Remove-Item: the fixture deliberately contains a path over
         # 260 characters, which is the one thing Remove-Item cannot always get rid of.
-        try { [IO.Directory]::Delete($root, $true) }
+        try { [IO.Directory]::Delete('\\?\' + $root, $true) }
         catch { try { Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue } catch { } }
         if (Test-Path -LiteralPath $root) {
             Write-Host "CLEANUP INCOMPLETE, still present: $root" -ForegroundColor Red
