@@ -141,8 +141,12 @@ try {
     Write-Section '0. The fixture really is the hard case'
     Assert-True 'the deep path is over 260 characters' ($deepFull.Length -gt 260)
     Assert-True 'and the file exists at that path'     ([IO.File]::Exists('\\?\' + $deepFull))
-    Assert-True '%TEMP% really is an 8.3 short name here (else section 3 proves nothing)' `
-                ($env:TEMP -ne (Get-Item -LiteralPath $env:TEMP).FullName)
+    # The sandbox's OWN 8.3 alias, asked of the filesystem - not %TEMP%'s, which only has one
+    # when the account name is longer than eight characters (Legion-T7 does, lab does not).
+    $script:ShortRoot = ''
+    try { $script:ShortRoot = (New-Object -ComObject Scripting.FileSystemObject).GetFolder($root).ShortPath } catch { }
+    Assert-True 'the sandbox has an 8.3 short name (else section 3 proves nothing)' `
+                ($script:ShortRoot -and $script:ShortRoot -ne $root)
 
     # ================================================================== 1. the copy
     Write-Section '0b. Paths on their way to robocopy'
@@ -204,8 +208,8 @@ try {
     Write-Section '3. Short names and long names describe the same file'
 
     Assert-True 'keys are relative, not full paths' (-not (@($ls.Keys) | Where-Object { $_ -like '?:\*' }))
-    $shortRoot = $srcRoot.Replace((Get-Item -LiteralPath $env:TEMP).FullName, $env:TEMP)
-    Assert-True  'the sandbox can be named two ways'      ($shortRoot -ne $srcRoot)
+    $shortRoot = $srcRoot.Replace($root, $script:ShortRoot)
+    Assert-True  'the sandbox can be named two ways'      ($shortRoot -ne $srcRoot -and $shortRoot -like '*~*')
     $lsShort = Get-RobocopyListing $shortRoot (Join-Path $root 'sshort.log')
     Assert-True  'listing via the SHORT name still works' ($null -ne $lsShort)
     Assert-Equal 'and finds the same files'               $ls.Count $lsShort.Count
