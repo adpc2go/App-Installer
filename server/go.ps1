@@ -267,18 +267,35 @@ function Show-AccessBanner {
     # Reverse video for the name: black on green, padded to the FULL width of the frame so it
     # reads as a solid header bar rather than a highlighted phrase. Centred by padding rather
     # than by counting spaces into the literal, so it stays centred at any width.
-    $title = 'P C 2 G o   S E R V I C E'
-    $lead  = [Math]::Max(0, [int](($w - $title.Length) / 2))
+    # The logo is plain ASCII on purpose: box-drawing and block characters come out as
+    # mojibake when Windows PowerShell 5.1 reads the file as ANSI. Every line is padded to the
+    # same width and centred by arithmetic, so it stays centred at any console width.
+    $logo = @(
+        ' ____   ____ ____   ____        ',
+        '|  _ \ / ___|___ \ / ___| ___   ',
+        '| |_) | |     __) | |  _ / _ \  ',
+        '|  __/| |___ / __/| |_| | (_) | ',
+        '|_|    \____|_____|\____|\___/  '
+    )
+    $lead  = [Math]::Max(0, [int](($w - $logo[0].Length) / 2))
     Write-Host ''
     Write-Host $bar -ForegroundColor DarkGreen
-    Write-Host '  ' -NoNewline
-    Write-Host ((' ' * $lead) + $title).PadRight($w) -ForegroundColor Black -BackgroundColor Green
+    foreach ($ln in $logo) { Write-Host ('  ' + (' ' * $lead) + $ln) -ForegroundColor Green }
     $sub  = 'REMOTE APPLICATION DEPLOYMENT SYSTEM'
     $lead2 = [Math]::Max(0, [int](($w - $sub.Length) / 2))
     Write-Host ('  ' + (' ' * $lead2) + $sub) -ForegroundColor Green
     Write-Host $bar -ForegroundColor DarkGreen
-    # No "notice to users" paragraph: the person at this console is the owner of the tool, and
-    # the banner is a header with the facts, not a login screen.
+    Write-Host ''
+    Write-Host '   NOTICE TO USERS' -ForegroundColor Green
+    Write-Host ''
+    Write-Host '   This service is the property of PC2Go and is provided solely' -ForegroundColor Gray
+    Write-Host '   for the use of authorized technicians.' -ForegroundColor Gray
+    Write-Host ''
+    Write-Host '   If you are not an authorized user, disconnect IMMEDIATELY.' -ForegroundColor Gray
+    Write-Host ''
+    Write-Host '   Connections to this service may be logged.' -ForegroundColor Gray
+    Write-Host ''
+    Write-Host $bar -ForegroundColor DarkGreen
     Write-Host ('   node {0}   release {1}   {2}' -f $node, $rel, (Get-Date -Format 'yyyy-MM-dd HH:mm')) -ForegroundColor DarkGray
     Write-Host $bar -ForegroundColor DarkGreen
     Write-Host ''
