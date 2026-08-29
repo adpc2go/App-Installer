@@ -217,63 +217,22 @@ try {
     Assert-Equal 'a folder without a manifest is refused up front' 'Not a backup this tool wrote' (Get-OverlayTitle)
     Dismiss-Overlay
 
-    # ================================================================== 1b. the target list
-    Write-Section '1b. Restore lists the backups on the drive you pick; Backup lists the drives'
+    # ================================================================== 1b. the destination box
+    Write-Section '1b. The destination box: two buttons, one line, nothing else'
 
-    # still in restore mode: the drive holding the fake backup is the system drive's parent of
-    # %TEMP%, so the backup made above is NOT at a drive root and must not be listed - but a real
-    # one at a root must be. Plant one, pick the drive, see it.
-    # The drive Windows is on is never offered - a backup onto the disk that holds the profile is
-    # not a backup - so the fake root backup goes on the first OTHER fixed drive. No other drive
-    # means this part cannot run here; it says so rather than pretending.
-    Assert-Equal 'the system drive is NOT offered'              0 @($script:Targets | Where-Object { $_.RegKey -eq 'drive' -and $_.UnArgs -eq ($env:SystemDrive + '\') }).Count
-    Assert-Equal 'no "another PC" or "folder" rows - those are buttons' 0 @($script:Targets | Where-Object { $_.RegKey -in 'net', 'pick' }).Count
     Assert-Equal 'Choose folder... is a visible button'         'Visible' "$($BtnFolderPick.Visibility)"
-    Assert-Equal 'and so is Find a PC...'                        'Visible' "$($BtnNetFind.Visibility)"
+    Assert-Equal 'and so is Network...'                          'Visible' "$($BtnNetFind.Visibility)"
+    Assert-Equal 'which is what it is called'                    'Network...' "$($BtnNetFind.Content)"
+    Assert-Equal 'Share this PC lives in the mode row, not the box' $true (-not [object]::ReferenceEquals($BtnShareThis.Parent, $BtnFolderPick.Parent))
     Set-BackupFolder '' '' ''
     Assert-Equal 'nothing chosen: the path line is hidden'       'Collapsed' "$($TxtFolderPath.Visibility)"
-    $other = @($script:Targets | Where-Object { $_.RegKey -eq 'drive' })[0]
-    $rootBk = $(if ($other) { Join-Path $other.UnArgs "PC2Go Backup - FAKEPC - rootuser-$tag" } else { '' })
-    if (-not $other) { Write-Host '  (no second fixed drive on this PC - the open-a-drive checks are skipped)' -ForegroundColor DarkGray }
-    try {
-      if ($other) {
-        New-Item -ItemType Directory -Force -Path (Join-Path $rootBk 'Music') | Out-Null
-        Copy-Item -LiteralPath (Join-Path $bk 'pc2go-backup.json') -Destination (Join-Path $rootBk 'pc2go-backup.json')
-        Assert-Equal 'no backups are listed before a drive is opened' 0 @($script:Targets | Where-Object { $_.RegKey -eq 'backup' }).Count
-        $drv = $other
-        $drv.IsSelected = $true
-        $found = @($script:Targets | Where-Object { $_.RegKey -eq 'backup' })
-        Assert-True  'opening the drive lists the backup at its root' ([bool]@($found | Where-Object { $_.UnArgs -eq $rootBk }).Count)
-        Assert-True  'described from its manifest'             ([bool]@($found | Where-Object { $_.UnArgs -eq $rootBk -and $_.Publisher -like '*FAKEPC*' -or $_.Publisher -like '*folder(s) of*' }).Count)
-        $pick = @($found | Where-Object { $_.UnArgs -eq $rootBk })[0]
-        $pick.IsSelected = $true
-        Assert-Equal 'ticking the backup makes it the restore source' $rootBk "$($script:FolderPath)"
-        Assert-True  'the path line says so'                   ($TxtFolderPath.Text -like "Restore from:*$rootBk")
-        Assert-Equal 'and its folder is offered'               'Music' "$($script:MigrateItems[0].Name)"
-        $pick.IsSelected = $false
-        Assert-Equal 'unticking it clears the source'          '' "$($script:FolderPath)"
-        Assert-Equal 'and hides the path line again'           'Collapsed' "$($TxtFolderPath.Visibility)"
-      }
-    } finally { if ($rootBk) { Remove-Item -LiteralPath $rootBk -Recurse -Force -ErrorAction SilentlyContinue } }
-
     Select-BackupMode 'folder'
-    Assert-Equal 'Backup mode rebuilt the list with drives'    0 @($script:Targets | Where-Object { $_.RegKey -eq 'backup' }).Count
-    $drv = @($script:Targets | Where-Object { $_.RegKey -eq 'drive' })[0]
-    if ($drv) {
-        $drv.IsSelected = $true
-        Assert-Equal 'ticking a drive makes it the target'     $drv.UnArgs "$($script:FolderPath)"
-        Assert-True  'the path line shows where the backup will land' ($TxtFolderPath.Text -like 'Back up into:*PC2Go Backup - *')
-        Assert-Equal 'and is shown'                            'Visible' "$($TxtFolderPath.Visibility)"
-        $drv.IsSelected = $false
-        Assert-Equal 'unticking it clears the target'          '' "$($script:FolderPath)"
-        # a folder chosen through the dialog is not a drive row: no row stays ticked for it
-        $drv.IsSelected = $true
-        Set-BackupFolder $sandbox '' ''
-        Assert-Equal 'a folder chosen by dialog unticks the drive row' 0 @($script:Targets | Where-Object { $_.IsSelected }).Count
-        Assert-Equal 'and becomes the target'                  $sandbox "$($script:FolderPath)"
-    } else {
-        Assert-True  'with no other drive, the list says so'   ([bool]@($script:Targets | Where-Object { $_.RegKey -eq 'none' }).Count)
-    }
+    Set-BackupFolder $sandbox '' ''
+    Assert-Equal 'a chosen folder becomes the target'            $sandbox "$($script:FolderPath)"
+    Assert-True  'and the line says where the backup will land' ($TxtFolderPath.Text -like 'Back up into:*PC2Go Backup - *')
+    Assert-Equal 'shown'                                         'Visible' "$($TxtFolderPath.Visibility)"
+    Set-BackupFolder '' '' ''
+    Assert-Equal 'cleared again'                                 'Collapsed' "$($TxtFolderPath.Visibility)"
 
     # ================================================================== 2. drive/USB refusals
     Write-Section '2. Drive/USB mode: the loops are refused before measuring'

@@ -1917,13 +1917,22 @@ $xaml = @'
           <RowDefinition Height="*"/>
         </Grid.RowDefinitions>
 
-        <StackPanel Grid.Row="0" Orientation="Horizontal" Margin="2,0,0,10">
+        <DockPanel Grid.Row="0" Margin="2,0,2,10" LastChildFill="False">
           <!-- Backup first, Restore second, the account-to-account copy last: that is the order the
                jobs happen in the field, and the words are the ones a technician uses for them. -->
-          <Button x:Name="BtnModeFolder"  Content="Backup"           Style="{StaticResource TabActive}"/>
-          <Button x:Name="BtnModeRestore" Content="Restore"          Style="{StaticResource TabIdle}"/>
-          <Button x:Name="BtnModeProfile" Content="Between accounts" Style="{StaticResource TabIdle}"/>
-        </StackPanel>
+          <StackPanel Orientation="Horizontal" DockPanel.Dock="Left">
+            <Button x:Name="BtnModeFolder"  Content="Backup"           Style="{StaticResource TabActive}"/>
+            <Button x:Name="BtnModeRestore" Content="Restore"          Style="{StaticResource TabIdle}"/>
+            <Button x:Name="BtnModeProfile" Content="Between accounts" Style="{StaticResource TabIdle}"/>
+          </StackPanel>
+          <!-- For the PC on the RECEIVING end: make this PC reachable from the other one. It is
+               about this machine, not about where a backup goes, so it sits apart from the columns. -->
+          <StackPanel Orientation="Horizontal" DockPanel.Dock="Right">
+            <Button x:Name="BtnShareStop" Content="Stop sharing" Style="{StaticResource GhostBtn}" Margin="0,0,6,0"
+                    Visibility="Collapsed"/>
+            <Button x:Name="BtnShareThis" Content="Share this PC" Style="{StaticResource GhostBtn}"/>
+          </StackPanel>
+        </DockPanel>
 
         <TextBlock Grid.Row="1" x:Name="TxtUserHint" Text="" FontSize="11.5" Foreground="{StaticResource Muted}"
                    Margin="4,0,4,8" TextWrapping="Wrap"/>
@@ -1988,32 +1997,13 @@ $xaml = @'
               <StackPanel x:Name="PanelFolderPick" Visibility="Collapsed" Margin="2,2,2,6">
                 <TextBlock x:Name="TxtFolderWhat" Text="" FontSize="11.5" Foreground="{StaticResource Muted}"
                            TextWrapping="Wrap" Margin="8,0,8,5"/>
-                <!-- The drives of this PC as pick rows - the things a technician actually backs up
-                     onto - plus one row for another PC and one for a folder of their choosing. A
-                     restore adds the backups it finds on the chosen drive underneath. -->
-                <ScrollViewer MaxHeight="190" VerticalScrollBarVisibility="Auto">
-                  <ItemsControl x:Name="ListTargets">
-                    <ItemsControl.ItemTemplate>
-                      <DataTemplate>
-                        <CheckBox Style="{StaticResource PickRow}"
-                                  IsChecked="{Binding IsSelected, UpdateSourceTrigger=PropertyChanged}"/>
-                      </DataTemplate>
-                    </ItemsControl.ItemTemplate>
-                  </ItemsControl>
-                </ScrollViewer>
-                <!-- Only shown once something IS chosen: a line that says "nothing chosen yet" is
-                     a placeholder, and the empty tick boxes above already say it. -->
-                <TextBlock x:Name="TxtFolderPath" Text="" FontSize="11" Foreground="{StaticResource Ink}"
-                           TextWrapping="Wrap" Margin="8,7,8,0" Visibility="Collapsed"/>
+                <!-- Two ways in, and only two: the Windows folder picker (a drive is a folder to it)
+                     and the network. The line above the buttons appears once something is chosen. -->
+                <TextBlock x:Name="TxtFolderPath" Text="" FontSize="11.5" Foreground="{StaticResource Ink}"
+                           TextWrapping="Wrap" Margin="8,2,8,0" Visibility="Collapsed"/>
                 <WrapPanel Orientation="Horizontal" Margin="8,8,8,0">
                   <Button x:Name="BtnFolderPick" Content="Choose folder..." Style="{StaticResource GhostBtn}" Margin="0,0,6,6"/>
-                  <Button x:Name="BtnNetFind" Content="Find a PC..." Style="{StaticResource GhostBtn}" Margin="0,0,6,6"/>
-                  <!-- Run on the PC that RECEIVES the backup: turns on file sharing and shares what is
-                       ticked, so the other PC's Find a PC... can see it. Stop only appears while this
-                       tool has shares of its own to remove. -->
-                  <Button x:Name="BtnShareThis" Content="Share this PC" Style="{StaticResource GhostBtn}" Margin="0,0,6,6"/>
-                  <Button x:Name="BtnShareStop" Content="Stop sharing" Style="{StaticResource GhostBtn}" Margin="0,0,6,6"
-                          Visibility="Collapsed"/>
+                  <Button x:Name="BtnNetFind" Content="Network..." Style="{StaticResource GhostBtn}" Margin="0,0,6,6"/>
                 </WrapPanel>
                 <TextBlock x:Name="TxtFolderNote" Text="" FontSize="11" Foreground="{StaticResource Dim}"
                            TextWrapping="Wrap" Margin="8,4,8,0"/>
@@ -3160,7 +3150,7 @@ foreach ($n in 'ListApps','BarOverall','TxtOverall','TxtLog','TxtStatus','TxtCat
                'PanelAccounts','PanelMigrate','BtnTabMigrate','BtnNewAccount','TxtAcctHint','BtnMigrate',
                'BtnModeProfile','BtnModeFolder','BtnModeRestore','PanelFolderPick','TxtFolderWhat',
                'TxtFromTitle','TxtFromWhat','TxtToTitle','TxtToWhat','SrcColumn','DstColumn',
-               'TxtFolderPath','BtnFolderPick','TxtFolderNote','BtnNetFind','ListTargets',
+               'TxtFolderPath','BtnFolderPick','TxtFolderNote','BtnNetFind',
                'NetOverlay','BtnNetScan','BtnNetStop','TxtNetStatus','ListNetHosts','TreeNetShares',
                'TxtNetManual','HintNetManual',
                'TxtNetNote','BtnNetCancel','BtnNetUse',
@@ -3818,8 +3808,8 @@ function Update-Dash {
         if ($src -and $dst) { $TxtStatus.Text = "$($src.Name)  ->  $($dst.Name)    |    $n item(s) to copy" }
         elseif ($src) { $TxtStatus.Text = "From $($src.Name) - now pick a destination account" }
         else { $TxtStatus.Text = $(switch ($script:BackupMode) {
-                                     'folder'  { 'Pick the account to back up, then the drive to back it up to' }
-                                     'restore' { 'Pick the drive the backup is on, then the account to restore into' }
+                                     'folder'  { 'Pick the account to back up, then where to back it up to' }
+                                     'restore' { 'Pick the backup folder, then the account to restore into' }
                                      default   { 'Pick the account to copy FROM' } }) }
     } else {
         $TxtStatus.Text = ''
@@ -6954,7 +6944,7 @@ function Update-UserEmptyStates {
         $EmptyMigrate.Text = $(if ($script:SrcPick) {
                 "Nothing to copy from `"$($script:SrcPick)`" - none of the usual data folders exist in that profile."
             } else { $(switch ($script:BackupMode) {
-                          'restore' { 'Pick the backup on the left.' }
+                          'restore' { 'Pick the backup folder on the left.' }
                           default   { 'Pick an account on the left.' } }) })
         $EmptyMigrate.Visibility = 'Visible'
     }
@@ -14806,7 +14796,7 @@ function Finish-Batch {
         $lead = ''
         if ($script:BatchTab -eq 'Share' -and $done -gt 0 -and
             @($script:Pending | Where-Object { $_.Id -like 'share-*' -and $_.Id -ne 'share-setup' -and $_.Id -ne 'share-down' -and $_.Status -like 'Applied*' }).Count) {
-            $lead = "On the other PC: Data Backup > To a drive, USB or PC > Find a PC..., pick $env:COMPUTERNAME, " +
+            $lead = "On the other PC: Data Backup > Backup > Network..., pick $env:COMPUTERNAME, " +
                     "and sign in as $env:COMPUTERNAME\$env:USERNAME (or any other account of this PC).`n`n"
         }
         Show-Overlay $(if ($fail) { 'Finished - with a failure' } elseif ($cans) { 'Finished - check the details' } else { 'Finished' }) `
@@ -17135,7 +17125,6 @@ function Sync-BackupMode {
             $TxtToTitle.Text   = 'Copy TO';   $TxtToWhat.Text   = ''
         }
     }
-    if ($script:BackupMode -ne 'profile' -and (Get-Command Build-TargetList -ErrorAction SilentlyContinue)) { Build-TargetList }
     # The picker MOVES between the columns rather than being duplicated in both.
     #
     # For a drive backup the folder is the destination, so it belongs on the right. For a
@@ -17572,11 +17561,6 @@ function Set-BackupFolder([string]$Path, [string]$User, [string]$Password) {
     }
     $TxtFolderPath.Text = $(if ($script:BackupMode -eq 'restore') { "Restore from:  $($script:FolderPath)" } else { "Back up into:  $($script:FolderPath)\$(Get-BackupFolderName $(if ($script:SrcPick) { $script:SrcPick } else { '<account>' }))" })
     $TxtFolderPath.Visibility = 'Visible'
-    # a folder or a PC chosen through the buttons is not a drive row: no row stays ticked for it
-    if (-not @($script:Targets | Where-Object { $_.IsSelected -and (Get-ShareKey $_.UnArgs) -eq (Get-ShareKey $script:FolderPath) }).Count) {
-        $script:TargetBusy = $true
-        try { foreach ($x in $script:Targets) { if ($x.IsSelected) { $x.IsSelected = $false } } } finally { $script:TargetBusy = $false }
-    }
 
     # Say what is actually there, NOW, rather than letting the technician find out after the
     # confirm. A restore especially: a folder without a manifest is refused by the worker anyway,
@@ -17870,113 +17854,6 @@ $BtnNetUse.Add_Click({
     $NetOverlay.Visibility = 'Collapsed'
 })
 
-# ---------- where a backup goes, or comes from: the target list ----------
-#
-# The drives of this PC as pick rows, because that is what a technician backs up onto, plus one
-# row for another PC on the network and one for a folder of their choosing. It replaced a text box
-# reading "No folder chosen yet" with a Choose folder... button under it, which described the job
-# as a folder when the job is a drive. In restore mode, choosing a drive lists the backups this
-# tool wrote on it underneath, so the technician picks a backup rather than remembering a path.
-$script:Targets = New-Object System.Collections.ObjectModel.ObservableCollection[object]
-$script:TargetBusy = $false
-
-function New-TargetRow([string]$Id, [string]$Name, [string]$Sub, [string]$Path, [string]$Kind, [string]$Bg, [string]$Glyph) {
-    $u = New-Object AppItem
-    $u.Id = $Id; $u.Name = $Name; $u.Publisher = $Sub; $u.UnArgs = $Path; $u.RegKey = $Kind
-    $u.IconText = $Glyph; $u.IconBg = $Bg; $u.IconData = $IconMap['default'][0]
-    $u.Size = ''
-    $u.add_PropertyChanged({ param($s, $e) if ($e.PropertyName -eq 'IsSelected') { Select-Target $s } })
-    return $u
-}
-
-function Build-TargetList([string]$OpenDrive = '') {
-    $script:TargetBusy = $true
-    try {
-        $ListTargets.ItemsSource = $null
-        $script:Targets.Clear()
-        $restore = ($script:BackupMode -eq 'restore')
-        foreach ($d in @([IO.DriveInfo]::GetDrives())) {
-            try {
-                if (-not $d.IsReady -or "$($d.DriveType)" -notin 'Fixed', 'Removable') { continue }
-                # Never the drive Windows is on. A backup onto the disk that holds the profile is
-                # not a backup - the one failure it exists for takes both copies with it.
-                if ((Get-ShareKey $d.Name) -eq (Get-ShareKey ($env:SystemDrive + [string][char]92))) { continue }
-                $letter = $d.Name.TrimEnd([char]92)
-                $label = $(if ($d.VolumeLabel) { $d.VolumeLabel } else { $(if ("$($d.DriveType)" -eq 'Removable') { 'USB drive' } else { 'Local Disk' }) })
-                $sub = "$(Format-Size $d.AvailableFreeSpace) free of $(Format-Size $d.TotalSize)"
-                if ("$($d.DriveType)" -eq 'Removable') { $sub += '   -   removable' }
-                $row = New-TargetRow "tgt-$letter" "$label ($letter)" $sub $d.Name 'drive' $(if ("$($d.DriveType)" -eq 'Removable') { '#FFF59E0B' } else { '#FF2563EB' }) $letter.Substring(0, 1)
-                if ($restore -and $OpenDrive -and (Get-ShareKey $d.Name) -eq (Get-ShareKey $OpenDrive)) { $row.Size = 'OPEN' }
-                $script:Targets.Add($row)
-                # Restore: the backups on the OPENED drive, straight under it
-                if ($restore -and $OpenDrive -and (Get-ShareKey $d.Name) -eq (Get-ShareKey $OpenDrive)) {
-                    $found = @(Get-ChildItem -LiteralPath $d.Name -Directory -Filter 'PC2Go Backup - *' -ErrorAction SilentlyContinue |
-                               Where-Object { Test-Path -LiteralPath (Join-Path $_.FullName 'pc2go-backup.json') } | Sort-Object LastWriteTime -Descending)
-                    if (-not $found.Count) {
-                        $script:Targets.Add((New-TargetRow "tgt-none-$letter" 'No backups from this tool on this drive' 'Try another drive, or Choose folder... / Find a PC... below' '' 'none' '#FF4A4A52' '-'))
-                    }
-                    foreach ($f in $found) {
-                        $when = ''
-                        try { $mf = (Get-Content -LiteralPath (Join-Path $f.FullName 'pc2go-backup.json') -Raw).TrimStart([char]0xFEFF) | ConvertFrom-Json
-                              $when = ([datetime]$mf.finishedUtc).ToLocalTime().ToString('d MMM yyyy, HH:mm') + "   -   $(@($mf.items).Count) folder(s) of $($mf.sourceProfile)" } catch { $when = $f.LastWriteTime.ToString('d MMM yyyy, HH:mm') }
-                        $script:Targets.Add((New-TargetRow "tgt-bk-$($f.Name)" $f.Name $when $f.FullName 'backup' '#FF34D399' 'B'))
-                    }
-                }
-            } catch { }
-        }
-        # No drive besides the one Windows is on: say so once, in the list, and leave the buttons
-        # under it to do the rest. Another PC and a chosen folder are BUTTONS, not rows - one way
-        # to each, next to the drives rather than mixed in with them.
-        if (-not $script:Targets.Count) {
-            $script:Targets.Add((New-TargetRow 'tgt-none' 'No other drive on this PC' 'Plug in a USB drive, or use Choose folder... / Find a PC... below' '' 'none' '#FF4A4A52' '-'))
-        }
-        $ListTargets.ItemsSource = $script:Targets
-    } finally { $script:TargetBusy = $false }
-}
-
-# A row was ticked (or unticked). Single-choice, like every other list on this tab; the drive
-# and backup rows set the folder directly, the other two open the picker they stand for.
-function Select-Target([object]$Row) {
-    if ($script:TargetBusy) { return }
-    $script:TargetBusy = $true
-    try {
-        if (-not $Row.IsSelected) {
-            if ((Get-ShareKey $script:FolderPath) -eq (Get-ShareKey $Row.UnArgs)) { Set-BackupFolder '' '' '' }
-            return
-        }
-        foreach ($x in $script:Targets) { if (-not [object]::ReferenceEquals($x, $Row)) { $x.IsSelected = $false } }
-    } finally { $script:TargetBusy = $false }
-    switch ([string]$Row.RegKey) {
-        'drive' {
-            if ($script:BackupMode -eq 'restore') {
-                # open the drive: rebuild with its backups listed, and keep it ticked
-                Build-TargetList ([string]$Row.UnArgs)
-                $script:TargetBusy = $true
-                try { foreach ($x in $script:Targets) { if ($x.RegKey -eq 'drive' -and (Get-ShareKey $x.UnArgs) -eq (Get-ShareKey $Row.UnArgs)) { $x.IsSelected = $true } } } finally { $script:TargetBusy = $false }
-                $one = @($script:Targets | Where-Object { $_.RegKey -eq 'backup' })
-                if ($one.Count -eq 1) { $script:TargetBusy = $true; try { $one[0].IsSelected = $true } finally { $script:TargetBusy = $false }; Set-BackupFolder ([string]$one[0].UnArgs) '' '' }
-                else { Set-BackupFolder '' '' ''; if ($one.Count) { $TxtFolderNote.Text = "$($one.Count) backups on this drive - pick one."; $TxtFolderNote.Foreground = $window.FindResource('Muted') } }
-            } else {
-                Set-BackupFolder ([string]$Row.UnArgs) '' ''
-            }
-        }
-        'backup' { Set-BackupFolder ([string]$Row.UnArgs) '' '' }
-        'net'    { Invoke-TargetButton $BtnNetFind $Row }
-        'pick'   { Invoke-TargetButton $BtnFolderPick $Row }
-        default  { $script:TargetBusy = $true; try { $Row.IsSelected = $false } finally { $script:TargetBusy = $false } }
-    }
-}
-
-# The picker rows stay ticked only if a folder actually came out of the dialog.
-function Invoke-TargetButton([object]$Button, [object]$Row) {
-    $before = [string]$script:FolderPath
-    $Button.RaiseEvent((New-Object Windows.RoutedEventArgs([Windows.Controls.Primitives.ButtonBase]::ClickEvent)))
-    # the network dialog is modal-in-place and sets the folder later; the folder picker is synchronous
-    if ($Row.RegKey -eq 'pick' -and [string]$script:FolderPath -eq $before) {
-        $script:TargetBusy = $true; try { $Row.IsSelected = $false } finally { $script:TargetBusy = $false }
-    }
-}
-
 # ---------- Share this PC ----------
 #
 # The GUI half of what the worker's Enable-Sharing / New-PC2GoShare / Remove-PC2GoShare do.
@@ -18112,7 +17989,7 @@ function Sync-ShareButtons {
     if ($mine.Count -and -not $script:FolderPath -and $script:BackupMode -ne 'restore') {
         $names = (@($mine | ForEach-Object { '"' + $_.Name + '"' }) -join ', ')
         $TxtFolderNote.Text = "This PC is sharing $names as \\$env:COMPUTERNAME. " +
-                              "On the other PC use Find a PC..., pick $env:COMPUTERNAME and sign in as $env:COMPUTERNAME\$env:USERNAME."
+                              "On the other PC press Network..., pick $env:COMPUTERNAME and sign in as $env:COMPUTERNAME\$env:USERNAME."
         $TxtFolderNote.Foreground = $window.FindResource('Muted')
     }
 }
@@ -18128,7 +18005,7 @@ $BtnShareThis.Add_Click({
     $EmptyShareFolders.Visibility = 'Visible'
     $ChkShareAnyone.IsChecked = $false
     $mine = @(Get-PC2GoShares)
-    $TxtShareIntro.Text = "Another PC running this tool can then find this one ($env:COMPUTERNAME) with Find a PC... and back up into what you tick. " +
+    $TxtShareIntro.Text = "Another PC running this tool can then find this one ($env:COMPUTERNAME) with Network... and back up into what you tick. " +
                           "Whoever connects signs in with an account of this PC, like $env:COMPUTERNAME\$env:USERNAME." +
                           $(if ($mine.Count) { "  Already shared: " + (@($mine | ForEach-Object { $_.Name }) -join ', ') + '.' } else { '' })
     $TxtShareNote.Text = 'Tick at least one drive, or add a folder.'
