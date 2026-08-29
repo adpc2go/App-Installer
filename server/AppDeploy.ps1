@@ -1948,8 +1948,8 @@ $xaml = @'
             <StackPanel x:Name="SrcColumn">
               <StackPanel Orientation="Horizontal" Margin="10,2,0,4">
                 <Rectangle Width="3" Height="13" Fill="{StaticResource Bad}" RadiusX="1.5" RadiusY="1.5" VerticalAlignment="Center"/>
-                <TextBlock x:Name="TxtFromTitle" Text="Copy FROM" FontSize="12" FontWeight="Bold" Foreground="{StaticResource Ink}" Margin="8,0,6,0"/>
-                <TextBlock x:Name="TxtFromWhat" Text="the broken profile" FontSize="10.5" Foreground="{StaticResource Dim}" VerticalAlignment="Center"/>
+                <TextBlock x:Name="TxtFromTitle" Text="Back up FROM" FontSize="12" FontWeight="Bold" Foreground="{StaticResource Ink}" Margin="8,0,6,0"/>
+                <TextBlock x:Name="TxtFromWhat" Text="" FontSize="10.5" Foreground="{StaticResource Dim}" VerticalAlignment="Center"/>
               </StackPanel>
               <ScrollViewer MaxHeight="190" VerticalScrollBarVisibility="Auto">
                 <StackPanel>
@@ -1975,8 +1975,8 @@ $xaml = @'
             <StackPanel x:Name="DstColumn">
               <StackPanel Orientation="Horizontal" Margin="10,2,0,4">
                 <Rectangle Width="3" Height="13" Fill="{StaticResource Good}" RadiusX="1.5" RadiusY="1.5" VerticalAlignment="Center"/>
-                <TextBlock x:Name="TxtToTitle" Text="Copy TO" FontSize="12" FontWeight="Bold" Foreground="{StaticResource Ink}" Margin="8,0,6,0"/>
-                <TextBlock x:Name="TxtToWhat" Text="the new profile" FontSize="10.5" Foreground="{StaticResource Dim}" VerticalAlignment="Center"/>
+                <TextBlock x:Name="TxtToTitle" Text="Back up TO" FontSize="12" FontWeight="Bold" Foreground="{StaticResource Ink}" Margin="8,0,6,0"/>
+                <TextBlock x:Name="TxtToWhat" Text="" FontSize="10.5" Foreground="{StaticResource Dim}" VerticalAlignment="Center"/>
               </StackPanel>
               <ScrollViewer MaxHeight="190" VerticalScrollBarVisibility="Auto">
                 <StackPanel>
@@ -4581,6 +4581,12 @@ function Select-Tab([string]$Which) {
             $BtnTabMigrate.Style = $window.FindResource('TabActive')
             $BtnMigrate.Visibility = 'Visible'
             if (-not $script:UsersLoaded) { $script:UsersLoaded = $true; Load-Users }
+            # The XAML is drawn for one mode and $script:BackupMode names another; nothing lined
+            # them up until the first mode switch, so the tab opened saying "Copy FROM the broken
+            # profile" under a Backup button. Sync once, the first time the tab is shown.
+            if (-not $script:BackupSynced -and (Get-Command Sync-BackupMode -ErrorAction SilentlyContinue)) {
+                $script:BackupSynced = $true; Sync-BackupMode; Build-MigrateList
+            }
             # shares can be made or removed outside this tool; re-read them on every visit
             if (Get-Command Sync-ShareButtons -ErrorAction SilentlyContinue) { Sync-ShareButtons }
         }
