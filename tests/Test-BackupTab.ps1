@@ -486,6 +486,28 @@ try {
     $me1.IsSelected = $false
     Select-BackupMode 'folder'
 
+    # ================================================================== 6c. what an account offers to copy
+    Write-Section '6c. The copy list: every row that exists is offered, Public only where it makes sense'
+
+    Select-Tab 'Migrate'; Select-BackupMode 'folder'; Invoke-Click $BtnSrcAccounts
+    $me2 = @($script:SrcUsers | Where-Object { $_.Name -eq [Environment]::UserName })[0]
+    $me2.IsSelected = $true
+    $offered = @($script:MigrateItems | ForEach-Object { [string]$_.UnArgs })
+    # every def whose folder exists in THIS profile must be a row, and nothing that does not exist may be
+    foreach ($d in $script:MigrateDefs) {
+        $full = $(if ($d.abs) { Join-Path (Split-Path -Parent $env:USERPROFILE) $d.id } else { Join-Path $env:USERPROFILE $d.id })
+        $exists = (Test-Path -LiteralPath $full -PathType Container)
+        Assert-Equal "row '$($d.name)' offered exactly when its folder exists ($exists)" $exists ($offered -contains [string]$d.id)
+    }
+    Assert-True  'Public is offered for a backup'              ($offered -contains 'Public')
+    Assert-True  'browser rows say passwords do not travel'    ([bool]@($script:MigrateDefs | Where-Object { $_.id -like '*User Data' -and $_.name -like '*NOT saved passwords*' }).Count -ge 2)
+    Select-BackupMode 'profile'
+    $me2 = @($script:SrcUsers | Where-Object { $_.Name -eq [Environment]::UserName })[0]
+    $me2.IsSelected = $true
+    Assert-True  'but not between two accounts on this PC'     (-not (@($script:MigrateItems | ForEach-Object { [string]$_.UnArgs }) -contains 'Public'))
+    $me2.IsSelected = $false
+    Select-BackupMode 'folder'
+
     # ================================================================== 7. folders and drives
     Write-Section '7. Folders or drives: back a folder up as itself, then restore it into a chosen folder'
 

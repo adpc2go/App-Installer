@@ -6739,15 +6739,38 @@ $script:MigrateDefs = @(
     @{ id = 'Contacts';                name = 'Contacts';                 safe = $true }
     @{ id = 'Searches';                name = 'Searches';                 safe = $true }
     @{ id = 'OneDrive';                name = 'OneDrive folder';          safe = $true }
-    @{ id = 'AppData\Local\Google\Chrome\User Data\Default';        name = 'Chrome profile (bookmarks, history)' }
-    @{ id = 'AppData\Local\Microsoft\Edge\User Data\Default';       name = 'Edge profile (bookmarks, history)' }
-    @{ id = 'AppData\Roaming\Mozilla\Firefox\Profiles';             name = 'Firefox profiles' }
-    @{ id = 'AppData\Local\Microsoft\Outlook';                      name = 'Outlook data files (.ost/.pst)' }
-    @{ id = 'AppData\Roaming\Microsoft\Outlook';                    name = 'Outlook settings and signatures' }
+    @{ id = 'Saved Games';             name = 'Saved Games';              safe = $true }
+    # Not inside any profile - shared by every account on the machine, which is exactly where
+    # QuickBooks company files and "shared documents" end up. Backup and restore only: copying
+    # it between two accounts on the same PC would copy it onto itself.
+    @{ id = 'Public';                  name = 'Public folder (shared documents, QuickBooks files)'; safe = $true; abs = $true }
+    # Browsers: the WHOLE User Data folder, every profile, caches left out by the worker. Saved
+    # passwords are encrypted to the Windows account and come out empty anywhere else - said on
+    # the row, because it is the first thing a client asks about.
+    @{ id = 'AppData\Local\Google\Chrome\User Data';                name = 'Chrome - all profiles (bookmarks, history, extensions; NOT saved passwords)' }
+    @{ id = 'AppData\Local\Microsoft\Edge\User Data';               name = 'Edge - all profiles (bookmarks, history, extensions; NOT saved passwords)' }
+    @{ id = 'AppData\Local\BraveSoftware\Brave-Browser\User Data';  name = 'Brave - all profiles (NOT saved passwords)' }
+    @{ id = 'AppData\Roaming\Opera Software';                       name = 'Opera profiles (NOT saved passwords)' }
+    @{ id = 'AppData\Local\Vivaldi\User Data';                      name = 'Vivaldi profiles (NOT saved passwords)' }
+    @{ id = 'AppData\Roaming\Mozilla\Firefox\Profiles';             name = 'Firefox profiles (bookmarks, history, saved logins)' }
+    @{ id = 'AppData\Roaming\Thunderbird';                          name = 'Thunderbird mail and accounts' }
+    @{ id = 'AppData\Local\Microsoft\Outlook';                      name = 'Outlook data files (.ost/.pst) and autocomplete' }
+    @{ id = 'AppData\Roaming\Microsoft\Outlook';                    name = 'Outlook settings' }
+    @{ id = 'AppData\Roaming\Microsoft\Signatures';                 name = 'Email signatures' }
+    @{ id = 'AppData\Roaming\Microsoft\UProof';                     name = 'Office custom dictionary and AutoCorrect' }
+    @{ id = 'AppData\Roaming\Microsoft\Windows\Templates';          name = 'Office templates' }
+    @{ id = 'AppData\Roaming\Microsoft\Word\STARTUP';               name = 'Word add-ins and macros (STARTUP)' }
+    @{ id = 'AppData\Roaming\Microsoft\Excel\XLSTART';              name = 'Excel add-ins and macros (XLSTART)' }
+    @{ id = 'AppData\Local\Microsoft\OneNote';                      name = 'OneNote local notebooks and backups' }
     @{ id = 'AppData\Roaming\Microsoft\Sticky Notes';               name = 'Sticky Notes (legacy)' }
     @{ id = 'AppData\Local\Packages\Microsoft.MicrosoftStickyNotes_8wekyb3d8bbwe\LocalState'; name = 'Sticky Notes (Store app)' }
-    @{ id = 'AppData\Roaming\Microsoft\Windows\Templates';          name = 'Office templates' }
-    @{ id = 'AppData\Roaming\Microsoft\Signatures';                 name = 'Email signatures' }
+    @{ id = 'AppData\Local\Microsoft\Windows\Fonts';                name = 'Fonts the user installed' }
+    @{ id = 'AppData\Roaming\Microsoft\Windows\Themes';             name = 'Wallpaper and theme' }
+    @{ id = 'AppData\Roaming\Notepad++';                            name = 'Notepad++ settings' }
+    @{ id = 'AppData\Roaming\Adobe';                                name = 'Adobe presets and settings (Photoshop actions, brushes, Lightroom prefs)' }
+    # folders only - the copy engine is robocopy on a directory, so a lone file (.gitconfig) is not a row
+    @{ id = '.ssh';                                                 name = 'SSH keys (.ssh)' }
+    @{ id = '.aws';                                                 name = 'AWS credentials (.aws)' }
 )
 
 function Load-Users {
@@ -7069,8 +7092,19 @@ function Build-MigrateList {
     }
     if (-not $root) { Update-Dash; return }
     foreach ($d in $script:MigrateDefs) {
-        $full = Join-Path $root $d.id
+        # 'abs' rows live beside the profiles, not inside one (Public). In a backup they come
+        # from C:\Users\Public; in a restore from the backup's own 'Public' folder; between two
+        # accounts on one PC there is nothing to copy - it is already shared.
+        if ($d.abs) {
+            if ($script:BackupMode -eq 'profile') { continue }
+            $full = $(if ($script:BackupMode -eq 'restore') { Join-Path $root $d.id } else { Join-Path (Split-Path -Parent $root) $d.id })
+        } else {
+            $full = Join-Path $root $d.id
+        }
         if (-not (Test-Path -LiteralPath $full)) { continue }
+        # a single file (.gitconfig) is offered only when it is really a file, a folder when a folder
+        if ($d.file) { if (Test-Path -LiteralPath $full -PathType Container) { continue } }
+        elseif (-not (Test-Path -LiteralPath $full -PathType Container)) { continue }
         $item = New-Object AppItem
         $item.Id = "mig-$($d.id)"
         $item.Name = $d.name
@@ -10745,6 +10779,19 @@ function Get-ProfileRoots {
     return $out
 }
 
+# What a copy leaves OUT of an item. Browser profiles carry gigabytes of cache that is worthless
+# on another machine and rebuilds itself; the names match at any depth (/XD by name), which is
+# how 'Cache' under every one of Chrome's profiles is caught by one entry. The same list goes to
+# the verify listings, or every excluded file would count as missing.
+function Get-CopyExcludes([string]$Rel) {
+    $r = ('' + $Rel).ToLower()
+    if ($r -like '*user data' -or $r -like '*opera software*' -or $r -like '*firefox\profiles' -or $r -like '*thunderbird') {
+        return @('Cache', 'Code Cache', 'GPUCache', 'ShaderCache', 'GrShaderCache', 'DawnCache', 'DawnGraphiteCache', 'DawnWebGPUCache',
+                 'Service Worker', 'cache2', 'startupCache', 'jumpListCache', 'thumbnails', 'Crashpad', 'BrowserMetrics', 'Safe Browsing')
+    }
+    return @()
+}
+
 # A migrate item is a name from the GUI's own list - 'Documents', 'AppData\Roaming\Thunderbird'.
 # Relative, always. Anything rooted, or containing '..', is not one of those, and joining it
 # blindly would put an elevated robocopy somewhere nobody chose. Returns '' for a refusal.
@@ -10822,7 +10869,8 @@ function Invoke-RobocopyWatched {
         [Parameter(Mandatory = $true)][string]$Dest,
         [Parameter(Mandatory = $true)][string]$LogPath,
         [scriptblock]$Tick,
-        [string]$CancelFlag = ''
+        [string]$CancelFlag = '',
+        [string[]]$ExcludeDirs = @()
     )
     $rcExe = Join-Path $env:SystemRoot 'System32\robocopy.exe'
     # canonical on the way in, so this call and the /L listings that verify it speak one dialect
@@ -10831,6 +10879,10 @@ function Invoke-RobocopyWatched {
     # an account named "John Smith" puts a space in it without anybody choosing one.
     $argv = @((Format-RcPath $Source), (Format-RcPath $Dest), '/E', '/COPY:DAT', '/DCOPY:DAT', '/XJ', '/R:1', '/W:1',
               '/MT:16', '/J', '/BYTES', '/NP', '/NJH', '/NJS', '/NDL', '/NC', "/LOG:$(Format-RcPath $LogPath)")
+    # /XD by NAME matches that folder at any depth - which is what a browser's caches need:
+    # 'Cache' sits under every profile. The same list goes to the /L listings, or the verify
+    # would count every excluded cache file as missing.
+    if (@($ExcludeDirs).Count) { $argv += '/XD'; foreach ($x in $ExcludeDirs) { $argv += ('"' + $x + '"') } }
     try { if (Test-Path -LiteralPath $LogPath) { Remove-Item -LiteralPath $LogPath -Force -ErrorAction Stop } } catch { }
     $t0 = Get-Date
     $p = Start-Process -FilePath $rcExe -ArgumentList $argv -PassThru -WindowStyle Hidden
@@ -10915,7 +10967,7 @@ function Invoke-RobocopyWatched {
 # /L writes nothing. /UNILOG gives UTF-16 so non-ASCII filenames survive - unlike the copy above,
 # this one does need the names. Returns $null for "could not read", which callers must never
 # confuse with an empty tree.
-function Get-RobocopyListing([string]$Root, [string]$LogPath) {
+function Get-RobocopyListing([string]$Root, [string]$LogPath, [string[]]$ExcludeDirs = @()) {
     if (-not $Root) { return $null }
     $asked = $Root.TrimEnd([char]92)
     $Root  = Get-CanonicalPath $Root
@@ -10925,9 +10977,10 @@ function Get-RobocopyListing([string]$Root, [string]$LogPath) {
         # Quoted for the same reason as the copy itself: unquoted, a root with a space in it lists
         # nothing and returns 0, which this would read as "the tree is empty" rather than "I could
         # not look". The verification would then report every file missing.
-        $p = Start-Process -FilePath $rcExe -WindowStyle Hidden -PassThru -Wait -ArgumentList @(
-                 (Format-RcPath $Root), 'NULL', '/L', '/E', '/BYTES', '/NC', '/NDL', '/NJH', '/NJS', '/NP',
-                 "/UNILOG:$(Format-RcPath $LogPath)")
+        $largs = @((Format-RcPath $Root), 'NULL', '/L', '/E', '/BYTES', '/NC', '/NDL', '/NJH', '/NJS', '/NP',
+                   "/UNILOG:$(Format-RcPath $LogPath)")
+        if (@($ExcludeDirs).Count) { $largs += '/XD'; foreach ($x in $ExcludeDirs) { $largs += ('"' + $x + '"') } }
+        $p = Start-Process -FilePath $rcExe -WindowStyle Hidden -PassThru -Wait -ArgumentList $largs
         # bit 16 is the only fatal one; /L legitimately exits 1 ("files would be copied")
         if (($p.ExitCode -band 16) -ne 0) { return $null }
     } catch { return $null }
@@ -11357,6 +11410,17 @@ function Copy-ProfileData($app) {
         }
     } else {
         foreach ($rel in @($app.items)) {
+            # The Public folder is not inside any profile: it lives beside them. It goes into a
+            # backup as 'Public', and comes back out to C:\Users\Public - never into another
+            # account's profile, and never onto itself.
+            if ($rel -eq 'Public') {
+                if ($dstKind -ne 'folder' -and $srcKind -ne 'folder') { $problems += 'Public (skipped - shared by every account on this PC already)'; continue }
+                $s = $(if ($srcKind -eq 'folder') { Resolve-InProfile $src 'Public' } else { Join-Path (Split-Path -Parent $src) 'Public' })
+                $d = $(if ($dstKind -eq 'folder') { Join-Path $dstPath 'Public' } else { Join-Path (Split-Path -Parent $dstPath) 'Public' })
+                if (-not $s -or -not $d) { $failed++; $problems += 'Public (refused)'; continue }
+                $jobs += @{ rel = 'Public'; s = $s; d = $d; source = '' }
+                continue
+            }
             $s = Resolve-InProfile $src $rel
             $d = Resolve-InProfile $dstPath $rel
             if (-not $s -or -not $d) {
@@ -11373,7 +11437,8 @@ function Copy-ProfileData($app) {
 
         # What this folder weighs, so a percentage means something. Measured with robocopy /L for
         # the same reason the verification below uses it: a .NET walk is capped at MAX_PATH.
-        $listSrc = Get-RobocopyListing $s (Join-Path $script:CacheDir "$($app.id)-srclist.log")
+        $xd = @(Get-CopyExcludes $rel)
+        $listSrc = Get-RobocopyListing $s (Join-Path $script:CacheDir "$($app.id)-srclist.log") $xd
         $wantBytes = [long]0
         if ($listSrc) { foreach ($v in $listSrc.Values) { $wantBytes += [long]$v } }
 
@@ -11409,7 +11474,7 @@ function Copy-ProfileData($app) {
 
         $run = Invoke-RobocopyWatched -Source $s -Dest $d `
                                       -LogPath (Join-Path $script:CacheDir "$($app.id)-copy.log") `
-                                      -Tick $tick -CancelFlag $CancelFile
+                                      -Tick $tick -CancelFlag $CancelFile -ExcludeDirs $xd
         $rc = $run.ExitCode
         $elapsed += $run.Seconds
 
@@ -11435,7 +11500,7 @@ function Copy-ProfileData($app) {
         # $null from either listing means COULD NOT CHECK, which is not the same as "nothing
         # there" - claiming a copy verified when the check never ran is the one thing this must
         # not do, and the old code could not tell those two apart.
-        $listDst = Get-RobocopyListing $d (Join-Path $script:CacheDir "$($app.id)-dstlist.log")
+        $listDst = Get-RobocopyListing $d (Join-Path $script:CacheDir "$($app.id)-dstlist.log") $xd
         if ($null -eq $listSrc -or $null -eq $listDst) {
             $problems += "$rel (copied, but NOT verified - the file list could not be read)"
             $copied++
@@ -18542,7 +18607,9 @@ $BtnMigrate.Add_Click({
     try {
         foreach ($m in $sel) {
             if ($script:MeasureStop) { break }
-            $p = $(if ($pathsKind) { [string]$m.UnArgs } else { Join-Path $srcRoot ([string]$m.UnArgs) })
+            $p = $(if ($pathsKind) { [string]$m.UnArgs }
+                   elseif ([string]$m.UnArgs -eq 'Public' -and $mode -ne 'restore') { Join-Path (Split-Path -Parent $srcRoot) 'Public' }
+                   else { Join-Path $srcRoot ([string]$m.UnArgs) })
             $done++
             # Measuring a profile walks every file in it, and on a real one that is minutes. It
             # used to happen with the dispatcher blocked: the window printed 'Measuring...' and

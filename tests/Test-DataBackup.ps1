@@ -116,7 +116,7 @@ try {
     # CommandNotFound at exactly the moment it matters.
     foreach ($n in 'Stop-ProcessTree', 'Get-CanonicalPath', 'Format-RcPath', 'Invoke-RobocopyWatched',
                    'Get-RobocopyListing', 'Write-Status', 'Resolve-InProfile',
-                   'Write-BackupManifest', 'Read-BackupManifest') {
+                   'Write-BackupManifest', 'Read-BackupManifest', 'Get-CopyExcludes') {
         . ([scriptblock]::Create((Get-WFn $n)))
     }
     $script:CacheDir = $root
@@ -309,6 +309,35 @@ try {
     Assert-Equal 'a sibling-prefix probe is refused' '' (Resolve-InProfile 'C:\Users\bob' '..\bobby\x')
 
     # ================================================================== 9. cancel
+    Write-Section '8b. Browser caches are left out - of the copy AND of the verify'
+
+    # A Chrome profile is mostly cache: gigabytes that are worthless anywhere else and rebuild
+    # themselves. Excluding them from the copy but not from the listing that verifies the copy
+    # would report every cache file as missing, so both take the same list.
+    $bx = Join-Path $root 'browser\User Data'
+    New-Item -ItemType Directory -Force -Path "$bx\Default\Cache", "$bx\Profile 1\Code Cache", "$bx\Profile 1" | Out-Null
+    Set-Content -LiteralPath "$bx\Default\Bookmarks" -Value '{"roots":{}}' -Encoding ASCII
+    Set-Content -LiteralPath "$bx\Default\Cache\data_0" -Value ('c' * 5000) -Encoding ASCII
+    Set-Content -LiteralPath "$bx\Profile 1\Bookmarks" -Value '{}' -Encoding ASCII
+    Set-Content -LiteralPath "$bx\Profile 1\Code Cache\index" -Value ('x' * 5000) -Encoding ASCII
+    $xd = @(Get-CopyExcludes 'AppData\Local\Google\Chrome\User Data')
+    Assert-True  'a browser row excludes Cache'                    ($xd -contains 'Cache')
+    Assert-True  'and Code Cache'                                  ($xd -contains 'Code Cache')
+    Assert-Equal 'a plain data row excludes nothing'               0 @(Get-CopyExcludes 'Documents').Count
+    $bd = Join-Path $root 'browser-out'
+    $r = Invoke-RobocopyWatched -Source $bx -Dest $bd -LogPath (Join-Path $root 'bx.log') -ExcludeDirs $xd
+    Assert-True  'the copy did not report a fatal error'           (($r.ExitCode -band 16) -eq 0)
+    Assert-True  'bookmarks of every profile arrived'              ((Test-Path "$bd\Default\Bookmarks") -and (Test-Path "$bd\Profile 1\Bookmarks"))
+    Assert-True  'the caches did NOT'                              (-not (Test-Path "$bd\Default\Cache") -and -not (Test-Path "$bd\Profile 1\Code Cache"))
+    $lsx = Get-RobocopyListing $bx (Join-Path $root 'bxs.log') $xd
+    $ldx = Get-RobocopyListing $bd (Join-Path $root 'bxd.log') $xd
+    Assert-True  'both listings are readable'                      ($null -ne $lsx -and $null -ne $ldx)
+    Assert-Equal 'the source listing with excludes holds only the bookmarks' 2 $lsx.Count
+    $miss = 0; foreach ($k in $lsx.Keys) { if (-not $ldx.ContainsKey($k)) { $miss++ } }
+    Assert-Equal 'so the verify reports nothing missing'           0 $miss
+    $lsAll = Get-RobocopyListing $bx (Join-Path $root 'bxall.log')
+    Assert-Equal 'without the excludes the same tree lists the caches too' 4 $lsAll.Count
+
     Write-Section '9. A cancel flag stops a copy in flight'
 
     $bigSrc = Join-Path $root 'big'
