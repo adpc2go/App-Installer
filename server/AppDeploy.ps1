@@ -871,17 +871,17 @@ $xaml = @'
                         Visibility="Collapsed" Stretch="None"/>
                 </Border>
 
-                <Border Grid.Column="1" Width="26" Height="26" CornerRadius="8" Margin="10,0,0,0"
+                <Border Grid.Column="1" Width="36" Height="36" CornerRadius="10" Margin="10,0,0,0"
                         Background="{Binding IconBg}" VerticalAlignment="Center">
                   <Grid>
                     <Path Data="{Binding IconData}" Stroke="White" StrokeThickness="1.5"
                           StrokeStartLineCap="Round" StrokeEndLineCap="Round" StrokeLineJoin="Round"
-                          Width="14" Height="14" Stretch="Uniform" Opacity="0.95"
+                          Width="18" Height="18" Stretch="Uniform" Opacity="0.95"
                           Visibility="{Binding GlyphVis}"/>
                     <TextBlock Text="{Binding IconText}" Visibility="{Binding TextVis}"
-                               Foreground="White" FontSize="11.5" FontWeight="Bold"
+                               Foreground="White" FontSize="14" FontWeight="Bold"
                                HorizontalAlignment="Center" VerticalAlignment="Center"/>
-                    <Image Source="{Binding IconImage}" Width="24" Height="24" Stretch="Uniform"
+                    <Image Source="{Binding IconImage}" Width="32" Height="32" Stretch="Uniform"
                            Visibility="{Binding ImgVis}" RenderOptions.BitmapScalingMode="HighQuality"/>
                   </Grid>
                 </Border>
@@ -977,8 +977,8 @@ $xaml = @'
                     BorderThickness="0,0,0,1" BorderBrush="{StaticResource LineSoft}">
               <Grid>
                 <Grid.ColumnDefinitions>
-                  <ColumnDefinition Width="26"/>
-                  <ColumnDefinition Width="34"/>
+                  <ColumnDefinition Width="36"/>
+                  <ColumnDefinition Width="40"/>
                   <ColumnDefinition Width="*"/>
                   <ColumnDefinition Width="Auto"/>
                 </Grid.ColumnDefinitions>
@@ -989,14 +989,14 @@ $xaml = @'
                         StrokeStartLineCap="Round" StrokeEndLineCap="Round" StrokeLineJoin="Round"
                         Visibility="Collapsed" Stretch="None"/>
                 </Border>
-                <Border Grid.Column="1" Width="26" Height="26" CornerRadius="8" Margin="2,0,0,0"
+                <Border Grid.Column="1" Width="36" Height="36" CornerRadius="10" Margin="2,0,0,0"
                         Background="{Binding IconBg}" VerticalAlignment="Center">
                   <Grid>
                     <Path Data="{Binding IconData}" Stroke="White" StrokeThickness="1.5"
                           StrokeStartLineCap="Round" StrokeEndLineCap="Round" StrokeLineJoin="Round"
-                          Width="14" Height="14" Stretch="Uniform" Opacity="0.95" Visibility="{Binding GlyphVis}"/>
+                          Width="18" Height="18" Stretch="Uniform" Opacity="0.95" Visibility="{Binding GlyphVis}"/>
                     <TextBlock Text="{Binding IconText}" Visibility="{Binding TextVis}" Foreground="White"
-                               FontSize="11.5" FontWeight="Bold" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                               FontSize="14" FontWeight="Bold" HorizontalAlignment="Center" VerticalAlignment="Center"/>
                   </Grid>
                 </Border>
                 <StackPanel Grid.Column="2" Margin="10,0,10,0" VerticalAlignment="Center">
@@ -1049,13 +1049,13 @@ $xaml = @'
                   <RowDefinition Height="Auto"/>
                 </Grid.RowDefinitions>
                 <Grid.ColumnDefinitions>
-                  <ColumnDefinition Width="26"/>
-                  <ColumnDefinition Width="34"/>
+                  <ColumnDefinition Width="36"/>
+                  <ColumnDefinition Width="40"/>
                   <ColumnDefinition Width="*"/>
                   <ColumnDefinition Width="150"/>
                   <ColumnDefinition Width="100"/>
                   <ColumnDefinition Width="86"/>
-                  <ColumnDefinition Width="26"/>
+                  <ColumnDefinition Width="36"/>
                 </Grid.ColumnDefinitions>
 
                 <Border x:Name="Check" Grid.Column="0" Width="17" Height="17" CornerRadius="5"
@@ -1069,17 +1069,17 @@ $xaml = @'
                 <!-- The program's own logo, pulled out of its executable by the icon pump. The
                      table mock had no icon column; the tool has had real icons here all along and
                      they are worth more than the 34px they cost. -->
-                <Border Grid.Column="1" Width="26" Height="26" CornerRadius="8" Margin="2,0,0,0"
+                <Border Grid.Column="1" Width="36" Height="36" CornerRadius="10" Margin="2,0,0,0"
                         Background="{Binding IconBg}" VerticalAlignment="Center">
                   <Grid>
                     <Path Data="{Binding IconData}" Stroke="White" StrokeThickness="1.5"
                           StrokeStartLineCap="Round" StrokeEndLineCap="Round" StrokeLineJoin="Round"
-                          Width="14" Height="14" Stretch="Uniform" Opacity="0.95"
+                          Width="18" Height="18" Stretch="Uniform" Opacity="0.95"
                           Visibility="{Binding GlyphVis}"/>
                     <TextBlock Text="{Binding IconText}" Visibility="{Binding TextVis}"
-                               Foreground="White" FontSize="11.5" FontWeight="Bold"
+                               Foreground="White" FontSize="14" FontWeight="Bold"
                                HorizontalAlignment="Center" VerticalAlignment="Center"/>
-                    <Image Source="{Binding IconImage}" Width="24" Height="24" Stretch="Uniform"
+                    <Image Source="{Binding IconImage}" Width="32" Height="32" Stretch="Uniform"
                            Visibility="{Binding ImgVis}" RenderOptions.BitmapScalingMode="HighQuality"/>
                   </Grid>
                 </Border>
@@ -1199,6 +1199,130 @@ $xaml = @'
     <!-- firewall row: the state has to be readable at a glance, so it gets a badge rather
          than a coloured icon tile - once a real program icon loads, the tile is transparent
          and any colour on it is gone. -->
+    <!-- update row: the Uninstall table, with the columns an update has - installed version,
+         available version, source - in place of install date and size. Every width matches
+         the header grid in PanelUpdate; change them together. Same program, same row shape,
+         same icon as the Uninstall tab. -->
+    <Style x:Key="UpdRow" TargetType="CheckBox">
+      <Setter Property="Focusable" Value="False"/>
+      <Setter Property="Cursor" Value="Hand"/>
+      <Setter Property="Template">
+        <Setter.Value>
+          <ControlTemplate TargetType="CheckBox">
+            <Border x:Name="R" CornerRadius="8" Padding="10,8" Background="Transparent" Margin="2,0"
+                    BorderThickness="0,0,0,1" BorderBrush="{StaticResource LineSoft}">
+              <Grid>
+                <Grid.RowDefinitions>
+                  <RowDefinition Height="Auto"/>
+                  <RowDefinition Height="Auto"/>
+                </Grid.RowDefinitions>
+                <Grid.ColumnDefinitions>
+                  <ColumnDefinition Width="36"/>
+                  <ColumnDefinition Width="40"/>
+                  <ColumnDefinition Width="*"/>
+                  <ColumnDefinition Width="150"/>
+                  <ColumnDefinition Width="112"/>
+                  <ColumnDefinition Width="112"/>
+                  <ColumnDefinition Width="76"/>
+                  <ColumnDefinition Width="36"/>
+                </Grid.ColumnDefinitions>
+                <Border x:Name="Check" Grid.Column="0" Width="17" Height="17" CornerRadius="5"
+                        BorderThickness="1.5" BorderBrush="{StaticResource Dim}" Background="Transparent"
+                        VerticalAlignment="Center" HorizontalAlignment="Left">
+                  <Path x:Name="Tick" Data="M 3.5,8.5 L 6.5,11.5 L 12.5,4.5" Stroke="White" StrokeThickness="2"
+                        StrokeStartLineCap="Round" StrokeEndLineCap="Round" StrokeLineJoin="Round"
+                        Visibility="Collapsed" Stretch="None"/>
+                </Border>
+                <Border Grid.Column="1" Width="36" Height="36" CornerRadius="10" Margin="2,0,0,0"
+                        Background="{Binding IconBg}" VerticalAlignment="Center">
+                  <Grid>
+                    <Path Data="{Binding IconData}" Stroke="White" StrokeThickness="1.5"
+                          StrokeStartLineCap="Round" StrokeEndLineCap="Round" StrokeLineJoin="Round"
+                          Width="18" Height="18" Stretch="Uniform" Opacity="0.95"
+                          Visibility="{Binding GlyphVis}"/>
+                    <TextBlock Text="{Binding IconText}" Visibility="{Binding TextVis}"
+                               Foreground="White" FontSize="14" FontWeight="Bold"
+                               HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                    <Image Source="{Binding IconImage}" Width="32" Height="32" Stretch="Uniform"
+                           Visibility="{Binding ImgVis}" RenderOptions.BitmapScalingMode="HighQuality"/>
+                  </Grid>
+                </Border>
+                <StackPanel Grid.Column="2" Orientation="Horizontal" Margin="10,0,18,0" VerticalAlignment="Center">
+                  <TextBlock Text="{Binding Name}" FontSize="12.5" Foreground="{StaticResource Ink}"
+                             TextTrimming="CharacterEllipsis" ToolTip="{Binding Name}"/>
+                  <!-- "unknown version" / "needs explicit targeting" - the same pill the Uninstall
+                       table uses for "largest" -->
+                  <Border CornerRadius="5" Padding="7,1" Margin="9,0,0,0" VerticalAlignment="Center"
+                          BorderThickness="1" BorderBrush="#FF6B5A2A" Background="#14F59E0B"
+                          Visibility="{Binding TagVis}">
+                    <TextBlock Text="{Binding TagText}" FontSize="10" Foreground="{StaticResource Warn}"/>
+                  </Border>
+                </StackPanel>
+                <TextBlock Grid.Column="3" Text="{Binding Publisher}" FontSize="11.5" Margin="0,0,10,0"
+                           Foreground="{StaticResource Dim}" VerticalAlignment="Center"
+                           TextTrimming="CharacterEllipsis" ToolTip="{Binding Publisher}"/>
+                <TextBlock Grid.Column="4" Text="{Binding ColInstalled}" FontSize="11.5" Margin="0,0,10,0"
+                           Foreground="{StaticResource Dim}" VerticalAlignment="Center"
+                           TextTrimming="CharacterEllipsis" ToolTip="{Binding ColInstalled}"/>
+                <TextBlock Grid.Column="5" Text="{Binding ColSize}" FontSize="12" Margin="0,0,10,0"
+                           Foreground="{StaticResource Lift}" VerticalAlignment="Center"
+                           TextTrimming="CharacterEllipsis" ToolTip="{Binding ColSize}"/>
+                <TextBlock Grid.Column="6" Text="{Binding Source}" FontSize="11" Margin="0,0,8,0"
+                           Foreground="{StaticResource Muted}" VerticalAlignment="Center"
+                           TextTrimming="CharacterEllipsis"/>
+                <Grid Grid.Column="7" Width="22" Height="22" VerticalAlignment="Center">
+                  <Path Data="M 11,2 A 9,9 0 0 1 20,11" Stroke="{StaticResource Lift}" StrokeThickness="2.2"
+                        StrokeStartLineCap="Round" Stretch="None" Visibility="{Binding SpinnerVis}"
+                        RenderTransformOrigin="0.5,0.5">
+                    <Path.RenderTransform><RotateTransform/></Path.RenderTransform>
+                    <Path.Triggers>
+                      <EventTrigger RoutedEvent="FrameworkElement.Loaded">
+                        <BeginStoryboard>
+                          <Storyboard>
+                            <DoubleAnimation Storyboard.TargetProperty="(UIElement.RenderTransform).(RotateTransform.Angle)"
+                                             From="0" To="360" Duration="0:0:0.9" RepeatBehavior="Forever"/>
+                          </Storyboard>
+                        </BeginStoryboard>
+                      </EventTrigger>
+                    </Path.Triggers>
+                  </Path>
+                  <Border CornerRadius="11" Background="{Binding BadgeBg}" Visibility="{Binding BadgeVis}">
+                    <Path Data="{Binding BadgeData}" Stroke="White" StrokeThickness="2"
+                          StrokeStartLineCap="Round" StrokeEndLineCap="Round" StrokeLineJoin="Round"
+                          Width="14" Height="14" Stretch="Uniform"/>
+                  </Border>
+                </Grid>
+                <TextBlock Grid.Row="1" Grid.Column="2" Grid.ColumnSpan="5" Text="{Binding Status}"
+                           FontSize="11" FontWeight="SemiBold" Foreground="{Binding StatusFg}"
+                           TextWrapping="Wrap" Margin="4,4,0,0" ToolTip="{Binding StatusDetail}">
+                  <TextBlock.Style>
+                    <Style TargetType="TextBlock">
+                      <Style.Triggers>
+                        <DataTrigger Binding="{Binding Status}" Value="">
+                          <Setter Property="Visibility" Value="Collapsed"/>
+                        </DataTrigger>
+                      </Style.Triggers>
+                    </Style>
+                  </TextBlock.Style>
+                </TextBlock>
+              </Grid>
+            </Border>
+            <ControlTemplate.Triggers>
+              <Trigger Property="IsMouseOver" Value="True">
+                <Setter TargetName="R" Property="Background" Value="#1AFFFFFF"/>
+              </Trigger>
+              <Trigger Property="IsChecked" Value="True">
+                <Setter TargetName="Check" Property="Background" Value="{StaticResource Accent}"/>
+                <Setter TargetName="Check" Property="BorderBrush" Value="{StaticResource Accent}"/>
+                <Setter TargetName="Tick" Property="Visibility" Value="Visible"/>
+                <Setter TargetName="R" Property="Background" Value="#152563EB"/>
+              </Trigger>
+            </ControlTemplate.Triggers>
+          </ControlTemplate>
+        </Setter.Value>
+      </Setter>
+    </Style>
+
     <Style x:Key="FwRow" TargetType="CheckBox">
       <Setter Property="Focusable" Value="False"/>
       <Setter Property="Cursor" Value="Hand"/>
@@ -1227,12 +1351,12 @@ $xaml = @'
                         Visibility="Collapsed" Stretch="None"/>
                 </Border>
 
-                <Grid Grid.Column="1" Width="24" Height="24" Margin="10,0,0,0" VerticalAlignment="Center">
+                <Grid Grid.Column="1" Width="32" Height="32" Margin="10,0,0,0" VerticalAlignment="Center">
                   <Border CornerRadius="6" Background="{Binding IconBg}"/>
                   <Path Data="{Binding IconData}" Stroke="White" StrokeThickness="1.4"
                         Width="13" Height="13" Stretch="Uniform" Opacity="0.9"
                         Visibility="{Binding GlyphVis}"/>
-                  <Image Source="{Binding IconImage}" Width="22" Height="22" Stretch="Uniform"
+                  <Image Source="{Binding IconImage}" Width="30" Height="30" Stretch="Uniform"
                          Visibility="{Binding ImgVis}" RenderOptions.BitmapScalingMode="HighQuality"/>
                 </Grid>
 
@@ -1558,6 +1682,7 @@ $xaml = @'
 
       <Border Grid.Row="1" BorderBrush="{StaticResource Raised}" BorderThickness="0,0,0,1" Padding="18,0,18,8">
         <StackPanel Orientation="Horizontal">
+          <Button x:Name="BtnTabUpdate" Content="Update" Style="{StaticResource TabIdle}"/>
           <Button x:Name="BtnTabInstall" Content="Install" Style="{StaticResource TabActive}"/>
           <Button x:Name="BtnTabUn" Content="Uninstall" Style="{StaticResource TabIdle}"/>
           <Button x:Name="BtnTabTweak" Content="Optimize" Style="{StaticResource TabIdle}"/>
@@ -1631,13 +1756,13 @@ $xaml = @'
                have to be changed together or the table stops lining up. -->
           <Grid Margin="12,0,2,0">
             <Grid.ColumnDefinitions>
-              <ColumnDefinition Width="26"/>
-              <ColumnDefinition Width="34"/>
+              <ColumnDefinition Width="36"/>
+              <ColumnDefinition Width="40"/>
               <ColumnDefinition Width="*"/>
               <ColumnDefinition Width="150"/>
               <ColumnDefinition Width="100"/>
               <ColumnDefinition Width="86"/>
-              <ColumnDefinition Width="26"/>
+              <ColumnDefinition Width="36"/>
             </Grid.ColumnDefinitions>
             <Button x:Name="BtnColName" Grid.Column="2" Content="PROGRAM"   Style="{StaticResource ColHeadOn}" Margin="10,0,0,0"/>
             <Button x:Name="BtnColPub"  Grid.Column="3" Content="PUBLISHER" Style="{StaticResource ColHead}"/>
@@ -2121,6 +2246,189 @@ $xaml = @'
         </ScrollViewer>
       </Grid>
 
+      <!-- UPDATE: what winget can bring up to date, tickable; and the Store apps, which Windows
+           only updates as a set - so that sub-tab lists and offers one bulk action. -->
+      <Grid x:Name="PanelUpdate" Grid.Row="1" Visibility="Collapsed" Margin="18,2,18,0">
+        <Grid.RowDefinitions>
+          <RowDefinition Height="Auto"/>
+          <RowDefinition Height="*"/>
+        </Grid.RowDefinitions>
+        <StackPanel Grid.Row="0" Margin="4,4,0,4">
+          <DockPanel LastChildFill="True" Margin="0,0,0,10">
+            <Button x:Name="BtnSubUpdDesk" Content="Desktop apps" Style="{StaticResource TabActive}"/>
+            <Button x:Name="BtnSubUpdStore" Content="Microsoft Store apps" Style="{StaticResource TabIdle}"/>
+            <Button x:Name="BtnSubUpdWin" Content="Windows Update" Style="{StaticResource TabIdle}"/>
+            <Border Width="1" Height="18" Background="{StaticResource Line}" Margin="10,0,4,0" VerticalAlignment="Center"/>
+            <Button x:Name="BtnUpdSelAll" Content="Select All" Style="{StaticResource TabIdle}"/>
+            <Button x:Name="BtnUpdSelNone" Content="Clear All" Style="{StaticResource TabIdle}"/>
+            <Button x:Name="BtnUpdRescan" Content="Rescan" Style="{StaticResource TabIdle}"
+                    ToolTip="Ask winget again which installed programs have a newer version"/>
+            <TextBlock x:Name="TxtUpdHint" Text="" FontSize="11" Foreground="{StaticResource Dim}"
+                       VerticalAlignment="Center" Margin="14,0,0,0" TextWrapping="Wrap"/>
+          </DockPanel>
+          <!-- The column header. Widths match UpdRow; the Store sub-tab shows the same columns
+               it can fill (program, publisher, version) and blanks the rest. -->
+          <Grid Margin="12,0,2,0">
+            <Grid.ColumnDefinitions>
+              <ColumnDefinition Width="36"/>
+              <ColumnDefinition Width="40"/>
+              <ColumnDefinition Width="*"/>
+              <ColumnDefinition Width="150"/>
+              <ColumnDefinition Width="112"/>
+              <ColumnDefinition Width="112"/>
+              <ColumnDefinition Width="76"/>
+              <ColumnDefinition Width="36"/>
+            </Grid.ColumnDefinitions>
+            <Button x:Name="BtnUpdColName"  Grid.Column="2" Content="PROGRAM"   Style="{StaticResource ColHeadOn}" Margin="10,0,0,0"/>
+            <Button x:Name="BtnUpdColPub"   Grid.Column="3" Content="PUBLISHER" Style="{StaticResource ColHead}"/>
+            <Button x:Name="BtnUpdColInst"  Grid.Column="4" Content="INSTALLED" Style="{StaticResource ColHead}"/>
+            <Button x:Name="BtnUpdColAvail" Grid.Column="5" Content="AVAILABLE" Style="{StaticResource ColHead}"/>
+            <Button x:Name="BtnUpdColSrc"   Grid.Column="6" Content="SOURCE"    Style="{StaticResource ColHead}"/>
+          </Grid>
+          <Border Height="1" Background="{StaticResource LineSoft}" Margin="12,2,2,0"/>
+        </StackPanel>
+        <Grid Grid.Row="1">
+          <TextBlock x:Name="EmptyUpd" Visibility="Collapsed" Foreground="{StaticResource Dim}" FontSize="13"
+                     HorizontalAlignment="Center" VerticalAlignment="Center" TextAlignment="Center" TextWrapping="Wrap" MaxWidth="560"/>
+          <StackPanel x:Name="LoadUpd" Visibility="Collapsed" HorizontalAlignment="Center"
+                      VerticalAlignment="Top" Margin="0,60,0,0">
+            <Grid Width="34" Height="34" HorizontalAlignment="Center">
+              <Ellipse Stroke="#22FFFFFF" StrokeThickness="3"/>
+              <Path Data="M 17,1.5 A 15.5,15.5 0 0 1 32.5,17" Stroke="{StaticResource Lift}" StrokeThickness="3"
+                    StrokeStartLineCap="Round" Stretch="None" RenderTransformOrigin="0.5,0.5">
+                <Path.RenderTransform><RotateTransform/></Path.RenderTransform>
+                <Path.Triggers>
+                  <EventTrigger RoutedEvent="FrameworkElement.Loaded">
+                    <BeginStoryboard><Storyboard>
+                      <DoubleAnimation Storyboard.TargetProperty="(UIElement.RenderTransform).(RotateTransform.Angle)"
+                                       From="0" To="360" Duration="0:0:0.85" RepeatBehavior="Forever"/>
+                    </Storyboard></BeginStoryboard>
+                  </EventTrigger>
+                </Path.Triggers>
+              </Path>
+            </Grid>
+            <TextBlock x:Name="TxtLoadUpd" Text="Asking winget for available updates..." FontSize="13"
+                       Foreground="{StaticResource Ink}" HorizontalAlignment="Center" Margin="0,14,0,0"/>
+          </StackPanel>
+          <ScrollViewer x:Name="ScrollUpdDesk" VerticalScrollBarVisibility="Auto">
+            <ItemsControl x:Name="ListUpd">
+              <ItemsControl.GroupStyle>
+                <GroupStyle>
+                  <GroupStyle.HeaderTemplate>
+                    <DataTemplate>
+                      <StackPanel Orientation="Horizontal" Margin="10,10,0,7">
+                        <Rectangle Width="3" Height="14" Fill="{StaticResource Accent}" RadiusX="1.5" RadiusY="1.5" VerticalAlignment="Center"/>
+                        <TextBlock Text="{Binding Name}" FontSize="12.5" FontWeight="Bold" Foreground="{StaticResource Ink}"
+                                   Margin="8,0,6,0" VerticalAlignment="Center"/>
+                        <TextBlock Text="{Binding ItemCount}" FontSize="11" Foreground="{StaticResource Dim}" VerticalAlignment="Center"/>
+                      </StackPanel>
+                    </DataTemplate>
+                  </GroupStyle.HeaderTemplate>
+                  <GroupStyle.Panel>
+                    <ItemsPanelTemplate><StackPanel VerticalAlignment="Top"/></ItemsPanelTemplate>
+                  </GroupStyle.Panel>
+                </GroupStyle>
+              </ItemsControl.GroupStyle>
+              <ItemsControl.ItemTemplate>
+                <DataTemplate>
+                  <CheckBox Style="{StaticResource UpdRow}"
+                            IsChecked="{Binding IsSelected, UpdateSourceTrigger=PropertyChanged}"/>
+                </DataTemplate>
+              </ItemsControl.ItemTemplate>
+            </ItemsControl>
+          </ScrollViewer>
+          <!-- Store apps: a list to look at, not to tick - the Store updates them as a set -->
+          <ScrollViewer x:Name="ScrollUpdStore" Visibility="Collapsed" VerticalScrollBarVisibility="Auto">
+            <ItemsControl x:Name="ListUpdStore">
+              <ItemsControl.GroupStyle>
+                <GroupStyle>
+                  <GroupStyle.HeaderTemplate>
+                    <DataTemplate>
+                      <StackPanel Orientation="Horizontal" Margin="10,10,0,7">
+                        <Rectangle Width="3" Height="14" Fill="{StaticResource Accent}" RadiusX="1.5" RadiusY="1.5" VerticalAlignment="Center"/>
+                        <TextBlock Text="{Binding Name}" FontSize="12.5" FontWeight="Bold" Foreground="{StaticResource Ink}"
+                                   Margin="8,0,6,0" VerticalAlignment="Center"/>
+                        <TextBlock Text="{Binding ItemCount}" FontSize="11" Foreground="{StaticResource Dim}" VerticalAlignment="Center"/>
+                      </StackPanel>
+                    </DataTemplate>
+                  </GroupStyle.HeaderTemplate>
+                  <GroupStyle.Panel>
+                    <ItemsPanelTemplate><StackPanel VerticalAlignment="Top"/></ItemsPanelTemplate>
+                  </GroupStyle.Panel>
+                </GroupStyle>
+              </ItemsControl.GroupStyle>
+              <ItemsControl.ItemTemplate>
+                <DataTemplate>
+                  <!-- the same table, tick column left empty: the Store updates these as a set -->
+                  <Border CornerRadius="8" Padding="10,8" Margin="2,0" Background="Transparent"
+                          BorderThickness="0,0,0,1" BorderBrush="{StaticResource LineSoft}">
+                    <Grid>
+                      <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="36"/>
+                        <ColumnDefinition Width="40"/>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="150"/>
+                        <ColumnDefinition Width="112"/>
+                        <ColumnDefinition Width="112"/>
+                        <ColumnDefinition Width="76"/>
+                        <ColumnDefinition Width="36"/>
+                      </Grid.ColumnDefinitions>
+                      <Border Grid.Column="1" Width="36" Height="36" CornerRadius="10" Margin="2,0,0,0"
+                              Background="{Binding IconBg}" VerticalAlignment="Center">
+                        <Grid>
+                          <Path Data="{Binding IconData}" Stroke="White" StrokeThickness="1.5"
+                                Width="18" Height="18" Stretch="Uniform" Opacity="0.95"
+                                Visibility="{Binding GlyphVis}"/>
+                          <Image Source="{Binding IconImage}" Width="32" Height="32" Stretch="Uniform"
+                                 Visibility="{Binding ImgVis}" RenderOptions.BitmapScalingMode="HighQuality"/>
+                        </Grid>
+                      </Border>
+                      <TextBlock Grid.Column="2" Text="{Binding Name}" FontSize="12.5" Foreground="{StaticResource Ink}"
+                                 Margin="10,0,18,0" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" ToolTip="{Binding Name}"/>
+                      <TextBlock Grid.Column="3" Text="{Binding Publisher}" FontSize="11.5" Margin="0,0,10,0"
+                                 Foreground="{StaticResource Dim}" VerticalAlignment="Center"
+                                 TextTrimming="CharacterEllipsis" ToolTip="{Binding Publisher}"/>
+                      <TextBlock Grid.Column="4" Text="{Binding ColInstalled}" FontSize="11.5" Margin="0,0,10,0"
+                                 Foreground="{StaticResource Dim}" VerticalAlignment="Center" TextTrimming="CharacterEllipsis"/>
+                      <TextBlock Grid.Column="6" Text="{Binding Source}" FontSize="11" Margin="0,0,8,0"
+                                 Foreground="{StaticResource Muted}" VerticalAlignment="Center" TextTrimming="CharacterEllipsis"/>
+                    </Grid>
+                  </Border>
+                </DataTemplate>
+              </ItemsControl.ItemTemplate>
+            </ItemsControl>
+          </ScrollViewer>
+          <!-- Windows Update: the same table, recommended and optional updates grouped apart -->
+          <ScrollViewer x:Name="ScrollUpdWin" Visibility="Collapsed" VerticalScrollBarVisibility="Auto">
+            <ItemsControl x:Name="ListUpdWin">
+              <ItemsControl.GroupStyle>
+                <GroupStyle>
+                  <GroupStyle.HeaderTemplate>
+                    <DataTemplate>
+                      <StackPanel Orientation="Horizontal" Margin="10,10,0,7">
+                        <Rectangle Width="3" Height="14" Fill="{StaticResource Accent}" RadiusX="1.5" RadiusY="1.5" VerticalAlignment="Center"/>
+                        <TextBlock Text="{Binding Name}" FontSize="12.5" FontWeight="Bold" Foreground="{StaticResource Ink}"
+                                   Margin="8,0,6,0" VerticalAlignment="Center"/>
+                        <TextBlock Text="{Binding ItemCount}" FontSize="11" Foreground="{StaticResource Dim}" VerticalAlignment="Center"/>
+                      </StackPanel>
+                    </DataTemplate>
+                  </GroupStyle.HeaderTemplate>
+                  <GroupStyle.Panel>
+                    <ItemsPanelTemplate><StackPanel VerticalAlignment="Top"/></ItemsPanelTemplate>
+                  </GroupStyle.Panel>
+                </GroupStyle>
+              </ItemsControl.GroupStyle>
+              <ItemsControl.ItemTemplate>
+                <DataTemplate>
+                  <CheckBox Style="{StaticResource UpdRow}"
+                            IsChecked="{Binding IsSelected, UpdateSourceTrigger=PropertyChanged}"/>
+                </DataTemplate>
+              </ItemsControl.ItemTemplate>
+            </ItemsControl>
+          </ScrollViewer>
+        </Grid>
+      </Grid>
+
       <!-- FIREWALL: blocked on the left, everything else on the right. The split IS the
            organisation - a single list with filter pills meant the three programs you care
            about were buried among sixty you do not, and you had to click to see either.
@@ -2577,7 +2885,7 @@ $xaml = @'
             <!-- RichTextBox, not TextBox: each line is coloured by severity, and a TextBox has a
                  single Foreground for the whole control. -->
             <RichTextBox x:Name="TxtLog" IsReadOnly="True" IsDocumentEnabled="False" BorderThickness="0"
-                         Background="Transparent" Foreground="{StaticResource Good}" FontFamily="Cascadia Mono, Consolas"
+                         Background="Transparent" Foreground="{StaticResource Good}" FontFamily="Consolas, Courier New"
                          FontSize="12" Padding="14,10" VerticalScrollBarVisibility="Auto"
                          HorizontalScrollBarVisibility="Disabled"/>
 
@@ -2849,6 +3157,14 @@ $xaml = @'
                 <TextBlock x:Name="TxtTweakApplyBtn" Text="Apply Tweaks" Margin="8,0,0,0"/>
               </StackPanel>
             </Button>
+            <Button x:Name="BtnUpdApply" Style="{StaticResource AccentBtn}" Visibility="Collapsed">
+              <StackPanel Orientation="Horizontal">
+                <Path Data="M 12,4 L 12,15 M 7,10 L 12,15 L 17,10 M 5,19 L 19,19" Stroke="White" StrokeThickness="2"
+                      StrokeStartLineCap="Round" StrokeEndLineCap="Round" StrokeLineJoin="Round"
+                      Width="15" Height="15" Stretch="Uniform"/>
+                <TextBlock x:Name="TxtUpdApplyBtn" Text="Update Selected" Margin="8,0,0,0"/>
+              </StackPanel>
+            </Button>
             <Button x:Name="BtnForce" Content="Force Remove" Style="{StaticResource GhostBtn}"
                     Visibility="Collapsed"/>
             <Button x:Name="BtnUninstall" Content="Uninstall Selected" Style="{StaticResource AccentBtn}"
@@ -3026,10 +3342,30 @@ $xaml = @'
                     HorizontalContentAlignment="Left" Margin="0,0,0,7" Padding="14,10"/>
             <Button x:Name="BtnActStandard" Content="Make Standard user" Style="{StaticResource GhostBtn}"
                     HorizontalContentAlignment="Left" Margin="0,0,0,7" Padding="14,10"/>
+            <!-- The inputs Reset password and Replace with a local admin read. They used to live
+                 only in the Add Account dialog - a different popup, hidden while this one is
+                 open - so both buttons read an empty box and told the technician to type in a
+                 box that was not on screen. -->
+            <TextBlock Text="New password (for Reset password, and for the replacement account)" FontSize="11.5"
+                       Foreground="{StaticResource Muted}" Margin="0,0,0,5"/>
+            <Grid Height="34" Margin="0,0,0,7">
+              <TextBox x:Name="TxtActPw" Style="{StaticResource SearchBox}" VerticalContentAlignment="Center"/>
+              <TextBlock x:Name="HintActPw" Text="blank = no password" Foreground="{StaticResource Dim}"
+                         FontSize="11.5" Margin="12,0,0,0" VerticalAlignment="Center" IsHitTestVisible="False"/>
+            </Grid>
             <Button x:Name="BtnActPw" Content="Reset password" Style="{StaticResource GhostBtn}"
                     HorizontalContentAlignment="Left" Margin="0,0,0,7" Padding="14,10"/>
             <Button x:Name="BtnActToggle" Content="Disable account" Style="{StaticResource GhostBtn}"
                     HorizontalContentAlignment="Left" Margin="0,0,0,7" Padding="14,10"/>
+            <StackPanel x:Name="RowActNewName">
+              <TextBlock Text="Sign-in name for the replacement local admin" FontSize="11.5"
+                         Foreground="{StaticResource Muted}" Margin="0,4,0,5"/>
+              <Grid Height="34" Margin="0,0,0,7">
+                <TextBox x:Name="TxtActNewName" Style="{StaticResource SearchBox}" VerticalContentAlignment="Center"/>
+                <TextBlock x:Name="HintActNewName" Text="e.g. the person's first name" Foreground="{StaticResource Dim}"
+                           FontSize="11.5" Margin="12,0,0,0" VerticalAlignment="Center" IsHitTestVisible="False"/>
+              </Grid>
+            </StackPanel>
             <Button x:Name="BtnActLocal" Content="Replace with a local admin" Style="{StaticResource GhostBtn}"
                     HorizontalContentAlignment="Left" Margin="0,0,0,7" Padding="14,10"/>
             <Button x:Name="BtnActDelete" Content="Delete account" Style="{StaticResource GhostBtn}"
@@ -3060,7 +3396,7 @@ $xaml = @'
                        Margin="0,6,0,12" TextWrapping="Wrap"/>
             <Border Grid.Row="2" CornerRadius="9" Background="{StaticResource Panel}" BorderThickness="1" BorderBrush="{StaticResource Raised}">
               <TextBox x:Name="TxtFwDetail" IsReadOnly="True" BorderThickness="0" Background="Transparent"
-                       Foreground="{StaticResource Ink}" FontFamily="Cascadia Mono, Consolas" FontSize="11.5"
+                       Foreground="{StaticResource Ink}" FontFamily="Consolas, Courier New" FontSize="11.5"
                        Padding="12,10" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto"
                        TextWrapping="NoWrap"/>
             </Border>
@@ -3283,6 +3619,7 @@ foreach ($n in 'ListApps','BarOverall','TxtOverall','TxtLog','TxtStatus','TxtCat
                'BtnFwRescan','BtnFwRemoveAll','BtnFwBlock','BtnFwUnblock','ListFwOpen','EmptyFwOpen','TxtFwBlockedHdr','TxtFwOpenHdr','FwSplit',
                'FwDetailOverlay','TxtFwDetailTitle','TxtFwDetailSub','TxtFwDetail','BtnFwDetailClose',
                'EmptySrc','EmptyDst','ListAccounts','EmptyAccounts','EmptyMigrate','TxtNewPw','HintNewPw',
+               'TxtActPw','HintActPw','RowActNewName','TxtActNewName','HintActNewName',
                'PanelAccounts','PanelMigrate','BtnTabMigrate','BtnNewAccount','TxtAcctHint','BtnMigrate',
                'BtnModeProfile','BtnModeFolder','BtnModeRestore','PanelFolderPick','TxtFolderWhat',
                'TxtFromTitle','TxtFromWhat','TxtToTitle','TxtToWhat','SrcColumn','DstColumn',
@@ -3298,7 +3635,11 @@ foreach ($n in 'ListApps','BarOverall','TxtOverall','TxtLog','TxtStatus','TxtCat
                'AutoLogonOverlay','TxtAlUser','HintAlUser','TxtAlPw','HintAlPw','BtnAlCancel','BtnAlOk',
                'NewUserOverlay','ChkNewAdmin','BtnNewUserCancel','BtnNewUserOk',
                'AcctOverlay','TxtAcctInitial','TxtAcctName','TxtAcctMeta','BtnAcctClose',
-               'BtnActAdmin','BtnActStandard','BtnActPw','BtnActToggle','BtnActLocal','BtnActDelete') {
+               'BtnActAdmin','BtnActStandard','BtnActPw','BtnActToggle','BtnActLocal','BtnActDelete',
+               'BtnTabUpdate','PanelUpdate','BtnSubUpdDesk','BtnSubUpdStore','BtnUpdSelAll','BtnUpdSelNone','BtnUpdRescan',
+               'TxtUpdHint','EmptyUpd','LoadUpd','TxtLoadUpd','ScrollUpdDesk','ListUpd','ScrollUpdStore','ListUpdStore',
+               'BtnUpdApply','TxtUpdApplyBtn','BtnUpdColName','BtnUpdColPub','BtnUpdColInst','BtnUpdColAvail','BtnUpdColSrc',
+               'BtnSubUpdWin','ScrollUpdWin','ListUpdWin') {
     $el = $window.FindName($n)
     if (-not $el) { $missing += $n }
     Set-Variable -Name $n -Value $el
@@ -3320,7 +3661,10 @@ $script:CleanItems = New-Object 'System.Collections.ObjectModel.ObservableCollec
 $script:GameItems = New-Object 'System.Collections.ObjectModel.ObservableCollection[object]'
 $script:FixItems = New-Object 'System.Collections.ObjectModel.ObservableCollection[object]'
 $script:FwItems = New-Object 'System.Collections.ObjectModel.ObservableCollection[object]'
-$script:AccountItems = New-Object 'System.Collections.ObjectModel.ObservableCollection[object]'
+$script:UpdItems = New-Object 'System.Collections.ObjectModel.ObservableCollection[object]'
+$script:UpdStore = New-Object 'System.Collections.ObjectModel.ObservableCollection[object]'
+$script:UpdWin = New-Object 'System.Collections.ObjectModel.ObservableCollection[object]'
+$script:AccountItems =New-Object 'System.Collections.ObjectModel.ObservableCollection[object]'
 $script:SrcUsers = New-Object 'System.Collections.ObjectModel.ObservableCollection[object]'
 $script:DstUsers = New-Object 'System.Collections.ObjectModel.ObservableCollection[object]'
 $script:MigrateItems = New-Object 'System.Collections.ObjectModel.ObservableCollection[object]'
@@ -3355,6 +3699,18 @@ $script:LastManifest = $null
 $script:UnDirty = $true
 $script:StoreDirty = $true
 $script:UnSubTab = 'Desktop'
+# Update tab: both lists are read on first visit and again after a batch or a Rescan
+$script:UpdDirty = $true
+$script:UpdStoreDirty = $true
+$script:UpdWinDirty = $true
+$script:UpdSubTab = 'Desk'
+$script:UpdScanning = $false
+# the hint line and the empty-list label, per sub-tab - see Set-UpdWords
+$script:UpdWords = @{ Desk = @{ Hint = ''; Empty = '' }; Win = @{ Hint = ''; Empty = '' }; Store = @{ Hint = ''; Empty = '' } }
+$script:WingetPath = ''
+$script:WingetScanNotes = @()
+$script:UpdProgCache = $null          # one Get-InstalledPrograms result, shared with the Update tab
+$script:UpdProgCacheAt = Get-Date
 $script:SearchText = ''
 $script:View = [Windows.Data.CollectionViewSource]::GetDefaultView($script:Items)
 $script:View.GroupDescriptions.Add((New-Object Windows.Data.PropertyGroupDescription 'Category'))
@@ -3398,6 +3754,19 @@ $script:CleanView.Filter = $unFilter
 $script:GameView = [Windows.Data.CollectionViewSource]::GetDefaultView($script:GameItems)
 $script:GameView.GroupDescriptions.Add((New-Object Windows.Data.PropertyGroupDescription 'Category'))
 $script:GameView.Filter = $unFilter
+# Update tab - Publisher carries "winget: <Id>", so the search box finds packages by id too
+$script:UpdView = [Windows.Data.CollectionViewSource]::GetDefaultView($script:UpdItems)
+$script:UpdView.GroupDescriptions.Add((New-Object Windows.Data.PropertyGroupDescription 'Category'))
+$script:UpdView.Filter = $unFilter
+$script:UpdStoreView = [Windows.Data.CollectionViewSource]::GetDefaultView($script:UpdStore)
+$script:UpdStoreView.GroupDescriptions.Add((New-Object Windows.Data.PropertyGroupDescription 'Category'))
+$script:UpdStoreView.Filter = $unFilter
+$script:UpdWinView = [Windows.Data.CollectionViewSource]::GetDefaultView($script:UpdWin)
+$script:UpdWinView.GroupDescriptions.Add((New-Object Windows.Data.PropertyGroupDescription 'Category'))
+$script:UpdWinView.Filter = $unFilter
+$ListUpd.ItemsSource = $script:UpdView
+$ListUpdStore.ItemsSource = $script:UpdStoreView
+$ListUpdWin.ItemsSource = $script:UpdWinView
 
 # leftovers group under the app that owns them, so attribution is obvious in the preview
 $script:WipeView = [Windows.Data.CollectionViewSource]::GetDefaultView($script:WipeFindings)
@@ -3595,6 +3964,57 @@ function Update-UI {
     [void]$window.Dispatcher.Invoke([Windows.Threading.DispatcherPriority]::Background, [Action]{})
 }
 
+function Invoke-OffUi([scriptblock]$Script, [object[]]$Arguments = @(), [int]$TimeoutSec = 120, [string]$What = 'The read') {
+    # Runs $Script on a background runspace while the window keeps painting.
+    #
+    # Every wait indicator in this window is a WPF storyboard, and a storyboard only turns while
+    # the UI thread is free. MEASURED on the workstation this was written on: the firewall rule
+    # read, the SMB module behind Data Backup, the Store package list and the network adapter
+    # read each stood their spinner still for 0.5-1.2 s; a client is three to five times slower,
+    # and a still spinner reads as a frozen app. The Windows Update scan already ran this way.
+    #
+    # The script sees NONE of this file's functions or variables - only $args, in order - and it
+    # returns plain objects (pscustomobject, hashtable, strings) that the caller shapes. One
+    # runspace is kept and reused so a module loaded once stays loaded: a fresh runspace per call
+    # put the SMB module back to cold on every Data Backup visit. A nested call - a click the pump
+    # dispatched that reads something too - gets a runspace of its own for the duration.
+    $shared = $false
+    if (-not $script:OffUiBusy) {
+        if ($null -eq $script:OffUiRunspace -or $script:OffUiRunspace.RunspaceStateInfo.State -ne 'Opened') {
+            try { $script:OffUiRunspace = [RunspaceFactory]::CreateRunspace(); $script:OffUiRunspace.Open() } catch { $script:OffUiRunspace = $null }
+        }
+        $shared = ($null -ne $script:OffUiRunspace)
+    }
+    $rs = $script:OffUiRunspace
+    if (-not $shared) { $rs = [RunspaceFactory]::CreateRunspace(); $rs.Open() }
+    $ps = [PowerShell]::Create()
+    $ps.Runspace = $rs
+    [void]$ps.AddScript([string]$Script)
+    foreach ($a in @($Arguments)) { [void]$ps.AddArgument($a) }
+    if ($shared) { $script:OffUiBusy = $true }
+    $t0 = Get-Date
+    try {
+        $h = $ps.BeginInvoke()
+        while (-not $h.IsCompleted) {
+            # a lifted copy (a harness running one read on its own) has no window to pump
+            if (Get-Command Update-UI -ErrorAction SilentlyContinue) { Update-UI }
+            # a short wait that ends the instant the read does: a fixed 100 ms sleep made every
+            # warm 15 ms read cost 100 (MEASURED), which is the second Data Backup visit
+            [void]$h.AsyncWaitHandle.WaitOne(20)
+            if (((Get-Date) - $t0).TotalSeconds -gt $TimeoutSec) { $ps.Stop(); throw "$What did not finish within $TimeoutSec seconds" }
+        }
+        $res = @($ps.EndInvoke($h))
+        if ($ps.Streams.Error.Count) { throw ([string]$ps.Streams.Error[0].Exception.Message) }
+        # plain, not `,$res`: the comma survives the pipeline, and @() at the call site then
+        # wraps it again - an empty result came back as ONE row with every field blank
+        # (MEASURED: one phantom firewall rule on a machine with none)
+        return $res
+    } finally {
+        $ps.Dispose()
+        if ($shared) { $script:OffUiBusy = $false } else { try { $rs.Dispose() } catch { } }
+    }
+}
+
 # status text palette (winutil-style flat colored text, no pills)
 #
 # Drawn from the shared brushes above rather than near-misses of them: neutral was #B8B8C2 where
@@ -3697,6 +4117,16 @@ function Show-BatchStrip {
     foreach ($p in $script:Pending) { [void]$script:BatchRows.Add($p) }
     Sync-BatchStrip
     $BatchStrip.Visibility = 'Visible'
+    # Painted NOW. Every starter launches the elevated worker straight after this - the file
+    # write, the hash, the RunAs, a UAC prompt on an unelevated session - and all of it ran
+    # before WPF got a chance to draw the strip, so for those seconds nothing on screen
+    # acknowledged the click. One pump, with the busy guard held so a second click landing
+    # inside it is refused rather than starting a second batch.
+    $TxtNow.Text = 'Starting the elevated worker...'
+    $DotNow.Fill = '#FF4C8DFF'
+    $RowNow.Visibility = 'Visible'
+    $script:BatchStarting = $true
+    try { Update-UI } finally { $script:BatchStarting = $false }
 }
 
 <#
@@ -3852,6 +4282,9 @@ function Update-SearchCount {
     # counts ride on the tab itself - a separate count line was one more thing to read
     # for information the tab can carry silently
     $nTweak = @($script:TweakView).Count
+    $nUpd = $(if ($script:UpdDirty) { $null } else { @($script:UpdView).Count })
+    $nUpdS = $(if ($script:UpdStoreDirty) { $null } else { @($script:UpdStoreView).Count })
+    $nUpdW = $(if ($script:UpdWinDirty) { $null } else { @($script:UpdWinView).Count })
 
     $lbl = { param($base, $n) if ($null -eq $n) { $base } else { "$base   $n" } }
     $BtnTabInstall.Content = $(if ($searching) { & $lbl 'Install' $nInstall } else { 'Install' })
@@ -3861,11 +4294,27 @@ function Update-SearchCount {
     $BtnTabTweak.Content = $(if ($searching) { & $lbl 'Optimize' $nTweak } else { 'Optimize' })
     $BtnSubDesktop.Content = & $lbl 'Desktop programs' $nDesk
     $BtnSubStore.Content = & $lbl 'Microsoft Store apps' $nStore
+    $updTotal = $null
+    if ($searching -and ($null -ne $nUpd -or $null -ne $nUpdS -or $null -ne $nUpdW)) { $updTotal = [int]$nUpd + [int]$nUpdS + [int]$nUpdW }
+    $BtnTabUpdate.Content = & $lbl 'Update' $updTotal
+    $BtnSubUpdDesk.Content = & $lbl 'Desktop apps' $nUpd
+    $BtnSubUpdStore.Content = & $lbl 'Microsoft Store apps' $nUpdS
+    $BtnSubUpdWin.Content = & $lbl 'Windows Update' $nUpdW
 
     # empty-state text, so "nothing here" never looks like a broken list
     $EmptyInstall.Visibility = 'Collapsed'
     $EmptyUn.Visibility = 'Collapsed'
     $EmptyTweak.Visibility = 'Collapsed'
+    # the Update tab's own empty texts ("up to date", "winget missing") are set by its loader
+    # and must survive a search that matches nothing - only the search case is written here
+    if ($PanelUpdate.Visibility -eq 'Visible' -and $searching) {
+        $n = switch ($script:UpdSubTab) { 'Store' { $nUpdS } 'Win' { $nUpdW } default { $nUpd } }
+        $total = switch ($script:UpdSubTab) { 'Store' { $script:UpdStore.Count } 'Win' { $script:UpdWin.Count } default { $script:UpdItems.Count } }
+        if ($n -eq 0 -and $total -gt 0) {
+            $EmptyUpd.Text = "Nothing here matches `"$q`"."
+            $EmptyUpd.Visibility = 'Visible'
+        } elseif ($total -gt 0) { $EmptyUpd.Visibility = 'Collapsed' }
+    }
     if ($searching -and $PanelTweak.Visibility -eq 'Visible' -and $nTweak -eq 0) {
         $EmptyTweak.Text = "No tweak matching `"$q`"."
         $EmptyTweak.Visibility = 'Visible'
@@ -3909,6 +4358,7 @@ function Update-Dash {
                ($script:BatchTab -eq 'Migrate' -and $PanelMigrate.Visibility -eq 'Visible') -or
                ($script:BatchTab -eq 'Share' -and $PanelMigrate.Visibility -eq 'Visible') -or
                ($script:BatchTab -eq 'Fw' -and $PanelFw.Visibility -eq 'Visible') -or
+               ($script:BatchTab -eq 'Update' -and $PanelUpdate.Visibility -eq 'Visible') -or
                ($script:BatchTab -eq 'Tools' -and $PanelTools.Visibility -eq 'Visible')
     $RowNow.Visibility = $(if (($running -or $script:Phase -eq 'Done') -and $onOwner) { 'Visible' } else { 'Collapsed' })
     $RowProgress.Visibility = $(if ($running -and $onOwner) { 'Visible' } else { 'Collapsed' })
@@ -3945,6 +4395,16 @@ function Update-Dash {
             'Game'  { "$g of $($script:GameItems.Count) gaming tweak(s) selected" }
             default { "$n of $($script:TweakItems.Count) tweak(s) selected" +
                       $(if ($c -ne @($script:CleanItems | Where-Object { $_.IsSilent }).Count) { "    |    $c cleanup" } else { '' }) }
+        }
+    } elseif ($PanelUpdate.Visibility -eq 'Visible') {
+        if ($script:UpdSubTab -eq 'Store') {
+            $TxtStatus.Text = $(if ($script:UpdStoreDirty) { '' } else { "$($script:UpdStore.Count) Store app(s) installed - Update all Store apps asks the Store to bring every one of them current" })
+        } elseif ($script:UpdSubTab -eq 'Win') {
+            $n = @($script:UpdWin | Where-Object { $_.IsSelected }).Count
+            $TxtStatus.Text = $(if ($script:UpdWinDirty) { '' } else { "$n of $($script:UpdWin.Count) Windows update(s) selected" })
+        } else {
+            $n = @($script:UpdItems | Where-Object { $_.IsSelected }).Count
+            $TxtStatus.Text = $(if ($script:UpdDirty) { '' } else { "$n of $($script:UpdItems.Count) update(s) selected" })
         }
     } elseif ($PanelTools.Visibility -eq 'Visible') {
         $n = @($script:FixItems | Where-Object { $_.IsSelected }).Count
@@ -4150,6 +4610,12 @@ public static class IconEx {
                     if (-not $safeId) { $safeId = 'unknown' }
                     $cache = Join-Path $IconDir "$safeId$ext"
                     $miss  = Join-Path $IconDir "$safeId.miss"
+                    # A miss is remembered for a day, not for ever. The catalog's icons were
+                    # published late - every client that had already launched carried a .miss
+                    # per app and would never have asked again.
+                    if (Test-Path -LiteralPath $miss) {
+                        try { if (((Get-Date) - (Get-Item -LiteralPath $miss).LastWriteTime).TotalHours -ge 24) { Remove-Item -LiteralPath $miss -Force -ErrorAction SilentlyContinue } } catch { }
+                    }
                     if (-not (Test-Path -LiteralPath $cache) -and -not (Test-Path -LiteralPath $miss)) {
                         try {
                             Invoke-WebRequest -Uri $job.Url -OutFile $cache -UseBasicParsing -TimeoutSec 10
@@ -4350,12 +4816,17 @@ function Scan-Leftovers([object]$Item, [bool]$PreCheck = $true, [scriptblock]$St
     # deleted unasked - but they are graded weak, sorted last, and hidden behind a toggle, so the
     # list a technician actually reads is the part worth reading.
     $fullName = ('' + $Item.Name).Trim()
+    # A substring test, not -like. A token is a product NAME, and a name with "[" or "]" in it
+    # is a wildcard pattern PowerShell refuses ("[Beta] Something" is a character class with no
+    # closing bracket) - the throw ended the whole scan for that product with nothing listed.
+    # Case-insensitive, exactly as -like was.
+    $has = { param([string]$s, [string]$t) return [bool]($t -and $s -and $s.IndexOf($t, [StringComparison]::OrdinalIgnoreCase) -ge 0) }
     $isWeak = {
         param([string[]]$texts)
         foreach ($x in @($texts)) {
             if (-not $x) { continue }
-            if ($fullName.Length -ge 4 -and $x -like "*$fullName*") { return $false }
-            foreach ($t in $tokens) { if ($t.Length -ge 8 -and $x -like "*$t*") { return $false } }
+            if ($fullName.Length -ge 4 -and (& $has $x $fullName)) { return $false }
+            foreach ($t in $tokens) { if ($t.Length -ge 8 -and (& $has $x $t)) { return $false } }
         }
         return $true
     }
@@ -4498,7 +4969,7 @@ function Scan-Leftovers([object]$Item, [bool]$PreCheck = $true, [scriptblock]$St
         if (& $stopped) { return @($found.Values) }
         foreach ($d in @(Get-ChildItem -LiteralPath $root -Force -ErrorAction SilentlyContinue)) {
             foreach ($t in $tokens) {
-                if ($d.Name -notlike "*$t*") { continue }
+                if (-not (& $has $d.Name $t)) { continue }
                 $kind = 'FOUND'
                 if ($d.Extension -eq '.lnk') { $kind = 'SHORTCUT' }
                 & $add $kind 'file' $d.FullName $false $null (& $isWeak @($d.Name))
@@ -4514,7 +4985,7 @@ function Scan-Leftovers([object]$Item, [bool]$PreCheck = $true, [scriptblock]$St
         if (-not (Test-Path -LiteralPath $tmp)) { continue }
         foreach ($f in @(Get-ChildItem -LiteralPath $tmp -File -Force -ErrorAction SilentlyContinue)) {
             foreach ($t in $tokens) {
-                if ($f.Name -like "*$t*") { & $add 'TEMP' 'file' $f.FullName $false $null (& $isWeak @($f.Name)); break }
+                if (& $has $f.Name $t) { & $add 'TEMP' 'file' $f.FullName $false $null (& $isWeak @($f.Name)); break }
             }
         }
     }
@@ -4534,7 +5005,7 @@ function Scan-Leftovers([object]$Item, [bool]$PreCheck = $true, [scriptblock]$St
         if (-not (Test-Path -LiteralPath $rr)) { continue }
         foreach ($k in @(Get-ChildItem -LiteralPath $rr -ErrorAction SilentlyContinue)) {
             foreach ($t in $tokens) {
-                if ($k.PSChildName -like "*$t*") {
+                if (& $has $k.PSChildName $t) {
                     & $add 'REG' 'reg' (($k.PSPath) -replace '^Microsoft\.PowerShell\.Core\\Registry::', '') $false $null (& $isWeak @($k.PSChildName))
                     break
                 }
@@ -4567,7 +5038,7 @@ function Scan-Leftovers([object]$Item, [bool]$PreCheck = $true, [scriptblock]$St
             if ($pv.Name -like 'PS*') { continue }
             $data = '' + $pv.Value
             foreach ($t in $tokens) {
-                if ($pv.Name -like "*$t*" -or $data -like "*$t*") {
+                if ((& $has $pv.Name $t) -or (& $has $data $t)) {
                     & $add 'AUTORUN' 'regvalue' $rr $false $pv.Name (& $isWeak @($pv.Name, $data))
                     break
                 }
@@ -4580,7 +5051,7 @@ function Scan-Leftovers([object]$Item, [bool]$PreCheck = $true, [scriptblock]$St
     & $stage 'services and scheduled tasks'
     foreach ($svc in @(Get-Service -ErrorAction SilentlyContinue)) {
         foreach ($t in $tokens) {
-            if ($svc.Name -like "*$t*" -or $svc.DisplayName -like "*$t*") {
+            if ((& $has $svc.Name $t) -or (& $has $svc.DisplayName $t)) {
                 & $add 'SERVICE' 'service' $svc.Name $false $null (& $isWeak @($svc.Name, $svc.DisplayName))
                 break
             }
@@ -4590,7 +5061,7 @@ function Scan-Leftovers([object]$Item, [bool]$PreCheck = $true, [scriptblock]$St
     try {
         foreach ($task in @(Get-ScheduledTask -ErrorAction SilentlyContinue)) {
             foreach ($t in $tokens) {
-                if ($task.TaskName -like "*$t*" -or $task.TaskPath -like "*$t*") {
+                if ((& $has $task.TaskName $t) -or (& $has $task.TaskPath $t)) {
                     & $add 'TASK' 'task' ($task.TaskPath + $task.TaskName) $false $null (& $isWeak @($task.TaskName, $task.TaskPath))
                     break
                 }
@@ -4674,6 +5145,18 @@ function Show-Confirm([string]$Title, [string]$Message, [scriptblock]$OnConfirm)
 # Returns $true (and explains) when the caller must not proceed; a button that just sits
 # there doing nothing reads as broken.
 function Test-BatchBusy {
+    # The pre-apply check and Detect pump the dispatcher between probes, so a second click on
+    # Apply, Undo or Detect used to be handled INSIDE the loop - before Phase had moved, before
+    # the buttons were disabled. The nested press wrote a queue, prompted for UAC and started a
+    # worker; the outer call then resumed, deleted that queue and started a second worker.
+    if ($script:TweakChecking) {
+        Show-Overlay 'Still checking' 'The tweak rows are being probed right now. Wait for the check to finish, then press again.'
+        return $true
+    }
+    # a click that lands inside the one render pump a batch start allows itself: refused
+    # silently - Phase has not moved yet, and this is the window in which a second worker
+    # used to be started on top of the first
+    if ($script:BatchStarting) { return $true }
     if ($script:Phase -notin 'Download', 'Install') { return $false }
     $what = switch ($script:BatchTab) {
         'Un'      { 'A removal batch is still running.' }
@@ -4684,6 +5167,7 @@ function Test-BatchBusy {
         'Migrate' { 'A backup or restore is still copying.' }
         'Share'   { 'A sharing change is still running.' }
         'Fw'      { 'A firewall batch is still running.' }
+        'Update'  { 'An update batch is still running.' }
         'Tools'   { 'A repair is still running.' }
         default   { 'Apps are still downloading or installing.' }
     }
@@ -4699,6 +5183,10 @@ function Test-BatchBusy {
 # worker - rewriting their ticks and status text underneath it would erase the progress
 # the technician is reading.
 function Test-TweakListBusy {
+    if ($script:TweakChecking) {
+        Show-Overlay 'Still checking' 'The tweak rows are being probed right now. Wait for the check to finish, then press again.'
+        return $true
+    }
     if ($script:Phase -in 'Download', 'Install' -and $script:BatchTab -eq 'Tweak') {
         Show-Overlay 'Tweaks are running' ("These rows are showing live progress from the elevated worker right now, " +
             "so the selection is held until the batch finishes.`n`nEverything else stays available in the meantime.")
@@ -4729,6 +5217,9 @@ function Select-Tab([string]$Which) {
     $BtnRefresh.Visibility = 'Collapsed'
     $BtnTweakApply.Visibility = 'Collapsed'; $BtnTweakUndo.Visibility = 'Collapsed'
     $BtnMigrate.Visibility = 'Collapsed'
+    $PanelUpdate.Visibility = 'Collapsed'
+    $BtnTabUpdate.Style = $window.FindResource('TabIdle')
+    $BtnUpdApply.Visibility = 'Collapsed'
     switch ($Which) {
         'Install' {
             $PanelInstall.Visibility = 'Visible'
@@ -4750,6 +5241,13 @@ function Select-Tab([string]$Which) {
             # Select-OptTab decides Undo visibility (tweaks sub-tab only) and the hint line
             Select-OptTab $script:OptSubTab
         }
+        'Update' {
+            $PanelUpdate.Visibility = 'Visible'
+            $BtnTabUpdate.Style = $window.FindResource('TabActive')
+            $BtnUpdApply.Visibility = 'Visible'
+            # Select-UpdTab reads the sub-tab's list when it is stale and relabels the button
+            Select-UpdTab $script:UpdSubTab
+        }
         'Users' {
             $PanelAccounts.Visibility = 'Visible'
             $BtnTabUsers.Style = $window.FindResource('TabActive')
@@ -4764,18 +5262,23 @@ function Select-Tab([string]$Which) {
             $PanelMigrate.Visibility = 'Visible'
             $BtnTabMigrate.Style = $window.FindResource('TabActive')
             $BtnMigrate.Visibility = 'Visible'
-            if (-not $script:UsersLoaded) {
-                Show-Busy 'Reading the accounts on this PC...'
-                try { $script:UsersLoaded = $true; Load-Users } finally { Hide-Busy }
-            }
-            # The XAML is drawn for one mode and $script:BackupMode names another; nothing lined
-            # them up until the first mode switch, so the tab opened saying "Copy FROM the broken
-            # profile" under a Backup button. Sync once, the first time the tab is shown.
-            if (-not $script:BackupSynced -and (Get-Command Sync-BackupMode -ErrorAction SilentlyContinue)) {
-                $script:BackupSynced = $true; Sync-BackupMode; Build-MigrateList
-            }
-            # shares can be made or removed outside this tool; re-read them on every visit
-            if (Get-Command Sync-ShareButtons -ErrorAction SilentlyContinue) { Sync-ShareButtons }
+            # The whole first visit is under the busy pill, not just the account read. The share
+            # check loads the SMB module the first time it runs - measured at a second on this
+            # workstation, longer on a client - and it ran after the pill had gone, so the tab
+            # sat unpainted with nothing saying why.
+            $firstVisit = (-not $script:UsersLoaded) -or (-not $script:BackupSynced)
+            if ($firstVisit) { Show-Busy 'Reading the accounts and shares on this PC...' }
+            try {
+                if (-not $script:UsersLoaded) { $script:UsersLoaded = $true; Load-Users }
+                # The XAML is drawn for one mode and $script:BackupMode names another; nothing lined
+                # them up until the first mode switch, so the tab opened saying "Copy FROM the broken
+                # profile" under a Backup button. Sync once, the first time the tab is shown.
+                if (-not $script:BackupSynced -and (Get-Command Sync-BackupMode -ErrorAction SilentlyContinue)) {
+                    $script:BackupSynced = $true; Sync-BackupMode; Build-MigrateList
+                }
+                # shares can be made or removed outside this tool; re-read them on every visit
+                if (Get-Command Sync-ShareButtons -ErrorAction SilentlyContinue) { Sync-ShareButtons }
+            } finally { if ($firstVisit) { Hide-Busy } }
         }
         'Tools' {
             $PanelTools.Visibility = 'Visible'
@@ -4843,7 +5346,29 @@ $script:InstallerFamilyLabels = @{
     inno = 'Inno Setup'; nsis = 'NSIS'; burn = 'WiX Burn bundle'; sfx7z = '7-Zip SFX'; sfxrar = 'WinRAR SFX'
     installshield = 'InstallShield'; odis = 'Autodesk ODIS'; adobeac = 'Adobe Admin Console package'
     officeodt = 'Office Deployment Tool'; acrobat = 'Adobe Acrobat bootstrap'
+    squirrel = 'Squirrel.Windows'; velopack = 'Velopack'; advinst = 'Advanced Installer'; wise = 'Wise Installation System'
+    setupfactory = 'Setup Factory'; installaware = 'InstallAware'; qtifw = 'Qt Installer Framework'; install4j = 'install4j'
+    iexpress = 'IExpress self-extractor'; bitrock = 'InstallBuilder (BitRock)'; clickteam = 'Clickteam Install Creator'
 }
+
+# The second-pass families: installers whose loader carries its maker's name in its own image
+# (a version resource or a plain string in the stub) rather than a structural marker. Searched
+# ONLY when nothing structural, no package layout and no InstallShield resource matched, in the
+# bounded regions the file header comment names. Order matters: Velopack is a Squirrel fork and
+# still carries Squirrel strings, so it is asked first.
+$script:InstallerIdentityMarkers = @(
+    @{ Family = 'velopack';     Markers = @('Velopack') }
+    @{ Family = 'squirrel';     Markers = @('SquirrelSetup', 'Squirrel.Windows', 'SquirrelAwareVersion') }
+    @{ Family = 'advinst';      Markers = @('Advanced Installer', 'Caphyon') }
+    @{ Family = 'wise';         Markers = @('WiseMain', 'Wise Installation System', 'Wise Solutions') }
+    @{ Family = 'setupfactory'; Markers = @('Setup Factory', 'Indigo Rose') }
+    @{ Family = 'installaware'; Markers = @('InstallAware') }
+    @{ Family = 'qtifw';        Markers = @('Qt Installer Framework', 'installerbase') }
+    @{ Family = 'install4j';    Markers = @('install4j') }
+    @{ Family = 'bitrock';      Markers = @('BitRock InstallBuilder', 'InstallBuilder', 'BitRock') }
+    @{ Family = 'clickteam';    Markers = @('Clickteam Install Creator', 'Install Creator', 'Clickteam') }
+    @{ Family = 'iexpress';     Markers = @('Win32 Cabinet Self-Extractor', 'WEXTRACT.EXE') }
+)
 
 function Get-InstallerFamilyLabel([string]$Family) {
     if ($Family -and $script:InstallerFamilyLabels.ContainsKey($Family)) { return $script:InstallerFamilyLabels[$Family] }
@@ -4867,6 +5392,7 @@ function Get-FamilySwitches([string]$Family, [string]$SubType = '') {
             switch ($SubType) {
                 'basicmsi'      { return @{ Install = '/s /v"/qn /norestart"'; UninstallExe = '^msiexec(\.exe)?$'; UninstallArgs = '/x {ProductCode} /qn /norestart'; Doc = 'Revenera: Setup.exe command-line parameters (Basic MSI)' } }
                 'installscript' { return @{ Install = '/s /f1"{ResponseFile}"'; UninstallExe = '(?i)^setup\.exe$'; UninstallArgs = '-runfromtemp -removeonly /s /f1"{ResponseFile}"'; Doc = 'Revenera: InstallScript silent install with a recorded response file' } }
+                'suite'         { return @{ Install = '/silent'; UninstallExe = '(?i)\.exe$'; UninstallArgs = '-remove -silent'; Doc = 'Revenera: Suite/Advanced UI Setup.exe command-line parameters (/silent, /remove)' } }
                 default         { return @{ Install = ''; UninstallExe = ''; UninstallArgs = ''; Doc = 'Revenera: the silent switch depends on the project type, which a single setup.exe does not prove' } }
             }
         }
@@ -4874,6 +5400,18 @@ function Get-FamilySwitches([string]$Family, [string]$SubType = '') {
         'adobeac'   { return @{ Install = '--silent'; UninstallExe = '(?i)^setup\.exe$'; UninstallArgs = '--uninstall=1'; Doc = 'Adobe Enterprise: setup.exe --silent / --uninstall=1' } }
         'officeodt' { return @{ Install = '/configure configuration.xml'; UninstallExe = '(?i)OfficeClickToRun\.exe$'; UninstallArgs = ''; Doc = 'Microsoft: Office Deployment Tool setup.exe /configure' } }
         'acrobat'   { return @{ Install = '/sAll /rs /rps /msi EULA_ACCEPT=YES'; UninstallExe = '^msiexec(\.exe)?$'; UninstallArgs = '/x {ProductCode} /qn /norestart'; Doc = 'Adobe Acrobat Enterprise Toolkit: Setup.exe /sAll /rs /msi' } }
+        # ---- the second pass: identity-string families (see $script:InstallerIdentityMarkers)
+        'squirrel'     { return @{ Install = '--silent'; UninstallExe = '(?i)^update\.exe$'; UninstallArgs = '--uninstall'; Doc = 'Squirrel.Windows: Setup.exe --silent; Update.exe --uninstall runs without UI' } }
+        'velopack'     { return @{ Install = '--silent'; UninstallExe = '(?i)^update\.exe$'; UninstallArgs = '--uninstall'; Doc = 'Velopack: Setup.exe --silent; Update.exe --uninstall' } }
+        'advinst'      { return @{ Install = '/exenoui /qn'; UninstallExe = '(?i)\.exe$'; UninstallArgs = '/x /exenoui /qn'; Doc = 'Advanced Installer: EXE bootstrapper command line (/exenoui /qn; /x uninstalls)' } }
+        'wise'         { return @{ Install = '/s'; UninstallExe = '(?i)^unwise(32)?\.exe$'; UninstallArgs = '/S {InstallLog}'; Doc = 'Wise Installation System: setup /s; UNWISE.EXE /S install.log' } }
+        'setupfactory' { return @{ Install = '/S'; UninstallExe = '(?i)\.exe$'; UninstallArgs = '/S'; Doc = 'Indigo Rose Setup Factory: /S for the setup and its uninstaller' } }
+        'installaware' { return @{ Install = '/s'; UninstallExe = '(?i)\.exe$'; UninstallArgs = '/s MODIFY=FALSE REMOVE=TRUE UNINSTALL=YES'; Doc = 'InstallAware: /s; uninstall with MODIFY=FALSE REMOVE=TRUE UNINSTALL=YES' } }
+        'qtifw'        { return @{ Install = '--accept-licenses --default-answer --confirm-command install'; UninstallExe = '(?i)^maintenancetool\.exe$'; UninstallArgs = '--confirm-command purge'; Doc = 'Qt Installer Framework 4: command-line install and purge' } }
+        'install4j'    { return @{ Install = '-q'; UninstallExe = '(?i)^uninstall\.exe$'; UninstallArgs = '-q'; Doc = 'install4j: -q (unattended) for the installer and the uninstaller' } }
+        'iexpress'     { return @{ Install = '/Q'; UninstallExe = ''; UninstallArgs = ''; Doc = 'IExpress / wextract: /Q quiet (the package decides what it runs)' } }
+        'bitrock'      { return @{ Install = '--mode unattended'; UninstallExe = '(?i)^uninstall\.exe$'; UninstallArgs = '--mode unattended'; Doc = 'InstallBuilder (BitRock / VMware): --mode unattended' } }
+        'clickteam'    { return @{ Install = '/S'; UninstallExe = '(?i)^uninstal\.exe$'; UninstallArgs = '/S'; Doc = 'Clickteam Install Creator: /S; Uninstal.exe /S' } }
         default     { return @{ Install = ''; UninstallExe = ''; UninstallArgs = ''; Doc = '' } }
     }
 }
@@ -5183,6 +5721,12 @@ function Get-InstallerFamily {
     $shieldCo = @('installshield software corporation', 'installshield software corp.', 'macrovision corporation', 'acresso software inc.', 'flexera software llc', 'flexera software, llc', 'flexera', 'revenera')
     $shieldDesc = @('installshield (r) setup launcher', 'installshield setup launcher', 'setup launcher unicode', 'setup launcher', 'installshield setup')
     if (($shieldCo -contains $ver.CompanyName.ToLowerInvariant()) -or ($shieldDesc -contains $ver.FileDescription.ToLowerInvariant()) -or ($ver.ProductName -eq 'InstallShield')) { $isShield = $true }
+    # A Suite/Advanced UI bootstrapper carries the VENDOR's company name (Trimble, not Flexera)
+    # and identifies its engine only in InternalName. Measured on SketchUp 2026's installer:
+    # 'Trimble, Inc. | SketchUp Installer | SetupSuite'. Its silent switch is /silent - the one
+    # InstallShield project type whose switch a single exe DOES prove.
+    $isSuite = ($ver.InternalName -eq 'SetupSuite')
+    if ($isSuite) { $isShield = $true }
 
     # ---- 4. package layouts
     $layout = $null
@@ -5210,7 +5754,10 @@ function Get-InstallerFamily {
         $iss = Test-Companion $names '*.iss'
         $msiBeside = Test-Companion $names '*.msi'
         $iniBeside = Test-Companion $names 'setup.ini'
-        if ($msiBeside -or $iniBeside) {
+        if ($isSuite) {
+            $res.SubType = 'suite'; $res.Evidence += "Suite/Advanced UI engine (InternalName 'SetupSuite')"
+            $res.InstallArgs = (Get-FamilySwitches 'installshield' 'suite').Install
+        } elseif ($msiBeside -or $iniBeside) {
             $res.SubType = 'basicmsi'; $res.Evidence += "Basic MSI layout ($(@($msiBeside, $iniBeside) | Where-Object { $_ } | Select-Object -First 1) beside)"
         } elseif ((Test-Companion $names 'setup.inx') -or (Test-Companion $names 'issetup.dll') -or (Test-Companion $names 'data1.cab')) {
             $res.SubType = 'installscript'
@@ -5221,11 +5768,63 @@ function Get-InstallerFamily {
             $res.Notes += 'a single InstallShield setup.exe does not prove its project type: the switch is /s /v"/qn" (Basic MSI), /s /f1 (InstallScript, needs a response file) or /silent (Suite) - take it from the vendor page'
         }
     } else {
-        if ($ver.CompanyName) { $res.Evidence += "PE by '$($ver.CompanyName)' with no known installer signature in the probed regions" }
-        else { $res.Evidence += 'PE with no known installer signature in the probed regions' }
-        if ($pe.OverlaySize -gt 0) { $res.Notes += ('overlay probed 0x{0:X}-0x{1:X} only' -f $pe.OverlayOffset, ($pe.OverlayOffset + [Math]::Min([long]$OverlayProbeBytes, $pe.OverlaySize))) }
+        # ---- 6. the second pass: a maker's name in the loader's own image
+        #
+        # Nothing structural, no layout, no InstallShield resource. The remaining families
+        # name themselves in plain text - in the stub's data, or in the version resource
+        # (UTF-16, so the same bytes are also read with their NULs dropped). Bounded: the
+        # first 128 KB, up to 256 KB of .rsrc, the overlay head already in hand, and the tail.
+        $ident = Find-InstallerIdentity $Path $pe $ver $overlay $tail $ctx
+        if ($ident) {
+            $res.Family = $ident.Family; $res.Confidence = 'signature'; $res.Evidence += $ident.Evidence
+            if ($res.EmbeddedMsi -like 'found@*') { $res.Notes += "an MSI is embedded ($($res.EmbeddedMsi)); the wrapper's switch applies to the wrapper" }
+        } else {
+            if ($ver.CompanyName) { $res.Evidence += "PE by '$($ver.CompanyName)' with no known installer signature in the probed regions" }
+            else { $res.Evidence += 'PE with no known installer signature in the probed regions' }
+            if ($pe.OverlaySize -gt 0) { $res.Notes += ('overlay probed 0x{0:X}-0x{1:X} only' -f $pe.OverlayOffset, ($pe.OverlayOffset + [Math]::Min([long]$OverlayProbeBytes, $pe.OverlaySize))) }
+        }
     }
     return (& $finish $res)
+}
+
+# The identity-string pass. Returns @{ Family; Evidence } for the first family whose marker is
+# found, or $null. Every hit names the marker and where it was read, so the verdict is still
+# "found X at Y" - never an inference from an absence.
+function Find-InstallerIdentity([string]$Path, $Layout, $Ver, [string]$Overlay, [string]$Tail, [hashtable]$Ctx) {
+    # exact version-resource values first: the cheapest and the most specific evidence
+    $co = ('' + $Ver.CompanyName).ToLowerInvariant()
+    $fd = ('' + $Ver.FileDescription).ToLowerInvariant()
+    $of = ('' + $Ver.OriginalFilename).ToLowerInvariant()
+    if ($of -eq 'wextract.exe' -or $fd -eq 'win32 cabinet self-extractor') { return @{ Family = 'iexpress'; Evidence = "version resource: '$($Ver.FileDescription)' / '$($Ver.OriginalFilename)'" } }
+    if ($co -like 'caphyon*')       { return @{ Family = 'advinst';      Evidence = "version resource CompanyName '$($Ver.CompanyName)'" } }
+    if ($co -like 'installaware*')  { return @{ Family = 'installaware'; Evidence = "version resource CompanyName '$($Ver.CompanyName)'" } }
+    if ($co -like 'wise solutions*'){ return @{ Family = 'wise';         Evidence = "version resource CompanyName '$($Ver.CompanyName)'" } }
+    if ($co -like 'indigo rose*')   { return @{ Family = 'setupfactory'; Evidence = "version resource CompanyName '$($Ver.CompanyName)'" } }
+    if ($co -like 'ej-technologies*'){ return @{ Family = 'install4j';   Evidence = "version resource CompanyName '$($Ver.CompanyName)'" } }
+    if ($co -like 'clickteam*')     { return @{ Family = 'clickteam';    Evidence = "version resource CompanyName '$($Ver.CompanyName)'" } }
+    # then the bounded regions, as plain bytes and with NULs dropped (UTF-16 strings)
+    $regions = @()
+    $regions += @{ Name = 'head';    Text = (ConvertTo-Latin1 (Read-FileRange $Path 0 131072 $Ctx)) }
+    $rs = $Layout.ResourceSection
+    if ($rs -and $rs.RawSize -gt 0) {
+        $regions += @{ Name = '.rsrc'; Text = (ConvertTo-Latin1 (Read-FileRange $Path ([long]$rs.RawPtr) ([int][Math]::Min([long]$rs.RawSize, 262144)) $Ctx)) }
+    }
+    if ($Overlay) { $regions += @{ Name = 'overlay'; Text = $Overlay } }
+    if ($Tail)    { $regions += @{ Name = 'tail';    Text = $Tail } }
+    foreach ($fam in $script:InstallerIdentityMarkers) {
+        foreach ($rg in $regions) {
+            $plain = [string]$rg.Text
+            if (-not $plain) { continue }
+            $wide  = $plain.Replace([string][char]0, '')
+            foreach ($m in $fam.Markers) {
+                $at = Find-Marker $plain $m
+                if ($at -ge 0) { return @{ Family = $fam.Family; Evidence = ("marker '{0}' at {1}+0x{2:X}" -f $m, $rg.Name, $at) } }
+                $at = Find-Marker $wide $m
+                if ($at -ge 0) { return @{ Family = $fam.Family; Evidence = ("marker '{0}' (UTF-16) in the {1}" -f $m, $rg.Name) } }
+            }
+        }
+    }
+    return $null
 }
 
 # The registry side: from an uninstall entry's exe + args (+ the key's values), recognise the
@@ -5277,6 +5876,66 @@ function Get-UninstallFamily {
         }
     }
     if ($Exe -match '(?i)AdODIS\\V1\\Installer\.exe$') { $r.Family = 'odis'; $r.Silent = ($argl -match '(?i)(^|\s)-q(\s|$)'); $r.Evidence = 'Autodesk ODIS installer'; return $r }
+    # Wise's uninstaller is named for what it is, and takes /S BEFORE the install log
+    if ($leaf -match '^unwise(32)?\.exe$') {
+        $r.Family = 'wise'; $r.Silent = $true; $r.Evidence = 'Wise UNWISE.EXE uninstaller'
+        if ($argl -notmatch '(?i)(^|\s)/S(\s|$)') { $r.Args = ('/S ' + $argl).Trim() }
+        return $r
+    }
+    # The second-pass families: the uninstaller is asked what built it, the same way an NSIS
+    # or Inno one is above, and only a positive identity appends that family's documented
+    # quiet flags. An uninstaller that is not on disk is left exactly as registered.
+    if ($Exe -and $leaf -match '\.exe$' -and (Test-Path -LiteralPath $Exe)) {
+        $f2 = $null
+        try { $f2 = Get-InstallerFamily -Path $Exe } catch { $f2 = $null }
+        if ($f2 -and $f2.Confidence -eq 'signature' -and $f2.Family) {
+            $ev = ($f2.Evidence -join '; ')
+            switch ($f2.Family) {
+                'squirrel' { $r.Family = 'squirrel'; $r.Silent = $true; $r.Evidence = $ev
+                             if ($argl -notmatch '(?i)--uninstall') { $r.Notes += 'registered without --uninstall - left as registered' }
+                             return $r }
+                'velopack' { $r.Family = 'velopack'; $r.Silent = $true; $r.Evidence = $ev
+                             if ($argl -notmatch '(?i)--uninstall') { $r.Notes += 'registered without --uninstall - left as registered' }
+                             return $r }
+                'setupfactory' { $r.Family = 'setupfactory'; $r.Silent = $true; $r.Evidence = $ev
+                                 if ($argl -notmatch '(?i)(^|\s)/S(\s|$)') { $r.Args = ($argl + ' /S').Trim() }
+                                 return $r }
+                'clickteam' { $r.Family = 'clickteam'; $r.Silent = $true; $r.Evidence = $ev
+                              if ($argl -notmatch '(?i)(^|\s)/S(\s|$)') { $r.Args = ($argl + ' /S').Trim() }
+                              return $r }
+                'install4j' { $r.Family = 'install4j'; $r.Silent = $true; $r.Evidence = $ev
+                              if ($argl -notmatch '(?i)(^|\s)-q(\s|$)') { $r.Args = ($argl + ' -q').Trim() }
+                              return $r }
+                'bitrock'   { $r.Family = 'bitrock'; $r.Silent = $true; $r.Evidence = $ev
+                              if ($argl -notmatch '(?i)--mode\s+unattended') { $r.Args = ($argl + ' --mode unattended').Trim() }
+                              return $r }
+                'qtifw'     { $r.Family = 'qtifw'; $r.Silent = $true; $r.Evidence = $ev
+                              if ($argl -notmatch '(?i)\bpurge\b') { $r.Args = ($argl + ' --confirm-command purge').Trim() }
+                              elseif ($argl -notmatch '(?i)--confirm-command|(^|\s)-c(\s|$)') { $r.Args = ($argl + ' --confirm-command').Trim() }
+                              return $r }
+                'advinst'   { $r.Family = 'advinst'; $r.Silent = $true; $r.Evidence = $ev
+                              if ($argl -notmatch '(?i)(^|\s)/x(\s|$)') { $r.Notes += 'registered without /x - this may be the installer rather than an uninstall line' }
+                              if ($argl -notmatch '(?i)(^|\s)/qn(\s|$)') { $r.Args = ($argl + ' /exenoui /qn').Trim() }
+                              return $r }
+                'installaware' { $r.Family = 'installaware'; $r.Silent = $true; $r.Evidence = $ev
+                                 if ($argl -notmatch '(?i)(^|\s)/s(\s|$)') { $r.Args = ($argl + ' /s MODIFY=FALSE REMOVE=TRUE UNINSTALL=YES').Trim() }
+                                 return $r }
+                'wise'      { $r.Family = 'wise'; $r.Silent = $true; $r.Evidence = $ev
+                              if ($argl -notmatch '(?i)(^|\s)/S(\s|$)') { $r.Args = ('/S ' + $argl).Trim() }
+                              return $r }
+            }
+        }
+    }
+    # "-remove -runfromtemp" is the Suite/Advanced UI uninstall (silent with -silent);
+    # "-removeonly" (with -runfromtemp) is InstallScript's, silent only with a response file
+    if ($argl -match '(?i)(^|\s)[-/]remove(\s|$)' -and $argl -notmatch '(?i)-removeonly') {
+        $r.Family = 'installshield'; $r.Evidence = 'InstallShield Suite uninstall (-remove)'
+        # the documented quiet flag, appended when the entry lacks it - measured on SketchUp 2026,
+        # whose entry is "-remove -runfromtemp" and whose uninstall otherwise opens its wizard
+        if ($argl -notmatch '(?i)[-/]silent') { $r.Args = ($Arguments.Trim() + ' -silent').Trim() }
+        $r.Silent = $true
+        return $r
+    }
     if ($argl -match '(?i)-runfromtemp|-removeonly') { $r.Family = 'installshield'; $r.Evidence = 'InstallShield InstallScript uninstall'; $r.Notes += 'silent only with a recorded response file (/s /f1)'; return $r }
     return $r
 }
@@ -5299,6 +5958,19 @@ function New-InstallerFamilyFixture {
         'rar'   { $tail = $latin.GetBytes('Rar!' + [char]0x1A + [char]0x07 + [char]0x00 + ([string][char]0) * 64) }
         'burn'  { $tail = $null }
         'none'  { $tail = New-Object byte[] 0 }
+        # the identity-string families: their marker, as the stub would carry it, in the overlay
+        'squirrel'     { $tail = $latin.GetBytes(([string][char]0) * 16 + 'SquirrelSetup' + ([string][char]0) * 32) }
+        'velopack'     { $tail = $latin.GetBytes(([string][char]0) * 16 + 'Velopack' + ([string][char]0) * 32) }
+        'advinst'      { $tail = $latin.GetBytes(([string][char]0) * 16 + 'Advanced Installer' + ([string][char]0) * 32) }
+        'wise'         { $tail = $latin.GetBytes(([string][char]0) * 16 + 'WiseMain' + ([string][char]0) * 32) }
+        'setupfactory' { $tail = $latin.GetBytes(([string][char]0) * 16 + 'Setup Factory' + ([string][char]0) * 32) }
+        'installaware' { $tail = $latin.GetBytes(([string][char]0) * 16 + 'InstallAware' + ([string][char]0) * 32) }
+        'qtifw'        { $tail = $latin.GetBytes(([string][char]0) * 16 + 'Qt Installer Framework' + ([string][char]0) * 32) }
+        'install4j'    { $tail = $latin.GetBytes(([string][char]0) * 16 + 'install4j' + ([string][char]0) * 32) }
+        'bitrock'      { $tail = $latin.GetBytes(([string][char]0) * 16 + 'BitRock InstallBuilder' + ([string][char]0) * 32) }
+        'clickteam'    { $tail = $latin.GetBytes(([string][char]0) * 16 + 'Clickteam Install Creator' + ([string][char]0) * 32) }
+        # as a version resource would carry it: UTF-16, which the scan reads with NULs dropped
+        'iexpress'     { $tail = [Text.Encoding]::Unicode.GetBytes('Win32 Cabinet Self-Extractor') }
         default { throw "unknown fixture family '$Family'" }
     }
     if ($Family -eq 'burn') {
@@ -5341,6 +6013,14 @@ function Parse-UninstallString([string]$Raw) {
         if ($end -gt 0) {
             return @{ exe = $Raw.Substring(1, $end - 1); args = $Raw.Substring($end + 1).Trim(); silent = $false }
         }
+    }
+    # A bare program name first: "RunDll32 C:\...\Ctor.dll,LaunchSetup "...\setup.exe" -removeonly"
+    # is what old InstallShield entries write. The .exe rule below split that at the FIRST .exe
+    # on the line - buried inside the arguments - and handed the worker a "path" that does not
+    # exist, so the row failed with "vendor uninstaller not found". A first token with no
+    # separator and no .exe in it is a program name, and the rest is its arguments.
+    if ($Raw -match '^(\S+)\s+(.*)$' -and $Matches[1] -notmatch '[\\/]' -and $Matches[1] -notmatch '(?i)\.exe$') {
+        return @{ exe = $Matches[1]; args = $Matches[2].Trim(); silent = $false }
     }
     # unquoted: split at the first .exe boundary so paths with spaces survive
     if ($Raw -match '(?i)^(.*?\.exe)(\s+(.*))?$') {
@@ -5390,6 +6070,28 @@ function ConvertTo-Int($Value, [int]$Default = 0) {
 
 # Wise-style discovery: read the same registry uninstall keys Control Panel uses,
 # across 64-bit, 32-bit (WOW6432Node) and per-user hives.
+# The tokens a leftover scan looks for, from a program's display name: the name as written, and
+# the name with its trailing year / version / bitness stripped ("SketchUp 2026" -> "SketchUp",
+# "Notepad++ (64-bit x64)" -> "Notepad++", "7-Zip 24.08 (x64)" -> "7-Zip"). The stripped form is
+# only added at five characters or more: Scan-Leftovers treats a token under eight as WEAK
+# (listed, never pre-ticked), and anything shorter than five is too generic to list at all.
+function Get-CleanNameTokens([string]$Name) {
+    $out = @()
+    $n = ('' + $Name).Trim()
+    if (-not $n) { return $out }
+    $out += $n
+    $s = $n -replace '\s*\([^)]*\)\s*', ' '
+    $prev = ''
+    while ($s -ne $prev) {
+        $prev = $s
+        $s = $s -replace '(?i)\s+(v?\d+([.\-_]\d+)*|x64|x86|arm64|64-bit|32-bit|64 bit|32 bit|edition|version)\s*$', ''
+        $s = $s -replace '\s+-\s*$', ''
+    }
+    $s = $s.Trim()
+    if ($s -and $s -ne $n -and $s.Length -ge 5 -and $out -notcontains $s) { $out += $s }
+    return $out
+}
+
 function Get-InstalledPrograms {
     $roots = @(
         'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall',
@@ -5402,8 +6104,10 @@ function Get-InstalledPrograms {
     foreach ($root in $roots) {
         if (-not (Test-Path $root)) { continue }
         foreach ($k in @(Get-ChildItem -Path $root -ErrorAction SilentlyContinue)) {
-            # keep the spinner turning: icon extraction makes this loop genuinely slow
-            if ((++$n % 12) -eq 0) { Update-UI }
+            # keep the spinner turning: the uninstaller-family read makes this loop genuinely
+            # slow (MEASURED: twelve keys between pumps was a half-second still spinner here)
+            # and a pump costs a millisecond
+            if ((++$n % 4) -eq 0) { Update-UI }
             $p = $null
             try { $p = Get-ItemProperty -Path $k.PSPath -ErrorAction Stop } catch { continue }
             $name = Clean-DisplayName $p.DisplayName
@@ -5556,26 +6260,35 @@ function Resolve-PackageString($Value, [string]$PackageFullName) {
 # Settings > Installed apps - which is why they get their own section.
 function Get-StoreApps {
     $out = New-Object System.Collections.ArrayList
-    $pkgs = @()
-    try { $pkgs = @(Get-AppxPackage -ErrorAction Stop) } catch { return @() }
+    # Both bulk reads off the UI thread: the package list alone is 0.7 s cold here (MEASURED),
+    # all of it with the Uninstall spinner standing still. The per-package manifest reads
+    # below stay on this thread and pump as they go.
+    $pkgs = @(); $starts = @()
+    try {
+        $got = @(Invoke-OffUi {
+            $r = @{ Pkgs = @(); Start = @() }
+            $r.Pkgs = @(Get-AppxPackage -ErrorAction Stop)
+            try { $r.Start = @(Get-StartApps -ErrorAction Stop | ForEach-Object { [pscustomobject]@{ AppID = ('' + $_.AppID); Name = ('' + $_.Name) } }) } catch { }
+            $r
+        } -TimeoutSec 180 -What 'The Store package list')
+        $pkgs = @($got[0].Pkgs); $starts = @($got[0].Start)
+    } catch { return @() }
 
     # The Start menu already holds shell-resolved names for every installed app, and
     # reading it needs no access to C:\Program Files\WindowsApps - which is locked to
     # TrustedInstaller, so reading manifests off disk works for some packages and is
     # denied for others. That inconsistency is what produced the garbled names.
     $startNames = @{}
-    try {
-        foreach ($sa in @(Get-StartApps -ErrorAction Stop)) {
-            $fam = ('' + $sa.AppID).Split('!')[0]
-            if ($fam -and -not $startNames.ContainsKey($fam)) { $startNames[$fam] = $sa.Name }
-        }
-    } catch {}
+    foreach ($sa in $starts) {
+        $fam = ('' + $sa.AppID).Split('!')[0]
+        if ($fam -and -not $startNames.ContainsKey($fam)) { $startNames[$fam] = $sa.Name }
+    }
 
     $i = 0
     foreach ($p in $pkgs) {
         if ($p.IsFramework) { continue }                       # runtime deps, not user apps
         if ($p.NonRemovable) { continue }                      # OS shell pieces, cannot be removed
-        if ((++$i % 10) -eq 0) { Update-UI }
+        if ((++$i % 3) -eq 0) { Update-UI }     # a manifest read each; keep the spinner turning
         $pkgName = ('' + $p.Name)
         $disp = ''
         $logo = ''
@@ -5583,6 +6296,7 @@ function Get-StoreApps {
         $fam = ('' + $p.PackageFamilyName)
         if ($fam -and $startNames.ContainsKey($fam)) { $disp = Clean-DisplayName $startNames[$fam] }
         # 2. the manifest via the Appx API, which reads through the ACL barrier
+        $ve = $null   # per package - a manifest that fails to read must not inherit the previous one's tile
         try {
             $mx = Get-AppxPackageManifest -Package $p.PackageFullName -ErrorAction Stop
             $ve = $mx.Package.Applications.Application.VisualElements
@@ -5604,6 +6318,15 @@ function Get-StoreApps {
         }
         # internal plumbing rather than anything a technician would uninstall
         if ($disp -match '(?i)winget.*source|^(Desktop )?App Installer$|VCLibs|WindowsAppRuntime|\.NET Native') { continue }
+        # A desktop program's COMPANION package, not an app: on Windows 11 a right-click menu
+        # entry has to ship as a sparse MSIX, so WinRAR, 7-Zip, PowerToys and the like register
+        # one beside their normal install (WinRAR.ShellExtension, measured on the Home VM). It
+        # has no Start Menu entry and no tile, and its own installer removes it. Listing it as
+        # a Store app put the same program on both sub-tabs and offered a removal that would
+        # only break the context menu.
+        $launchable = ($fam -and $startNames.ContainsKey($fam)) -or [bool]$ve
+        if ($pkgName -match '(?i)shellext|contextmenu|explorercommand') { continue }
+        if (-not $launchable -and $p.SignatureKind -ne 'Store' -and $p.SignatureKind -ne 'System') { continue }
         [void]$out.Add([pscustomobject]@{
             Name        = (Clean-DisplayName $disp)
             Version     = (AsText $p.Version)
@@ -5748,13 +6471,26 @@ function Refresh-UnList([object]$Manifest) {
         $u.IconData = $IconMap['default'][0]
         $u.IconBg = $(if ($r.Silent) { '#FF64748B' } else { '#FF8A6A32' })
         # real logo straight out of the program's own exe, DisplayIcon first - resolved
-        # by the background icon pump, so a 300-program scan lists rows immediately
-        Request-Icon $u 'exe' @{ Sources = @($r.Icon, $r.Exe) }
+        # by the background icon pump, so a 300-program scan lists rows immediately. An MSI
+        # or winget install has no DisplayIcon and msiexec/winget as its uninstaller, which is
+        # no icon at all - the install folder's own exe or the Start Menu shortcut is what the
+        # Update tab uses too, so both tabs draw the same picture for the same program.
+        $srcs = @($r.Icon, $r.Exe)
+        if (-not $r.Icon -and (-not $r.Exe -or $r.Exe -match '(?i)^(.*\\)?(msiexec|winget)(\.exe)?$' -or $r.Exe -match '(?i)^winget ')) {
+            $k = Get-UpdateNameKey $r.Name
+            $own = Get-UpdateExeFromFolder ([string]$r.Location) $k
+            if (-not $own) { $own = Get-StartMenuExe $k }
+            if ($own) { $srcs = @($own) + $srcs }
+        }
+        Request-Icon $u 'exe' @{ Sources = $srcs }
         # curated cleanup target: the registry's own InstallLocation, plus its uninstall key
         $paths = @(); if ($r.Location) { $paths = @($r.Location) }
         $u.CleanPaths = $paths
         $u.CleanReg = @($r.RegKey)
-        $u.CleanTokens = @($r.Name)
+        # The registry name AND the product name inside it. "SketchUp 2026" never matched the
+        # folders SketchUp actually leaves - ProgramData\SketchUp, AppData\Roaming\SketchUp - so
+        # a vendor uninstall that left 7 MB and a registry key scanned as "already clean".
+        $u.CleanTokens = @(Get-CleanNameTokens $r.Name)
         $u.CleanHosts = @()
 
         # Same program in our catalog? Use the vendor uninstaller and the curated cleanup
@@ -5770,7 +6506,7 @@ function Refresh-UnList([object]$Manifest) {
             $present = $false
             if ($detect) {
                 try {
-                    if ($detect -match '^HK(LM|CU|CR|EY)') { $present = Test-Path -LiteralPath (ConvertTo-PSRegPath $detect) }
+                    if ($detect -match '^HK(LM|CU|CR|EY|U)') { $present = Test-Path -LiteralPath (ConvertTo-PSRegPath $detect) }
                     else { $present = Test-Path -LiteralPath ([Environment]::ExpandEnvironmentVariables($detect)) }
                 } catch { $present = $false }
             }
@@ -5926,7 +6662,12 @@ function Load-Catalog {
         }
         # and a catalog with no apps array is not a catalog; say so instead of showing nothing
         if (-not $manifest -or -not $manifest.apps) { throw 'the catalog has no apps array' }
-        ($manifest | ConvertTo-Json -Depth 6) | Set-Content -Path $script:ManifestCache -Encoding UTF8
+        # Depth 10, matching what the editor writes. At 6 the margin was exactly zero - the deepest
+# structure the catalog has today (app > cleanup > removers > remover) is 6 - so the first time
+# anything gained a nesting level the ONLINE path kept it and every client that had ever gone
+# offline read a flattened "@{...}" string out of its own cache instead. Silent, and only on the
+# machines that had already lost their connection once.
+($manifest | ConvertTo-Json -Depth 10) | Set-Content -Path $script:ManifestCache -Encoding UTF8
         $TxtCatalogInfo.Text = 'Live catalog'
         $DotLive.Fill = '#FF34D399'
         # The code has done its job and is in memory for the rest of the session. It has no
@@ -6111,6 +6852,147 @@ function Get-FreshCatalogUrl([object]$Item) {
 # server cannot put the downloader in a refresh loop.
 $script:UrlRefreshed = @{}
 
+# ---------- disks ----------
+# Every disk as Disk Management would draw it, plus the two facts it never shows: how far each
+# volume can shrink (Get-PartitionSupportedSize, which accounts for unmovable files) and what sits
+# in the gap behind it - the reason Extend is greyed out on most machines is the Windows Recovery
+# partition a feature update parked between C: and the free space. ReAgentC says which partition
+# actually holds the recovery environment, when this runs elevated; the GPT type says which
+# partitions are recovery partitions regardless.
+function Get-DiskLayout {
+    $recoveryGpt = '{de94bba4-06d1-4d40-a16a-bfd50179d6ac}'
+    $systemGpt   = '{c12a7328-f81f-11d2-ba4b-00a0c93ec93b}'
+    $reservedGpt = '{e3c9e316-0b5c-4db8-817d-f92df00215ae}'
+    $winre = ''
+    try {
+        $info = (& "$env:SystemRoot\System32\ReAgentc.exe" /info 2>&1 | Out-String)
+        if ($info -match '(?i)harddisk(\d+)\\partition(\d+)') { $winre = "$($Matches[1]):$($Matches[2])" }
+    } catch { }
+    # dynamic disks: the Storage cmdlets resize nothing on them, so they are shown and refused
+    $dyn = @{}
+    try {
+        foreach ($p in @(Get-CimInstance Win32_DiskPartition -ErrorAction Stop)) {
+            if ("$($p.Type)" -match 'Logical Disk Manager') { $dyn[[int]$p.DiskIndex] = $true }
+        }
+    } catch { }
+    $out = @()
+    foreach ($d in @(Get-Disk -ErrorAction SilentlyContinue | Where-Object { $_.Size -gt 0 } | Sort-Object Number)) {
+        $parts = @(Get-Partition -DiskNumber $d.Number -ErrorAction SilentlyContinue | Sort-Object Offset)
+        $rows = @()
+        for ($i = 0; $i -lt $parts.Count; $i++) {
+            $p = $parts[$i]
+            $letter = ('' + $p.DriveLetter).Trim([char]0).Trim()
+            $vol = $null
+            if ($letter) { try { $vol = Get-Volume -DriveLetter $letter -ErrorAction SilentlyContinue } catch { $vol = $null } }
+            $min = [long]0; $max = [long]0
+            if ($letter) {
+                try {
+                    $s = Get-PartitionSupportedSize -DiskNumber $d.Number -PartitionNumber $p.PartitionNumber -ErrorAction Stop
+                    $min = [long]$s.SizeMin; $max = [long]$s.SizeMax
+                } catch { }
+            }
+            $gpt = ('' + $p.GptType).ToLower()
+            $isRec = ($gpt -eq $recoveryGpt) -or ("$($d.PartitionStyle)" -eq 'MBR' -and [int]$p.MbrType -eq 39)
+            $kind = $(if ($isRec) { 'recovery' }
+                      elseif ($gpt -eq $systemGpt -or [bool]$p.IsSystem) { 'system' }
+                      elseif ($gpt -eq $reservedGpt) { 'reserved' }
+                      elseif ($letter) { 'volume' }
+                      else { 'other' })
+            $next = $(if ($i + 1 -lt $parts.Count) { [long]$parts[$i + 1].Offset } else { [long]$d.Size })
+            $gapAfter = [Math]::Max([long]0, $next - ([long]$p.Offset + [long]$p.Size))
+            $rows += [pscustomobject]@{
+                Number = [int]$p.PartitionNumber; Offset = [long]$p.Offset; Size = [long]$p.Size
+                Letter = $letter; Label = $(if ($vol) { '' + $vol.FileSystemLabel } else { '' }); FileSystem = $(if ($vol) { '' + $vol.FileSystem } else { '' })
+                Free = $(if ($vol) { [long]$vol.SizeRemaining } else { [long]0 })
+                Kind = $kind; IsBoot = [bool]$p.IsBoot; IsSystem = [bool]$p.IsSystem
+                MinSize = $min; MaxSize = $max; GapAfter = $gapAfter
+                IsWinRE = ($winre -eq "$($d.Number):$($p.PartitionNumber)")
+            }
+        }
+        $out += [pscustomobject]@{
+            Number = [int]$d.Number; Name = ('' + $d.FriendlyName).Trim(); Size = [long]$d.Size
+            Style = ('' + $d.PartitionStyle); Bus = ('' + $d.BusType); IsBoot = [bool]$d.IsBoot
+            IsDynamic = [bool]$dyn[[int]$d.Number]; Partitions = @($rows)
+        }
+    }
+    return $out
+}
+
+# ---------- startup apps ----------
+# What launches itself at sign-in, and whether Windows currently lets it: the Run keys (both
+# hives, plus the 32-bit HKLM view), the two Startup folders, and for each the StartupApproved
+# verdict Task Manager writes - byte 0 of a 12-byte value, 02/06 enabled, 03/01 disabled, absent
+# meaning enabled. Reading the same bytes Task Manager reads is what makes "switched off" here
+# mean exactly what it means there, and what lets Task Manager undo anything this does.
+function Get-StartupApprovedState([string]$Key, [string]$Name) {
+    try {
+        $v = (Get-ItemProperty -LiteralPath $Key -Name $Name -ErrorAction Stop).$Name
+        if ($v -is [byte[]] -and $v.Length -ge 1) { return (($v[0] -band 1) -eq 0) }
+    } catch { }
+    return $true
+}
+# The program behind an entry, for its icon - what Task Manager draws next to the name: the
+# command's first token with quotes and arguments stripped and %variables% expanded, or a
+# shortcut's target. An unquoted path with spaces ("C:\Program Files\X\x.exe --tray") is grown
+# one token at a time until a file answers, the way CreateProcess resolves one. '' when nothing
+# on disk does; the row then keeps its plain tile.
+function Resolve-StartupExe([string]$Command) {
+    $c = ('' + $Command).Trim()
+    if (-not $c) { return '' }
+    try {
+        if ($c -match '^"([^"]+)"') { $c = $matches[1] }
+        $c = [Environment]::ExpandEnvironmentVariables($c).Trim()
+        if ($c -match '\.lnk$') {
+            if (-not (Test-Path -LiteralPath $c -PathType Leaf)) { return '' }
+            $t = ''
+            try { $t = [string](New-Object -ComObject WScript.Shell).CreateShortcut($c).TargetPath } catch { }
+            $t = [Environment]::ExpandEnvironmentVariables($t).Trim()
+            if ($t -and (Test-Path -LiteralPath $t -PathType Leaf)) { return $t }
+            return ''
+        }
+        if (Test-Path -LiteralPath $c -PathType Leaf) { return $c }
+        $parts = @($c -split ' +')
+        for ($i = 0; $i -lt $parts.Count; $i++) {
+            $cand = ($parts[0..$i] -join ' ')
+            if ($cand -match '\.(exe|com|scr|bat|cmd)$' -and (Test-Path -LiteralPath $cand -PathType Leaf)) { return $cand }
+        }
+        # a bare program name (rundll32, cmd), found the way the shell finds it
+        if ($parts[0] -notmatch '[\\/]') {
+            $g = Get-Command $parts[0] -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+            if ($g -and $g.Source) { return [string]$g.Source }
+        }
+    } catch { }
+    return ''
+}
+
+function Get-StartupEntries {
+    $out = @()
+    $sources = @(
+        @{ Location = 'HKCU\Run';   Key = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run';                Approved = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run' }
+        @{ Location = 'HKLM\Run';   Key = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run';                Approved = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run' }
+        @{ Location = 'HKLM\Run32'; Key = 'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Run';    Approved = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run32' }
+    )
+    foreach ($s in $sources) {
+        if (-not (Test-Path -LiteralPath $s.Key)) { continue }
+        $p = Get-ItemProperty -LiteralPath $s.Key -ErrorAction SilentlyContinue
+        if (-not $p) { continue }
+        foreach ($n in @($p.PSObject.Properties | Where-Object { $_.Name -notlike 'PS*' } | ForEach-Object { $_.Name })) {
+            $out += [pscustomobject]@{ Name = [string]$n; Command = ('' + $p.$n); Location = [string]$s.Location; Enabled = [bool](Get-StartupApprovedState $s.Approved $n); Exe = [string](Resolve-StartupExe ('' + $p.$n)) }
+        }
+    }
+    $folders = @(
+        @{ Location = 'StartupFolder'; Path = [Environment]::GetFolderPath('Startup');       Approved = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\StartupFolder' }
+        @{ Location = 'CommonStartup'; Path = [Environment]::GetFolderPath('CommonStartup'); Approved = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\StartupFolder' }
+    )
+    foreach ($f in $folders) {
+        if (-not $f.Path -or -not (Test-Path -LiteralPath $f.Path)) { continue }
+        foreach ($e in @(Get-ChildItem -LiteralPath $f.Path -File -ErrorAction SilentlyContinue | Where-Object { $_.Name -ne 'desktop.ini' })) {
+            $out += [pscustomobject]@{ Name = [string]$e.Name; Command = [string]$e.FullName; Location = [string]$f.Location; Enabled = [bool](Get-StartupApprovedState $f.Approved $e.Name); Exe = [string](Resolve-StartupExe $e.FullName) }
+        }
+    }
+    return $out
+}
+
 # ---------- tweaks ----------
 # Winutil-style system tweaks. The list is built into the tool rather than fetched, so it
 # works offline and cannot be changed by whoever controls the catalog server. Every entry
@@ -6119,7 +7001,7 @@ $script:UrlRefreshed = @{}
 # 'caution' entries remove software or change network/OS behaviour: they are grouped
 # separately, never pre-selected, and the tech confirms an extra dialog before they run.
 $script:TweakDefs = @(
-    # --- Tweaks sub-tab: config only, pre-ticked (42) ---
+    # --- Tweaks sub-tab: config only, pre-ticked (42 + 3 performance rows below) ---
     @{ id = 'activityhistory'; name = 'Activity History - Disable';        hint = 'policy' }
     @{ id = 'backgroundapps';  name = 'Background Apps - Disable';         hint = 'policy' }
     @{ id = 'debloatweb';      name = 'Bing and Web Services - Remove';    hint = 'removes' }
@@ -6181,14 +7063,23 @@ $script:TweakDefs = @(
     # WebView2 a customer's own software depends on. That trade is no longer offered; removed
     # Store apps can come back on their own, and nothing in the tool prevents it.)
     @{ id = 'windowsai';       name = 'Windows AI - Disable And Remove';   hint = 'removes';  caution = $true }
-    # --- Cleanup sub-tab: one-time disk actions, each reports reclaimed space (5).
+    # --- Tweaks sub-tab, performance (3, pre-ticked): the indexer, Defender's scan load and
+    #     Storage Sense - the three background loads that keep a machine slow after cleanup ---
+    @{ id = 'searchscope';     name = 'Search Indexer - Light Mode';       hint = 'registry' }
+    @{ id = 'defenderscan';    name = 'Defender Scans - Low Priority';     hint = 'defender' }
+    @{ id = 'storagesense';    name = 'Storage Sense - Monthly Cleanup';   hint = 'policy' }
+    # --- Cleanup sub-tab: one-time disk actions, each reports reclaimed space (9).
     #     componentstore is the DISM half SPLIT OUT of the old diskcleanup row - never
     #     re-add it there, or one batch cleans the component store twice. ---
     @{ id = 'diskcleanup';     name = 'Disk Cleanup - Run';                hint = 'runs';    tab = 'cleanup' }
     @{ id = 'componentstore';  name = 'Component Store Cleanup';           hint = 'dism';    tab = 'cleanup' }
     @{ id = 'tempfiles';       name = 'Temporary Files - Remove';          hint = 'deletes'; tab = 'cleanup' }
     @{ id = 'recyclebin';      name = 'Recycle Bin - Empty (all drives)';  hint = 'deletes'; tab = 'cleanup' }
+    @{ id = 'browsercache';    name = 'Browser Caches - Clear';            hint = 'deletes'; tab = 'cleanup' }
+    @{ id = 'crashdumps';      name = 'Crash Dumps and Error Reports - Remove'; hint = 'deletes'; tab = 'cleanup' }
+    @{ id = 'docache';         name = 'Delivery Optimization Cache - Clear'; hint = 'deletes'; tab = 'cleanup' }
     @{ id = 'windowsold';      name = 'Windows.old and Update Cache - Remove'; hint = 'deletes'; tab = 'cleanup'; caution = $true }
+    @{ id = 'shadowcap';       name = 'System Restore Space - Cap at 5%';  hint = 'vssadmin'; tab = 'cleanup'; caution = $true }
     # --- Gaming sub-tab: the gaming-customer persona (14). Evidence-curated from the
     #     GameOpt project (C:\Users\Legion-T7\Projects\Game-Optimization) - every row is a
     #     real, mechanism-backed tweak, never a copy-pasted placebo. Undo is honest without
@@ -6255,6 +7146,57 @@ function Load-Tweaks {
 # Fixes run elevated through the same one-UAC queue as everything else. Panels are just
 # shortcuts, launched unelevated straight from the GUI - Windows elevates them itself if
 # they need it, and routing them through the worker would cost a pointless UAC prompt.
+# ---------- diagnosis remedies ----------
+# One row per sentence Get-SlowPcReport can say, and what the tool does about it: run a tweak or
+# a fix (one click, through the worker), open the tab where a person has to choose (which startup
+# entries, which program, what to clean), or say plainly that software will not fix it. `match` is
+# a regex over ONE finding - a layer's verdict joins its findings with '; ' - and `target` names
+# the tweak or fix to run, or the regex group that carries the names a tab should be filtered to.
+# Kept beside the sentences on purpose: Test-Client holds the two lists in step, so a new finding
+# without a remedy fails the suite instead of reaching a technician as a red card with nothing
+# under it.
+$script:DiagRemedies = @(
+    @{ layer = 'L0'; match = 'only \d+% free';                        kind = 'cleanup';   target = '';              label = 'Free up space'
+       note = 'Cleanup empties temp files, caches, dumps and the recycle bin, and says what it gave back.' }
+    # a failing disk that is NOT the Windows disk is a note, not a Back-this-machine-up step - first, because the row below would match it too
+    @{ layer = 'L0'; match = 'not the Windows disk';                  kind = 'none';      target = '';              label = ''
+       note = 'That drive is failing, not this PC. Copy what you need off it to another disk before it goes - it is not what makes this PC slow.' }
+    # matches sit on the words that never change - the counts in front are real plurals now, not "(s)"
+    @{ layer = 'L0'; match = 'back this machine up NOW|SSD wear';     kind = 'backup';    target = '';              label = 'Back this machine up'
+       note = 'The drive is failing. Copy the data off before anything else is tried.' }
+    @{ layer = 'L0'; match = 'spinning disk|storage - same conversation|GB RAM - not enough|entry-level CPU'; kind = 'none'; target = ''; label = ''
+       note = 'Hardware. Software cannot fix this - the honest answer is a faster drive, more memory or a different machine.' }
+    # first match wins on a layer, so the browser row stands before the generic one it would otherwise fall into
+    @{ layer = 'L1'; match = '- a browser: tabs and extensions';    kind = 'none';      target = '';              label = ''
+       note = 'Close what is not needed and review its extensions. Uninstalling the browser would not fix this.' }
+    @{ layer = 'L1'; match = '^(\S+) has used \d+ CPU-seconds';       kind = 'uninstall'; target = '1';             label = 'Find it in Uninstall'
+       note = 'A program that burns CPU all day is usually a scanner, an updater or a helper nobody asked for. Uninstall opens filtered to it.' }
+    @{ layer = 'L2'; match = 'antivirus products registered \((.+)\)'; kind = 'uninstall'; target = '1';            label = 'Remove the second antivirus'
+       note = 'Two antivirus products scan each other. Keep one - Windows Defender is already there - and remove the other.' }
+    @{ layer = 'L2'; match = 'Defender scan is running';              kind = 'tweak';     target = 'defenderscan';  label = 'Run Defender Scans - Low Priority'
+       note = 'Not a fault. The tweak caps scans at 20% CPU so the next one does not take the machine away from the person using it.' }
+    @{ layer = 'L3'; match = 'MB of memory free|the machine is paging'; kind = 'startup'; target = '';              label = 'Review startup entries'
+       note = 'Less starting at sign-in is the cheapest memory there is. Switch off what does not need to run.' }
+    @{ layer = 'L3'; match = 'browser processes';                     kind = 'none';      target = '';              label = ''
+       note = 'Tabs and extensions, not Windows. Fewer open tabs, fewer extensions.' }
+    @{ layer = 'L4'; match = 'Fast Startup means';                    kind = 'tweak';     target = 'faststartup';   label = 'Run Fast Startup - Disable'
+       note = 'Then restart. With Fast Startup off, a restart is a real restart.' }
+    @{ layer = 'L4'; match = 'post-setup servicing';                  kind = 'none';      target = '';              label = ''
+       note = 'Windows is finishing its own setup. Let it, then diagnose again.' }
+    @{ layer = 'L4'; match = 'search indexer has burned';             kind = 'fix';       target = 'searchrebuild'; label = 'Run Search Index - Rebuild'
+       note = 'Drops the index and lets Windows rebuild it. Search is patchy for an hour; the Light Mode tweak keeps it from burning CPU again.' }
+    @{ layer = 'L4'; match = 'reboot is already pending';             kind = 'fix';       target = 'restart';       label = 'Restart now'
+       note = 'Nothing measured before the restart means anything. Restart, then diagnose again.' }
+    @{ layer = 'L5'; match = 'worth reviewing: (.+)';                 kind = 'startup';   target = '1';             label = 'Review startup entries'
+       note = 'These are ticked for you on the Startup sub-tab; Switch Off Ticked stops them starting. Nothing is uninstalled.' }
+    @{ layer = 'L6'; match = 'suspect the drive';                     kind = 'backup';    target = '';              label = 'Back this machine up'
+       note = 'The event log says the drive is failing. Copy the data off first.' }
+    @{ layer = 'L6'; match = 'WHEA|Kernel-Power 41';                  kind = 'none';      target = '';              label = ''
+       note = 'Hardware or power. Memory test, power supply, cabling - not a setting.' }
+    @{ layer = 'L6'; match = 'CPU pinned at|Power Saver is the active plan'; kind = 'tweak'; target = 'powerplan'; label = 'Run Power Plan - High Performance'
+       note = 'The power plan is holding the CPU down.' }
+)
+
 $script:FixDefs = @(
     @{ id = 'autologon';  name = 'AutoLogon - Run';                group = 'Fixes'
        hint = 'sign in automatically at boot - asks for the account' }
@@ -6268,6 +7210,10 @@ $script:FixDefs = @(
        hint = 'point the clock at time.windows.com and resync now' }
     @{ id = 'sfc';        name = 'System Corruption Scan - Run';   group = 'Fixes'
        hint = 'sfc /scannow then DISM RestoreHealth - can take 30 minutes' }
+    @{ id = 'searchrebuild'; name = 'Search Index - Rebuild';      group = 'Fixes'
+       hint = 'stops Windows Search, drops the index and lets it rebuild - search is patchy for an hour' }
+    @{ id = 'restart';    name = 'Restart Now - 60 Second Warning'; group = 'Fixes'
+       hint = 'restarts this PC in 60 seconds with a message on screen - shutdown /a cancels it' }
     @{ id = 'wureset';    name = 'Windows Update - Reset';         group = 'Fixes'
        hint = 'clears the update cache and re-registers the services' }
     @{ id = 'winget';     name = 'WinGet - Reinstall';             group = 'Fixes'
@@ -6358,6 +7304,12 @@ function Start-LegacyPanel([hashtable]$P) {
 }
 
 function Start-FixBatch([object[]]$Sel, [hashtable]$Extra) {
+    # Restart Now goes last, whatever order the table put it in. It runs shutdown /r /t 60 and
+    # RETURNS - the worker carries straight on - so everything queued after it had sixty seconds
+    # to finish. Windows Update - Reset renames SoftwareDistribution away and WinGet - Reinstall
+    # re-registers an Appx package; both take longer than that, and the reboot used to land in
+    # the middle of them. Start-TweakBatch already does the same sort for the restore point.
+    $Sel = @(@($Sel | Where-Object { $_.UnArgs -ne 'restart' }) + @($Sel | Where-Object { $_.UnArgs -eq 'restart' }))
     foreach ($s in $Sel) { Set-Status $s 'Queued' 'neutral'; Set-Ring $s 'queued' }
     $script:Pending = @($Sel)
     $script:BatchTab = 'Tools'
@@ -6368,7 +7320,7 @@ function Start-FixBatch([object[]]$Sel, [hashtable]$Extra) {
     $script:AwaitingScan = $false
     Remove-Item -LiteralPath $script:QueuePath, $script:StatusPath, $script:CancelPath, $script:SkipPath -ErrorAction SilentlyContinue
     Show-BatchStrip
-    if (-not (Start-Worker)) { Abort-Batch 'elevation declined'; return }
+    if (-not (Start-Worker)) { Abort-Batch 'the administrator prompt was declined, so nothing was run' 'warn'; return }
     foreach ($s in $Sel) {
         $e = @{ id = $s.Id; action = 'fix'; fix = [string]$s.UnArgs }
         if ($Extra) { foreach ($k in $Extra.Keys) { $e[$k] = $Extra[$k] } }
@@ -6414,27 +7366,37 @@ $script:FwGroup = 'Application Block'
 function Get-FirewallBlockMap {
     $map = @{}
     try {
-        $filters = @{}
-        foreach ($af in @(Get-NetFirewallApplicationFilter -ErrorAction Stop)) {
-            $p = ('' + $af.AppPath)
-            if (-not $p) { $p = ('' + $af.Program) }
-            # Most rules on a real machine name their program as %ProgramFiles%\... or
-            # %SystemRoot%\... (291 of 339 on the dev box). Matched raw, none of those ever
-            # sat under an install folder, so a blocked program read as "not blocked" and its
-            # rules showed up as strays named "%programfiles%\...". Expand once, here, so every
-            # comparison downstream is against the path the firewall itself resolves.
-            if ($p -and $p -ne 'Any' -and $p -ne 'System') { $filters[[string]$af.InstanceID] = [Environment]::ExpandEnvironmentVariables($p) }
-        }
-        # SilentlyContinue, not Stop: a machine with NO outbound block rules - every clean client -
-        # makes this cmdlet throw "No matching MSFT_NetFirewallRule objects found", which read as
-        # "Firewall rules could not be read" in the log. An empty result is the normal case.
-        foreach ($r in @(Get-NetFirewallRule -Direction Outbound -Action Block -ErrorAction SilentlyContinue)) {
-            $p = $filters[[string]$r.InstanceID]
-            if (-not $p) { continue }
-            $key = $p.ToLower()
+        # Off the UI thread: the two firewall cmdlets are the longest single read the window
+        # makes (MEASURED 1.2 s cold here) and the panel's spinner stood still for all of it.
+        $rows = @(Invoke-OffUi {
+            $filters = @{}
+            foreach ($af in @(Get-NetFirewallApplicationFilter -ErrorAction Stop)) {
+                $p = ('' + $af.AppPath)
+                if (-not $p) { $p = ('' + $af.Program) }
+                # Most rules on a real machine name their program as %ProgramFiles%\... or
+                # %SystemRoot%\... (291 of 339 on the dev box). Matched raw, none of those ever
+                # sat under an install folder, so a blocked program read as "not blocked" and its
+                # rules showed up as strays named "%programfiles%\...". Expand once, here, so every
+                # comparison downstream is against the path the firewall itself resolves.
+                if ($p -and $p -ne 'Any' -and $p -ne 'System') { $filters[[string]$af.InstanceID] = [Environment]::ExpandEnvironmentVariables($p) }
+            }
+            # Caught, not Stop: a machine with NO outbound block rules - every clean client -
+            # makes this cmdlet throw "No matching MSFT_NetFirewallRule objects found", which read
+            # as "Firewall rules could not be read" in the log. An empty result is the normal case.
+            $rules = @()
+            try { $rules = @(Get-NetFirewallRule -Direction Outbound -Action Block -ErrorAction Stop) } catch { $rules = @() }
+            foreach ($r in $rules) {
+                $p = $filters[[string]$r.InstanceID]
+                if (-not $p) { continue }
+                [pscustomobject]@{ Path = $p; Name = ('' + $r.Name); Display = ('' + $r.DisplayName)
+                                   Group = ('' + $r.Group); Enabled = ("$($r.Enabled)" -eq 'True') }
+            }
+        } -TimeoutSec 180 -What 'The firewall rule read')
+        foreach ($row in $rows) {
+            $key = ([string]$row.Path).ToLower()
             if (-not $map.ContainsKey($key)) { $map[$key] = @() }
-            $map[$key] += [pscustomobject]@{ Name = ('' + $r.Name); Display = ('' + $r.DisplayName)
-                                             Group = ('' + $r.Group); Enabled = ("$($r.Enabled)" -eq 'True') }
+            $map[$key] += [pscustomobject]@{ Name = [string]$row.Name; Display = [string]$row.Display
+                                             Group = [string]$row.Group; Enabled = [bool]$row.Enabled }
         }
     } catch {
         Add-Log "Firewall rules could not be read: $($_.Exception.Message)"
@@ -6499,7 +7461,9 @@ function Resolve-AppRoot([object]$Reg) {
         if ($p -and (Test-Path -LiteralPath $p -PathType Leaf)) {
             $dir = Split-Path $p -Parent
             # an uninstaller often sits in a shared folder - only trust a real app dir
-            if ($dir -and $dir.Length -gt 3 -and $script:FwProtectedRoots -notcontains $dir.TrimEnd('\').ToLower()) { return $dir.TrimEnd('\') }
+            $dl = ('' + $dir).TrimEnd('\').ToLower()
+            if ($dir -and $dir.Length -gt 3 -and $script:FwProtectedRoots -notcontains $dl -and
+                $dl -notmatch '^[a-z]:\\users\\[^\\]+(\\appdata(\\(local|roaming|locallow))?)?$') { return $dir.TrimEnd('\') }
         }
     }
     return ''
@@ -6510,8 +7474,18 @@ $script:FwProtectedRoots = @(
     $env:SystemRoot, (Join-Path $env:SystemRoot 'System32'), (Join-Path $env:SystemRoot 'SysWOW64'),
     $env:ProgramFiles, ${env:ProgramFiles(x86)}, $env:ProgramData, $env:SystemDrive,
     (Join-Path $env:ProgramFiles 'Common Files'), (Join-Path ${env:ProgramFiles(x86)} 'Common Files'),
-    (Join-Path $env:ProgramFiles 'WindowsApps'), $env:UserProfile, $env:LocalAppData, $env:AppData
+    (Join-Path $env:ProgramFiles 'WindowsApps'), $env:UserProfile, $env:LocalAppData, $env:AppData,
+    # Users and Public were missing: a stray under Public grouped as "Users" - every profile's
+    # strays in one row - and a program registered AT C:\Users\Public could be blocked wholesale
+    $env:Public, (Split-Path $env:UserProfile)
 ) | Where-Object { $_ } | ForEach-Object { $_.TrimEnd('\').ToLower() }
+# The list above is built from THIS account's environment, so another user's profile and
+# AppData roots are not in it. They are refused by SHAPE instead - the same rule the worker's
+# Test-WipeAllowed applies, for the same reason. A per-user program lives INSIDE one of these
+# (AppData\Local\Programs\Foo); it never IS one. The pattern is written out in each of the
+# three places that apply it rather than held in a variable: the harnesses lift these functions
+# one at a time, and a variable they did not lift would read as an empty pattern that matches
+# everything.
 
 # For a rule that matches no installed program, find the folder worth showing: walk up until
 # the PARENT is a protected/shared root. C:\Program Files (x86)\Common Files\Adobe\...\HDBox
@@ -6526,7 +7500,8 @@ function Get-VendorFolder([string]$ExePath) {
         $parent = ''
         try { $parent = Split-Path $cur -Parent } catch { break }
         if (-not $parent) { break }
-        if ($script:FwProtectedRoots -contains $parent.TrimEnd('\').ToLower()) { return $cur }
+        $pl = $parent.TrimEnd('\').ToLower()
+        if ($script:FwProtectedRoots -contains $pl -or $pl -match '^[a-z]:\\users\\[^\\]+(\\appdata(\\(local|roaming|locallow))?)?$') { return $cur }
         $cur = $parent.TrimEnd('\')
         if ($cur.Length -le 3) { break }     # reached the drive root
     }
@@ -6537,13 +7512,20 @@ function Test-FwRootAllowed([string]$Root) {
     if (-not $Root) { return $false }
     $r = $Root.TrimEnd('\').ToLower()
     if ($script:FwProtectedRoots -contains $r) { return $false }
+    if ($r -match '^[a-z]:\\users\\[^\\]+(\\appdata(\\(local|roaming|locallow))?)?$') { return $false }
     # never touch anything inside Windows, whatever it claims to be
     $win = $env:SystemRoot.TrimEnd('\').ToLower()
     if ($r -eq $win -or $r.StartsWith($win + '\')) { return $false }
     return $true
 }
 
+$script:FwScanning = $false
 function Load-Firewall {
+    # The rule read pumps the dispatcher (its spinner has to turn) and the pump dispatches
+    # clicks: the tab pressed again mid-scan re-entered here and cleared the list the outer
+    # scan was still filling. One scan at a time.
+    if ($script:FwScanning) { return }
+    $script:FwScanning = $true
     $FwSplit.Visibility = 'Collapsed'
     $LoadFw.Visibility = 'Visible'
     $TxtLoadFw.Text = 'Reading firewall rules...'
@@ -6657,6 +7639,7 @@ function Load-Firewall {
         Add-Log "Firewall scan failed: $($_.Exception.Message)"
         Show-Overlay 'Could not read firewall rules' $_.Exception.Message
     } finally {
+        $script:FwScanning = $false
         $LoadFw.Visibility = 'Collapsed'
         $FwSplit.Visibility = 'Visible'
         $script:FwDirty = $false
@@ -6723,7 +7706,13 @@ function Show-FwDetail([object]$Row) {
             return
         }
         $exes = @()
-        try { $exes = @([IO.Directory]::EnumerateFiles($root, '*.exe', 'AllDirectories')) } catch {}
+        # same fallback as the worker's Block-AppNetwork: one unreadable subfolder must not turn
+        # the preview into "(nothing found)" for a folder the worker would then block
+        try { $exes = @([IO.Directory]::EnumerateFiles($root, '*.exe', 'AllDirectories')) }
+        catch {
+            $exes = @(Get-ChildItem -LiteralPath $root -Recurse -File -Filter '*.exe' -Force -ErrorAction SilentlyContinue |
+                      Where-Object { $_.Extension -eq '.exe' } | ForEach-Object { $_.FullName })
+        }
         $cap = 400
         $shown = @($exes | Sort-Object | Select-Object -First $cap)
         foreach ($e in $shown) { $lines += $e }
@@ -7121,6 +8110,10 @@ function Show-AcctDialog([object]$Acct) {
     $BtnActToggle.Visibility   = $(if ($enabled -and $Acct.Name -eq $me) { 'Collapsed' } else { 'Visible' })
     $BtnActLocal.Visibility    = $(if ($Acct.Publisher -like '*Microsoft account*') { 'Visible' } else { 'Collapsed' })
     $BtnActDelete.Visibility   = $(if ($isBuiltin -or $Acct.Name -eq $me) { 'Collapsed' } else { 'Visible' })
+    # the replacement name only matters beside the button that uses it; both boxes start empty
+    # so a password typed for one account is never silently proposed for the next
+    $RowActNewName.Visibility  = $BtnActLocal.Visibility
+    $TxtActPw.Clear(); $TxtActNewName.Clear()
 
     $AcctOverlay.Opacity = 0
     $AcctOverlay.Visibility = 'Visible'
@@ -7129,6 +8122,10 @@ function Show-AcctDialog([object]$Acct) {
 }
 
 function Hide-AcctDialog {
+    # The boxes are NOT cleared here: every action button closes the dialog through
+    # Get-AccountTarget first and reads its box afterwards. They are cleared when the dialog
+    # opens (Show-AcctDialog) and when a batch ends, which is what keeps one account's password
+    # from being proposed for the next.
     $AcctOverlay.Visibility = 'Collapsed'
     $script:UserSelecting = $true
     try { foreach ($x in $script:AccountItems) { $x.IsSelected = $false } } finally { $script:UserSelecting = $false }
@@ -7353,6 +8350,704 @@ function Select-OptTab([string]$Which) {
     Update-Dash
 }
 
+# ---------- update: what winget can bring current, and the Store apps as a set ----------
+# winget.exe is a per-user alias under %LOCALAPPDATA%\Microsoft\WindowsApps, and the elevated
+# worker may run as a DIFFERENT account - the admin who answered the UAC prompt. So the path is
+# resolved here, as the technician, and the machine-wide copy under Program Files\WindowsApps
+# is preferred when it exists: that one resolves for any account. The worker re-resolves on
+# its own side as well, so a stale path is a slow failure, never a silent one.
+function Get-WingetPath {
+    if ($script:WingetPath -and (Test-Path -LiteralPath $script:WingetPath)) { return $script:WingetPath }
+    $p = ''
+    try {
+        $g = @(Get-ChildItem "$env:ProgramFiles\WindowsApps\Microsoft.DesktopAppInstaller_*_x64__8wekyb3d8bbwe\winget.exe" -ErrorAction SilentlyContinue |
+               Sort-Object { try { [version](($_.Directory.Name -split '_')[1]) } catch { [version]'0.0' } } -Descending)
+        if ($g.Count) { $p = $g[0].FullName }
+    } catch { }
+    if (-not $p) {
+        $c = Get-Command winget.exe -ErrorAction SilentlyContinue
+        if ($c -and $c.Source -and (Test-Path -LiteralPath $c.Source)) { $p = $c.Source }
+    }
+    if (-not $p) {
+        $alias = Join-Path $env:LOCALAPPDATA 'Microsoft\WindowsApps\winget.exe'
+        if (Test-Path -LiteralPath $alias) { $p = $alias }
+    }
+    $script:WingetPath = $p
+    return $p
+}
+
+# Runs `winget upgrade` with its output in a file, not a console: a console-less winget prints
+# its table at a fixed width and never waits for a key. The dispatcher is pumped while it runs
+# so the spinner turns; two minutes is the give-up.
+function Get-WingetUpgradeText {
+    $exe = Get-WingetPath
+    if (-not $exe) { throw 'winget is not available for this account' }
+    $out = Join-Path $script:CacheDir 'winget-upgrade.txt'
+    $err = Join-Path $script:CacheDir 'winget-upgrade.err'
+    Remove-Item -LiteralPath $out, $err -Force -ErrorAction SilentlyContinue
+    $p = Start-Process -FilePath $exe -ArgumentList @('upgrade', '--include-unknown', '--accept-source-agreements', '--disable-interactivity') `
+                       -RedirectStandardOutput $out -RedirectStandardError $err -NoNewWindow -PassThru -ErrorAction Stop
+    $null = $p.Handle
+    $t0 = Get-Date
+    while (-not $p.WaitForExit(250)) {
+        Update-UI
+        if (((Get-Date) - $t0).TotalSeconds -gt 120) { try { $p.Kill() } catch { }; throw 'winget did not answer within 2 minutes' }
+    }
+    $text = ''
+    try { $text = [IO.File]::ReadAllText($out, (New-Object Text.UTF8Encoding $false)) } catch { }
+    $e = ''
+    try { $e = ([IO.File]::ReadAllText($err)).Trim() } catch { }
+    if (-not $text.Trim() -and $e) { throw $e }
+    # winget says why it failed on STDOUT and exits non-zero, so a scan that could not run -
+    # a source that would not open, a broken App Installer - came back as text with no table
+    # in it, parsed to no rows, and the tab said everything was up to date. A non-zero exit
+    # with no table is a failure; 0x8A150014 is the one non-zero answer that means "nothing
+    # to upgrade", and a table that IS there is kept whatever the exit code.
+    $code = 0
+    try { $code = [int]$p.ExitCode } catch { $code = 0 }
+    if ($code -ne 0 -and $code -ne -1978335212 -and $text -notmatch '(?m)^-{5,}\s*$') {
+        $why = @(($text -replace "[`b`r]", "`n") -split "`n" | ForEach-Object { $_.Trim() } |
+                 Where-Object { $_ -and $_ -notmatch '^[-\\|/]$' }) | Select-Object -Last 1
+        throw ("winget exited with 0x{0:X8}" -f $code) + $(if ($why) { " - $why" } elseif ($e) { " - $e" })
+    }
+    return $text
+}
+
+# The table winget prints, as objects. Pure - takes text, returns rows - so it is unit-tested
+# against captured output rather than against whatever winget feels like printing today.
+# Column boundaries come from the HEADER line's word offsets: names contain spaces, ids do not.
+function Get-WingetUpgrades([string]$Text) {
+    $script:WingetScanNotes = @()
+    $rows = @()
+    if (-not $Text) { return $rows }
+    $lines = @(($Text -replace "`r", '' -replace "[`b]", '') -split "`n")
+    $explicit = $false
+    $tables = 0
+    $i = 0
+    while ($i -lt $lines.Count) {
+        $l = $lines[$i]
+        if ($l -match 'require explicit targeting') { $explicit = $true }
+        if ($l -match '^Failed (in attempting to update|when opening) the source') { $script:WingetScanNotes += $l.Trim() }
+        # A header is the line of 4 or 5 words that sits directly above a rule of dashes, and
+        # the columns are POSITIONAL - Name, Id, Version, [Available], Source. The words
+        # themselves are winget resources and come out in the machine's language ("Nom",
+        # "Identifiant", "Version", "Disponible", "Source" on a French client), so matching
+        # the English words found no table there and the tab reported everything current.
+        $words = @([regex]::Matches($l, '\S+'))
+        if ($words.Count -in 4, 5 -and ($i + 1) -lt $lines.Count -and $lines[$i + 1] -match '^-{5,}\s*$') {
+            $tables++
+            # the second table winget prints is the "require explicit targeting" one, in any language
+            if ($tables -ge 2) { $explicit = $true }
+            $col = @{ Id = $words[1].Index; Version = $words[2].Index; Source = $words[$words.Count - 1].Index }
+            $hasAvail = ($words.Count -eq 5)
+            if ($hasAvail) { $col['Available'] = $words[3].Index }
+            $i += 2
+            while ($i -lt $lines.Count) {
+                $r = $lines[$i]
+                $t = $r.Trim()
+                # the table ends at a blank line, a spinner remnant, the next header, or the
+                # "N upgrades available." count - which is localised too, so any line that
+                # starts with a number and has nothing in the Id column is read as that count
+                if (-not $t -or $t -match '^\d+ (upgrade|package)' -or $t -match '^[-\\|/]$') { break }
+                if (($i + 1) -lt $lines.Count -and $lines[$i + 1] -match '^-{5,}\s*$') { break }
+                $slice = { param($a, $b) if ($a -ge $r.Length) { '' } else { $r.Substring($a, [Math]::Min($b, $r.Length) - $a).Trim() } }
+                $name = & $slice 0 $col['Id']
+                $id = & $slice $col['Id'] $col['Version']
+                $ver = & $slice $col['Version'] $(if ($hasAvail) { $col['Available'] } else { $col['Source'] })
+                $avail = $(if ($hasAvail) { & $slice $col['Available'] $col['Source'] } else { '' })
+                $src = & $slice $col['Source'] $r.Length
+                # a row always has a Source; a "2 mises a niveau disponibles." count never
+                # reaches that column, whatever language it is in
+                if ($t -match '^\d+\s' -and -not $src) { break }
+                $i++
+                # an id with a space, or cut off with an ellipsis, is a row the columns did not
+                # survive (double-width characters shift them) - never act on a guessed id
+                if (-not $id -or $id -match '\s' -or $id.EndsWith([string][char]0x2026)) { $script:WingetScanNotes += "skipped an unreadable row ($name)"; continue }
+                $ver = $ver -replace '^[<>]\s*', ''
+                $avail = $avail -replace '^[<>]\s*', ''
+                if (@($rows | Where-Object { $_.Id -eq $id }).Count) { continue }
+                $rows += [pscustomobject]@{ Name = $name; Id = $id; Version = $ver; Available = $avail; Source = $src; Explicit = $explicit }
+            }
+            continue
+        }
+        $i++
+    }
+    return $rows
+}
+
+function Load-Updates {
+    if ($script:UpdScanning) { return }
+    $script:UpdItems.Clear()
+    $exe = Get-WingetPath
+    if (-not $exe) {
+        $script:UpdDirty = $false
+        Set-UpdWords 'Desk' '' "winget is not available for this account.`n`nInstall 'App Installer' from the Microsoft Store, or run Toolbox > WinGet - Reinstall, then press Rescan."
+        Add-Log 'Update scan: winget.exe was not found for this account.'
+        Update-SearchCount
+        return
+    }
+    $script:UpdScanning = $true
+    $ScrollUpdDesk.Visibility = 'Collapsed'; $EmptyUpd.Visibility = 'Collapsed'
+    $TxtLoadUpd.Text = 'Asking winget for available updates...'
+    $LoadUpd.Visibility = 'Visible'
+    $TxtUpdHint.Text = ''
+    Update-UI
+    try {
+        $found = @(Get-WingetUpgrades (Get-WingetUpgradeText))
+        $storeN = 0
+        # The same programs the Uninstall tab shows, so a row here carries the same name, the
+        # same publisher and the same icon there - read from that tab's list when it is fresh,
+        # from one cached registry scan otherwise. Never a second scan per row.
+        $lookup = @(Get-UpdateProgramLookup)
+        $storeLookup = @(Get-UpdateStoreLookup)
+        $matched = 0
+        foreach ($r in $found) {
+            # Store-matched rows belong to the Store sub-tab, where Windows updates them as a set
+            if ($r.Source -eq 'msstore') { $storeN++; continue }
+            $u = New-Object AppItem
+            $u.Id = Get-RowId 'upd' $r.Id
+            $u.Name = Clean-DisplayName $r.Name
+            $u.Publisher = "winget: $($r.Id)"
+            $u.Version = $r.Version
+            $u.DetectPath = $r.Available
+            $u.UnArgs = $r.Id
+            $u.Source = $(if ($r.Source) { $r.Source } else { 'winget' })
+            $u.Size = "$($r.Version) $([char]0x2192) $($r.Available)"     # the confirm dialog's one-liner
+            # the table's own cells: installed / available versions, and the pill for the odd cases
+            $u.ColInstalled = $r.Version
+            $u.ColSize = $r.Available
+            $u.RowOpacity = 1.0
+            $u.TagText = $(if ($r.Version -eq 'Unknown') { 'version unknown to winget' } elseif ($r.Explicit) { 'needs explicit targeting' } else { '' })
+            $u.TagVis = $(if ($u.TagText) { 'Visible' } else { 'Collapsed' })
+            # no placeholder tile: a row shows the program's real icon or nothing at all
+            $u.IconData = ''
+            $u.GlyphVis = 'Collapsed'
+            $u.IconBg = '#00000000'
+            $u.IsSilent = -not $r.Explicit
+            # identity first: the desktop program this update belongs to, then a Store package
+            $m = Find-UpdateMatch $r.Name $lookup
+            if ($m) {
+                $matched++
+                # winget's own name stays - the match strips bitness and versions, so the x86 and
+                # x64 VC++ rows both find the same registry entry and must not both wear its name
+                if ($m.Publisher) { $u.Publisher = "$($m.Publisher)   |   winget: $($r.Id)" }
+                $u.Category = 'Desktop programs'
+                if ($m.Image) { Set-AppIcon $u $m.Image }
+                elseif ($m.Icon -or $m.Exe) { Request-Icon $u 'exe' @{ Sources = @($m.Icon, $m.Exe) } }
+            } else {
+                $sm = Find-UpdateMatch $r.Name $storeLookup
+                if ($sm) {
+                    $u.Category = 'Microsoft Store packages winget can update'
+                    if ($sm.Publisher) { $u.Publisher = "$($sm.Publisher)   |   winget: $($r.Id)" }
+                    if ($sm.Image) { Set-AppIcon $u $sm.Image }
+                } else {
+                    # "Other" so it sorts under Desktop programs and the Store packages, not above them
+                    $u.Category = 'Other: components and runtimes  (no matching desktop program)'
+                }
+            }
+            if ($r.Version -eq 'Unknown') { Set-Status $u 'installed version unknown to winget - updated to the listed version regardless' 'neutral' }
+            elseif ($r.Explicit) { Set-Status $u 'winget lists this as needing explicit targeting (pinned or side-by-side) - updated by id' 'neutral' }
+            $u.IsSelected = $false            # nothing ticked by default: the technician picks, or Select All
+            $u.add_PropertyChanged({ param($s, $e) if ($e.PropertyName -eq 'IsSelected') { Update-Dash } })
+            $script:UpdItems.Add($u)
+        }
+        $script:UpdDirty = $false
+        $hint = "$($script:UpdItems.Count) update(s) available"
+        if ($script:UpdItems.Count) { $hint += " - $matched of them are programs on the Uninstall tab, the rest are components, runtimes or Store packages" }
+        if ($storeN) { $hint += "   |   $storeN Store app(s) also have updates - see the Microsoft Store apps sub-tab" }
+        if (@($script:WingetScanNotes).Count) { $hint += '   |   ' + (@($script:WingetScanNotes) -join '; ') }
+        Set-UpdWords 'Desk' $hint $(if ($script:UpdItems.Count -eq 0) { 'Everything winget knows about is up to date.' } else { '' })
+        Add-Log "Update scan: $hint (winget at $exe)"
+    } catch {
+        $script:UpdDirty = $false
+        Add-Log "Update scan failed: $($_.Exception.Message)"
+        Set-UpdWords 'Desk' '' "winget could not list updates.`n`n$($_.Exception.Message)`n`nPress Rescan to try again."
+    } finally {
+        $script:UpdScanning = $false
+        $LoadUpd.Visibility = 'Collapsed'
+        if ($script:UpdSubTab -eq 'Desk') { $ScrollUpdDesk.Visibility = 'Visible' }
+        Update-SearchCount
+    }
+    Resume-UpdScan
+}
+
+# ---- sharing identity with the Uninstall tab ----
+# winget names a program its own way ("Notepad++ (x64)"), the registry another ("Notepad++
+# (64-bit x64)"). Both are reduced to the words that survive stripping brackets, bitness and
+# version numbers, and compared on those.
+function Get-UpdateNameKey([string]$Name) {
+    $s = ('' + $Name).ToLowerInvariant()
+    $s = $s -replace '\(.*?\)', ' '
+    $s = $s -replace '\b(x64|x86|arm64|64-bit|32-bit|64 bit|32 bit|version|edition|v\d[\w.]*|\d+(\.\d+)+)\b', ' '
+    $s = $s -replace '[^a-z0-9+#]+', ' '
+    return ((($s -split ' ') | Where-Object { $_ }) -join ' ').Trim()
+}
+# Entries: Key, Name, Publisher, Icon, Exe, Image. From the Uninstall tab's own rows when that
+# list is current (their icons are already decoded - shared, not re-read), else from ONE registry
+# scan kept for five minutes. Rows the Uninstall list has not been asked for yet cost one scan,
+# which is what opening that tab would have cost anyway.
+function Get-UpdateProgramLookup {
+    $out = @()
+    if (-not $script:UnDirty -and $script:UnItems.Count) {
+        foreach ($i in $script:UnItems) {
+            $out += [pscustomobject]@{ Key = Get-UpdateNameKey $i.Name; Name = $i.Name; Publisher = $i.Publisher
+                                       Icon = ''; Exe = [string]$i.UnCommand; Image = $i.IconImage }
+        }
+        return $out
+    }
+    if (-not $script:UpdProgCache -or ((Get-Date) - $script:UpdProgCacheAt).TotalMinutes -gt 5) {
+        $script:UpdProgCache = @(Get-InstalledPrograms | Where-Object { $_ -and $_.Name })
+        $script:UpdProgCacheAt = Get-Date
+    }
+    foreach ($r in $script:UpdProgCache) {
+        $key = Get-UpdateNameKey $r.Name
+        $icon = [string]$r.Icon
+        $exe = [string]$r.Exe
+        # An MSI install has no DisplayIcon and its "uninstaller" is msiexec - neither tab gets
+        # a real icon from that. The program's own exe is one directory listing away, in its
+        # install folder: top level only, no recursion, so the cost is milliseconds per row.
+        if (-not $icon -and ($exe -match '(?i)^(.*\\)?(msiexec|winget)(\.exe)?$' -or -not $exe -or $exe -match '(?i)^winget ')) {
+            $exe = Get-UpdateExeFromFolder ([string]$r.Location) $key
+            # and when the registry has no folder either (Chrome, Notepad++, Tailscale all leave
+            # InstallLocation blank), the Start Menu shortcut knows where the program is
+            if (-not $exe) { $exe = Get-StartMenuExe $key }
+        }
+        $out += [pscustomobject]@{ Key = $key; Name = (Clean-DisplayName $r.Name); Publisher = (Clean-DisplayName $r.Publisher)
+                                   Icon = $icon; Exe = $exe; Image = $null }
+    }
+    return $out
+}
+# The Start Menu is the one place every installed program leaves an icon: a .lnk named after
+# it, pointing at its exe. The two Programs folders are listed ONCE per session (a few hundred
+# small files, tens of milliseconds) into a name-key -> .lnk map; a shortcut is only resolved
+# (one COM call) for a program that actually asks, so hundreds of rows cost nothing extra.
+$script:StartMenuLinks = $null
+function Get-StartMenuLinks {
+    if ($null -ne $script:StartMenuLinks) { return $script:StartMenuLinks }
+    $map = @{}
+    foreach ($root in @((Join-Path $env:ProgramData 'Microsoft\Windows\Start Menu\Programs'),
+                        (Join-Path $env:AppData 'Microsoft\Windows\Start Menu\Programs'))) {
+        if (-not (Test-Path -LiteralPath $root)) { continue }
+        foreach ($l in @(Get-ChildItem -LiteralPath $root -Recurse -Filter '*.lnk' -File -ErrorAction SilentlyContinue)) {
+            $k = Get-UpdateNameKey $l.BaseName
+            if ($k -and -not $map.ContainsKey($k)) { $map[$k] = $l.FullName }
+        }
+    }
+    $script:StartMenuLinks = $map
+    return $map
+}
+function Get-StartMenuExe([string]$Key) {
+    if (-not $Key) { return '' }
+    $map = Get-StartMenuLinks
+    $lnk = $map[$Key]
+    if (-not $lnk -and $Key.Length -ge 4) {
+        $cand = @($map.Keys | Where-Object { $_.Length -ge 4 -and ($_.Contains($Key) -or $Key.Contains($_)) } | Sort-Object { [Math]::Abs($_.Length - $Key.Length) }) | Select-Object -First 1
+        if ($cand) { $lnk = $map[$cand] }
+    }
+    if (-not $lnk) { return '' }
+    try {
+        $t = (New-Object -ComObject WScript.Shell).CreateShortcut($lnk).TargetPath
+        if ($t -and $t -match '(?i)\.exe$' -and (Test-Path -LiteralPath $t)) { return $t }
+    } catch { }
+    return ''
+}
+function Get-UpdateExeFromFolder([string]$Location, [string]$Key) {
+    $loc = ('' + $Location).Trim().Trim('"')
+    if (-not $loc -or -not (Test-Path -LiteralPath $loc -PathType Container)) { return '' }
+    $exes = @()
+    try { $exes = @(Get-ChildItem -LiteralPath $loc -Filter '*.exe' -File -ErrorAction Stop) } catch { return '' }
+    if (-not $exes.Count) { return '' }
+    # the exe named like the program first ("chrome" for "google chrome"), else the biggest one -
+    # uninstallers and helpers are small, the product is not
+    $words = @($Key -split ' ' | Where-Object { $_.Length -ge 3 })
+    foreach ($w in $words) {
+        $hit = @($exes | Where-Object { $_.BaseName.ToLowerInvariant().Contains($w) -and $_.BaseName -notmatch '(?i)unins|setup|update|crash|helper|report' }) | Sort-Object Length -Descending | Select-Object -First 1
+        if ($hit) { return $hit.FullName }
+    }
+    $big = @($exes | Where-Object { $_.BaseName -notmatch '(?i)unins|setup|update|crash|report' }) | Sort-Object Length -Descending | Select-Object -First 1
+    if ($big) { return $big.FullName }
+    return ''
+}
+# Store packages, from whichever Store list is already in memory - never a fresh Appx scan just
+# for an icon: that is seconds on a client, for a glyph.
+function Get-UpdateStoreLookup {
+    $src = $(if ($script:UpdStore.Count) { $script:UpdStore } elseif (-not $script:StoreDirty -and $script:UnStore.Count) { $script:UnStore } else { @() })
+    $out = @()
+    foreach ($i in @($src)) {
+        $out += [pscustomobject]@{ Key = Get-UpdateNameKey $i.Name; Name = $i.Name; Publisher = $i.Publisher; Icon = ''; Exe = ''; Image = $i.IconImage }
+    }
+    return $out
+}
+function Find-UpdateMatch([string]$Name, [object[]]$Lookup) {
+    $k = Get-UpdateNameKey $Name
+    if (-not $k -or -not $Lookup) { return $null }
+    $exact = @($Lookup | Where-Object { $_.Key -eq $k }) | Select-Object -First 1
+    if ($exact) { return $exact }
+    # one name inside the other ("google chrome" in "google chrome enterprise"), 4+ characters so
+    # "git" never claims "digital audio"
+    if ($k.Length -ge 4) {
+        $contains = @($Lookup | Where-Object { $_.Key.Length -ge 4 -and ($_.Key.Contains($k) -or $k.Contains($_.Key)) }) | Sort-Object { [Math]::Abs($_.Key.Length - $k.Length) } | Select-Object -First 1
+        if ($contains) { return $contains }
+    }
+    # most of the words in common, same first word
+    $kt = @($k -split ' ')
+    $best = $null; $bestScore = 0
+    foreach ($e in $Lookup) {
+        $et = @($e.Key -split ' ')
+        if (-not $et.Count -or $et[0] -ne $kt[0]) { continue }
+        $common = @($kt | Where-Object { $et -contains $_ }).Count
+        $union = @(@($kt) + @($et) | Select-Object -Unique).Count
+        if ($union -eq 0) { continue }
+        $score = $common / $union
+        if ($score -gt $bestScore) { $bestScore = $score; $best = $e }
+    }
+    if ($bestScore -ge 0.6) { return $best }
+    return $null
+}
+
+# The Store list is for looking, not ticking: same scan as the Uninstall tab's Store sub-tab.
+function Load-StoreList {
+    # the package read pumps, the pump dispatches clicks, and the Store pill pressed again
+    # mid-read re-entered here and listed every app twice. One read at a time.
+    if ($script:UpdStoreScanning) { return }
+    $script:UpdStoreScanning = $true
+    $script:UpdStore.Clear()
+    $ScrollUpdStore.Visibility = 'Collapsed'; $EmptyUpd.Visibility = 'Collapsed'
+    $TxtLoadUpd.Text = 'Reading Microsoft Store apps...'
+    $LoadUpd.Visibility = 'Visible'
+    Update-UI
+    try {
+        foreach ($s in @(Get-StoreApps | Where-Object { $_ -and $_.Name })) {
+            $u = New-Object AppItem
+            $u.Id = "updx-$($s.PackageFull)"
+            $u.Name = Clean-DisplayName $s.Name
+            $u.Version = Clean-DisplayName $s.Version
+            $u.Publisher = Clean-DisplayName $s.Publisher
+            $u.Size = ''
+            $u.ColInstalled = [string]$u.Version
+            $u.RowOpacity = 1.0
+            $u.UnArgs = $s.PackageFull
+            $u.Source = $(if ($s.IsSystem) { 'Store app (system)' } else { 'Store app' })
+            $u.Category = 'Installed Microsoft Store apps'
+            $u.IconData = ''
+            $u.GlyphVis = 'Collapsed'
+            $u.IconBg = '#00000000'
+            if ($s.Location -and $s.Logo) { Request-Icon $u 'store' @{ Location = $s.Location; Logo = $s.Logo } }
+            $script:UpdStore.Add($u)
+        }
+        $script:UpdStoreDirty = $false
+        Set-UpdWords 'Store' "$($script:UpdStore.Count) Store app(s) installed - the Store updates them as a set, so there is nothing to tick here" $(if ($script:UpdStore.Count -eq 0) { 'No Microsoft Store apps are installed for this account.' } else { '' })
+    } catch {
+        $script:UpdStoreDirty = $false
+        Add-Log "Store app scan failed: $($_.Exception.Message)"
+        Set-UpdWords 'Store' '' "The Store apps could not be listed.`n`n$($_.Exception.Message)"
+    } finally {
+        $script:UpdStoreScanning = $false
+        $LoadUpd.Visibility = 'Collapsed'
+        if ($script:UpdSubTab -eq 'Store') { $ScrollUpdStore.Visibility = 'Visible' }
+        Update-SearchCount
+    }
+}
+
+# ---- Windows Update ----
+# The Windows Update Agent, which ships with Windows - no module to install on a client. The
+# search is the slow part (30-90 s on a machine that has not checked in), so it runs in a
+# background runspace while the window keeps painting; five minutes is the give-up.
+# BrowseOnly is Windows' own "optional": an update it lists but will not install by itself -
+# drivers, optional quality previews, feature packs. Those go in their own group, unticked.
+function Get-WindowsUpdateList {
+    $ps = [PowerShell]::Create()
+    [void]$ps.AddScript({
+        $out = @()
+        $s = New-Object -ComObject Microsoft.Update.Session
+        $s.ClientApplicationID = 'App Installer'
+        # Two searches, merged on the update id. The plain search answers with what Windows
+        # would install on its own plus the drivers; the monthly PREVIEW updates ("2026-08
+        # Preview Update (KB...)", the .NET preview) are offered only as optional installations
+        # and never came back from it - measured on a machine where Settings listed both. They
+        # are what Settings shows under Optional updates, and they were simply absent here.
+        $searcher = $s.CreateUpdateSearcher()
+        $seen = @{}
+        $all = @()
+        foreach ($crit in 'IsInstalled=0 and IsHidden=0', "IsInstalled=0 and IsHidden=0 and DeploymentAction='OptionalInstallation'") {
+            $r = $null
+            try { $r = $searcher.Search($crit) } catch { if ($crit -eq 'IsInstalled=0 and IsHidden=0') { throw }; continue }
+            foreach ($u in @($r.Updates)) {
+                $key = [string]$u.Identity.UpdateID
+                if ($seen.ContainsKey($key)) { continue }
+                $seen[$key] = $true
+                $all += $u
+            }
+        }
+        foreach ($u in $all) {
+            $kb = @(@($u.KBArticleIDs) | ForEach-Object { "KB$_" }) -join ' '
+            $cats = @(@($u.Categories) | ForEach-Object { [string]$_.Name })
+            $reboot = $false
+            try { $reboot = [bool]$u.RebootRequired -or ([int]$u.InstallationBehavior.RebootBehavior -ne 0) } catch { }
+            $out += [pscustomobject]@{
+                Id = [string]$u.Identity.UpdateID; Rev = [int]$u.Identity.RevisionNumber; Title = [string]$u.Title
+                KB = $kb; Category = ($cats -join ', '); Size = [long]$u.MaxDownloadSize
+                Optional = [bool]$u.BrowseOnly; Driver = ([int]$u.Type -eq 2); Reboot = $reboot
+                Downloaded = [bool]$u.IsDownloaded; Mandatory = [bool]$u.IsMandatory
+                # what Settings actually sorts by: Windows installs an update on its own only
+                # when it auto-selects it. Drivers come back BrowseOnly=False yet AutoSelect=False,
+                # and Settings files them under "Optional updates" - the tool called them recommended.
+                AutoSelect = [bool]$u.AutoSelectOnWebSites
+                # 1 = Windows installs it; 4 = offered as an optional installation (previews, drivers)
+                Deployment = $(try { [int]$u.DeploymentAction } catch { 0 })
+            }
+        }
+        $out
+    })
+    $h = $ps.BeginInvoke()
+    $t0 = Get-Date
+    try {
+        while (-not $h.IsCompleted) {
+            Update-UI
+            Start-Sleep -Milliseconds 200
+            if (((Get-Date) - $t0).TotalSeconds -gt 300) { $ps.Stop(); throw 'Windows Update did not answer within 5 minutes' }
+        }
+        $res = @($ps.EndInvoke($h))
+        if ($ps.Streams.Error.Count) { throw ([string]$ps.Streams.Error[0].Exception.Message) }
+        return $res
+    } finally { $ps.Dispose() }
+}
+
+function Load-WinUpdates {
+    if ($script:UpdScanning) { return }
+    $script:UpdScanning = $true
+    $script:UpdWin.Clear()
+    $ScrollUpdWin.Visibility = 'Collapsed'; $EmptyUpd.Visibility = 'Collapsed'
+    $TxtLoadUpd.Text = 'Asking Windows Update what is waiting...'
+    $LoadUpd.Visibility = 'Visible'
+    $TxtUpdHint.Text = ''
+    Update-UI
+    try {
+        $found = @(Get-WindowsUpdateList)
+        # Optional the way Settings means it: browse-only, OR anything Windows would not select
+        # on its own (every driver, measured on this machine: 1 Defender update + 2 drivers read
+        # "1 update, 2 optional updates" in Settings and used to read "3 recommended" here).
+        # Guarded on the field existing, so a harness's hand-made rows still load.
+        foreach ($w in $found) {
+            $isOpt = [bool]$w.Optional
+            if ($w.PSObject.Properties['AutoSelect'] -and -not [bool]$w.AutoSelect) { $isOpt = $true }
+            # an optional-installation offer (the monthly preview, a driver) is optional whatever
+            # else it says about itself - that is the list Settings calls Optional updates
+            if ($w.PSObject.Properties['Deployment'] -and [int]$w.Deployment -eq 4) { $isOpt = $true }
+            $w | Add-Member -NotePropertyName Opt -NotePropertyValue $isOpt -Force
+        }
+        $rec = 0; $opt = 0; $drv = 0; $reb = 0
+        foreach ($w in ($found | Sort-Object Opt, Title)) {
+            $u = New-Object AppItem
+            $u.Id = Get-RowId 'wu' $w.Id
+            $u.Name = [string]$w.Title
+            $u.Publisher = (@($w.KB, $w.Category) | Where-Object { $_ }) -join '   '
+            $u.Version = [string]$w.Rev
+            $u.UnCommand = 'winupdate'
+            $u.UnArgs = [string]$w.Id
+            $u.DetectPath = [string]$w.KB
+            $u.SizeBytes = [long]$w.Size
+            $u.Source = 'Windows'
+            $u.Size = $(if ($w.Size -gt 0) { Format-Size $w.Size } else { '' })
+            $u.ColInstalled = $(if ($w.Size -gt 0) { Format-Size $w.Size } else { '-' })
+            $u.ColSize = $(if ($w.Reboot) { 'restart needed' } else { '' })
+            $u.RowOpacity = 1.0
+            $u.TagText = $(if ($w.Driver) { 'driver' } elseif ($w.Opt) { 'optional' } else { '' })
+            $u.TagVis = $(if ($u.TagText) { 'Visible' } else { 'Collapsed' })
+            $u.Category = $(if ($w.Opt) { 'Optional updates  (what Settings > Optional updates lists - Windows leaves these to you)' } else { 'Recommended updates  (Windows would install these on its own)' })
+            $u.IconData = ''
+            $u.GlyphVis = 'Collapsed'
+            $u.IconBg = '#00000000'
+            $u.IsSilent = -not $w.Opt
+            $u.IsSelected = $false
+            if ($w.Opt) { $opt++ } else { $rec++ }
+            if ($w.Driver) { $drv++ }
+            if ($w.Reboot) { $reb++ }
+            $u.add_PropertyChanged({ param($s, $e) if ($e.PropertyName -eq 'IsSelected') { Update-Dash } })
+            $script:UpdWin.Add($u)
+        }
+        $script:UpdWinDirty = $false
+        # the same two numbers Settings shows: "N update(s)" and "N optional updates". Settings
+        # also lists the drivers a second time on its Optional updates page, which is why it
+        # can look like more than is here.
+        $hint = "$($script:UpdWin.Count) Windows update(s) waiting - $rec recommended, $opt optional"
+        if ($drv) { $hint += " ($drv driver(s))" }
+        if ($reb) { $hint += "   |   $reb need a restart to finish" }
+        Set-UpdWords 'Win' $hint $(if ($script:UpdWin.Count -eq 0) { 'Windows Update has nothing waiting for this PC.' } else { '' })
+        Add-Log "Windows Update scan: $hint"
+    } catch {
+        $script:UpdWinDirty = $false
+        Add-Log "Windows Update scan failed: $($_.Exception.Message)"
+        Set-UpdWords 'Win' '' "Windows Update could not be searched.`n`n$($_.Exception.Message)`n`nPress Rescan to try again."
+    } finally {
+        $script:UpdScanning = $false
+        $LoadUpd.Visibility = 'Collapsed'
+        if ($script:UpdSubTab -eq 'Win') { $ScrollUpdWin.Visibility = 'Visible' }
+        Update-SearchCount
+    }
+    Resume-UpdScan
+}
+
+function Test-UpdateListBusy([switch]$Quiet) {
+    if ($script:Phase -in 'Download', 'Install' -and $script:BatchTab -eq 'Update') {
+        if (-not $Quiet) {
+            Show-Overlay 'Updates are running' ("These rows are showing live progress from the elevated worker right now, " +
+                "so the list is held until the batch finishes.`n`nEverything else stays available in the meantime.")
+        }
+        return $true
+    }
+    return $false
+}
+
+# The hint line and the empty-list label serve all three sub-tabs. A scan writes its words
+# through here, so one that finishes while another sub-tab is on screen keeps them to itself;
+# Select-UpdTab paints the tab's own words on the way back.
+function Set-UpdWords([string]$Tab, [string]$Hint, [string]$Empty) {
+    $script:UpdWords[$Tab] = @{ Hint = $Hint; Empty = $Empty }
+    if ($script:UpdSubTab -ne $Tab) { return }
+    $TxtUpdHint.Text = $Hint
+    $EmptyUpd.Text = $Empty
+    $EmptyUpd.Visibility = $(if ($Empty) { 'Visible' } else { 'Collapsed' })
+}
+
+# A scan asked for while another is running is remembered, not dropped. MEASURED: Update, then
+# a quick Windows Update click, landed inside the winget scan's pump; Load-WinUpdates saw the
+# flag and returned without a word, and the Windows list sat blank until Rescan. Now the
+# running scan finishes and Resume-UpdScan starts whichever sub-tab is on screen and still
+# stale. Only the two tickable lists come through here; the Store list has its own loader.
+function Request-UpdScan {
+    $win = ($script:UpdSubTab -eq 'Win'); $desk = ($script:UpdSubTab -eq 'Desk')
+    if (-not (($win -and $script:UpdWinDirty) -or ($desk -and $script:UpdDirty))) { return }
+    if ($script:UpdScanning) {
+        # said on the spinner that is already up, so the wait has a reason
+        $TxtLoadUpd.Text = $(if ($win) { 'Finishing the winget scan, then asking Windows Update...' } else { 'Finishing the Windows Update scan, then asking winget...' })
+        $LoadUpd.Visibility = 'Visible'
+        return
+    }
+    if ($win) { Load-WinUpdates } else { Load-Updates }
+}
+function Resume-UpdScan {
+    # a scan on its way out: the sub-tab on screen may have been asked for while it ran
+    if ($PanelUpdate.Visibility -ne 'Visible' -or (Test-UpdateListBusy -Quiet)) { return }
+    Request-UpdScan
+}
+
+function Select-UpdTab([string]$Which) {
+    $script:UpdSubTab = $Which
+    $store = ($Which -eq 'Store'); $win = ($Which -eq 'Win')
+    $BtnSubUpdDesk.Style  = $window.FindResource($(if ($store -or $win) { 'TabIdle' } else { 'TabActive' }))
+    $BtnSubUpdStore.Style = $window.FindResource($(if ($store) { 'TabActive' } else { 'TabIdle' }))
+    $BtnSubUpdWin.Style   = $window.FindResource($(if ($win) { 'TabActive' } else { 'TabIdle' }))
+    $ScrollUpdDesk.Visibility  = $(if ($store -or $win) { 'Collapsed' } else { 'Visible' })
+    $ScrollUpdStore.Visibility = $(if ($store) { 'Visible' } else { 'Collapsed' })
+    $ScrollUpdWin.Visibility   = $(if ($win) { 'Visible' } else { 'Collapsed' })
+    $EmptyUpd.Visibility = 'Collapsed'
+    # Select All / Clear All / Rescan act on the tickable lists only
+    foreach ($b in @($BtnUpdSelAll, $BtnUpdSelNone, $BtnUpdRescan)) { $b.Visibility = $(if ($store) { 'Collapsed' } else { 'Visible' }) }
+    $TxtUpdApplyBtn.Text = $(if ($store) { 'Update all Store apps' } elseif ($win) { 'Install Selected Updates' } else { 'Update Selected' })
+    Sync-UpdChrome
+    if ($PanelUpdate.Visibility -eq 'Visible' -and -not (Test-UpdateListBusy -Quiet)) {
+        if ($store -and $script:UpdStoreDirty) { Load-StoreList }
+        elseif (($win -and $script:UpdWinDirty) -or (-not $store -and -not $win -and $script:UpdDirty)) { Request-UpdScan }
+        else { $w = $script:UpdWords[$Which]; Set-UpdWords $Which ('' + $w.Hint) ('' + $w.Empty) }
+    }
+    Update-Dash
+}
+function Get-UpdItems { if ($script:UpdSubTab -eq 'Win') { return $script:UpdWin }; return $script:UpdItems }
+
+# The same sortable header the Uninstall table has: press the lit column to turn it round.
+$script:UpdSort = 'name'
+$script:UpdSortDesc = $false
+function Set-UpdSort([string]$How) {
+    if ($script:UpdSort -eq $How) { $script:UpdSortDesc = -not $script:UpdSortDesc }
+    else { $script:UpdSort = $How; $script:UpdSortDesc = $false }
+    $dir = $(if ($script:UpdSortDesc) { 'Descending' } else { 'Ascending' })
+    $prop = switch ($script:UpdSort) {
+        'pub'   { 'Publisher' }
+        'inst'  { 'ColInstalled' }
+        'avail' { 'ColSize' }
+        'src'   { 'Source' }
+        default { 'Name' }
+    }
+    foreach ($v in @($script:UpdView, $script:UpdStoreView, $script:UpdWinView)) {
+        if (-not $v) { continue }
+        $v.SortDescriptions.Clear()
+        $v.SortDescriptions.Add((New-Object ComponentModel.SortDescription $prop, $dir))
+        $v.Refresh()
+    }
+    Sync-UpdChrome
+}
+function Sync-UpdChrome {
+    $hOn  = $window.FindResource('ColHeadOn')
+    $hOff = $window.FindResource('ColHead')
+    $arrow = $(if ($script:UpdSortDesc) { ' v' } else { ' ^' })
+    $store = ($script:UpdSubTab -eq 'Store'); $win = ($script:UpdSubTab -eq 'Win')
+    $cols = @(@($BtnUpdColName, 'name', $(if ($win) { 'UPDATE' } else { 'PROGRAM' })),
+              @($BtnUpdColPub, 'pub', $(if ($win) { 'KB   CATEGORY' } else { 'PUBLISHER' })),
+              @($BtnUpdColInst, 'inst', $(if ($store) { 'VERSION' } elseif ($win) { 'DOWNLOAD' } else { 'INSTALLED' })),
+              @($BtnUpdColAvail, 'avail', $(if ($win) { 'RESTART' } else { 'AVAILABLE' })),
+              @($BtnUpdColSrc, 'src', 'SOURCE'))
+    foreach ($c in $cols) {
+        $on = ($script:UpdSort -eq $c[1])
+        $c[0].Style = $(if ($on) { $hOn } else { $hOff })
+        $c[0].Content = $c[2] + $(if ($on) { $arrow } else { '' })
+    }
+    # the Store list has no "available" column to sort by
+    $BtnUpdColAvail.Visibility = $(if ($store) { 'Hidden' } else { 'Visible' })
+}
+function Set-UpdSelection([bool]$On) {
+    if (Test-UpdateListBusy) { return }
+    $script:SuspendDash = $true
+    try { foreach ($t in @(Get-UpdItems)) { $t.IsSelected = $On } } finally { $script:SuspendDash = $false }
+    Update-Dash
+}
+
+# One row per winget package, or the single Store row - through the same elevated worker.
+function Start-UpdateBatch([object[]]$Sel) {
+    $exe = Get-WingetPath
+    foreach ($s in $Sel) { Set-Status $s 'Queued' 'neutral'; Set-Ring $s 'queued' }
+    $script:Pending = @($Sel)
+    $script:BatchTab = 'Update'
+    # The three the Firewall and Tweak starters forgot: without RunStarted the run record read
+    # 0 seconds, and the overall bar picked up the previous install batch's position.
+    $script:RunStarted = Get-Date
+    $script:DlIndex = 0
+    $script:LastLogKey = @{}
+    $script:HadFailures = $false
+    $script:WorkerStarted = $false
+    $script:EndQueued = $false
+    $script:Paused = $false
+    $script:AwaitingScan = $false
+    Remove-Item -LiteralPath $script:QueuePath, $script:StatusPath, $script:CancelPath, $script:SkipPath -ErrorAction SilentlyContinue
+    Show-BatchStrip
+    if (-not (Start-Worker)) {
+        Abort-Batch 'the administrator prompt was declined, so nothing was run' 'warn'
+        return
+    }
+    foreach ($s in $Sel) {
+        $e = $(if ($s.UnCommand -eq 'storeupdate') {
+                   @{ id = $s.Id; action = 'storeupdate'; name = [string]$s.Name }
+               } elseif ($s.UnCommand -eq 'winupdate') {
+                   @{ id = $s.Id; action = 'winupdate'; updateId = [string]$s.UnArgs; name = [string]$s.Name; kb = [string]$s.DetectPath }
+               } else {
+                   @{ id = $s.Id; action = 'update'; wingetId = [string]$s.UnArgs; name = [string]$s.Name
+                      winget = $exe; source = [string]$s.Source; installed = [string]$s.Version; available = [string]$s.DetectPath }
+               })
+        Add-Content -Path $script:QueuePath -Value ($e | ConvertTo-Json -Compress -Depth 4) -Encoding UTF8
+    }
+    Add-Content -Path $script:QueuePath -Value '{"end":true}' -Encoding UTF8
+    $script:EndQueued = $true
+    $script:Phase = 'Install'
+    $BtnUpdApply.IsEnabled = $false
+    $BtnInstall.IsEnabled = $false
+    $BtnCancel.Visibility = 'Visible'
+    $TxtNow.Text = 'Updating...'
+    $DotNow.Fill = '#FF4C8DFF'
+    $RowNow.Visibility = 'Visible'
+    $TxtStatus.Text = $TxtNow.Text
+    Add-Log "Update batch: $($Sel.Count) item(s) - $((@($Sel | ForEach-Object { [string]$_.UnArgs })) -join ', ')."
+}
+
 # ---------- detection ----------
 # Reads the machine's current state to show what is ALREADY applied. Runs in the GUI,
 # unelevated: HKLM and service state read fine without admin, and HKCU here is the
@@ -7531,7 +9226,13 @@ $script:DebloatPacks = @{
 
 # OEM updater services and logon tasks are matched by pattern because the names vary by
 # vendor. Shared for the same reason as the debloat packs: probe and apply must agree.
-$script:OemBloatPatterns = @('HP*', 'Dell*', 'SupportAssist*', 'Lenovo*', 'Acer*', 'ASUS*',
+# Never a bare 'HP*': on Windows 11 25H2 that matches hpatchmon, Windows' OWN Hotpatch Monitoring
+# Service. Measured on a lab VM with no HP software at all - Detect ticked this row on every
+# 25H2 machine, and Undo then set a Windows service to Automatic that had shipped as Manual.
+# The HP names below are the actual updater/telemetry services HP installs.
+$script:OemBloatPatterns = @('HPSupport*', 'HPAppHelper*', 'HPDiags*', 'HPNetwork*', 'HPSysInfo*', 'HpTouchpoint*',
+                             'HPOmen*', 'HPPrintScan*', 'HPAudio*', 'HPWMISVC*', 'HPJumpStart*',
+                             'Dell*', 'SupportAssist*', 'Lenovo*', 'Acer*', 'ASUS*',
                              'Nahimic*', 'Killer*', 'AdobeUpdate*', 'GoogleUpdate*', 'jusched*')
 
 # The two tables above rendered as PowerShell source, for Start-Worker to paste over the
@@ -7539,12 +9240,20 @@ $script:OemBloatPatterns = @('HP*', 'Dell*', 'SupportAssist*', 'Lenovo*', 'Acer*
 # copy to edit; single-quoted literals, so a pattern can never be interpreted.
 # The detector, rendered from the live functions for the worker (the shipped file has no
 # comments left to find markers in). Same idea as Get-SharedTablesSource.
-$script:InstallerFamilyFunctions = @('Get-InstallerFamilyLabel', 'Get-FamilySwitches', 'Read-FileRange', 'ConvertTo-Latin1', 'Find-Marker', 'ConvertFrom-HexMarker', 'Get-PeLayout', 'Get-VersionStrings', 'Get-PeResourceLeaves', 'Get-CompanionNames', 'Test-Companion', 'Get-InstallerFamily', 'Get-UninstallFamily', 'New-InstallerFamilyFixture')
+$script:InstallerFamilyFunctions = @('Get-InstallerFamilyLabel', 'Get-FamilySwitches', 'Read-FileRange', 'ConvertTo-Latin1', 'Find-Marker', 'ConvertFrom-HexMarker', 'Get-PeLayout', 'Get-VersionStrings', 'Get-PeResourceLeaves', 'Get-CompanionNames', 'Test-Companion', 'Get-InstallerFamily', 'Find-InstallerIdentity', 'Get-UninstallFamily', 'New-InstallerFamilyFixture')
 function Get-InstallerFamilySource {
     $q = { param($s) "'" + ('' + $s).Replace("'", "''") + "'" }
     $lines = @('$script:InstallerFamilyLabels = @{')
     foreach ($k in @($script:InstallerFamilyLabels.Keys | Sort-Object)) { $lines += "    $k = " + (& $q $script:InstallerFamilyLabels[$k]) }
     $lines += '}'
+    # The second-pass marker table travels too: Find-InstallerIdentity reads it, and a worker
+    # rendered without it would recognise none of the identity-string families on the client
+    # while the editor recognised all of them.
+    $lines += '$script:InstallerIdentityMarkers = @('
+    foreach ($fam in @($script:InstallerIdentityMarkers)) {
+        $lines += "    @{ Family = $(& $q $fam.Family); Markers = @(" + ((@($fam.Markers) | ForEach-Object { & $q $_ }) -join ', ') + ') }'
+    }
+    $lines += ')'
     foreach ($n in $script:InstallerFamilyFunctions) {
         $c = Get-Command $n -CommandType Function -ErrorAction SilentlyContinue
         if ($c) { $lines += "function $n {" + [Environment]::NewLine + $c.ScriptBlock.ToString() + [Environment]::NewLine + '}' }
@@ -7630,10 +9339,14 @@ $script:TweakTests = @{
     widgets         = { Test-RegVal 'HKLM\SOFTWARE\Policies\Microsoft\Dsh' 'AllowNewsAndInterests' 0 }
     adobeblock      = { $h = Join-Path $env:SystemRoot 'System32\drivers\etc\hosts'
                         if (-not (Test-Path -LiteralPath $h)) { return $false }
-                        return [bool](@(Get-Content -LiteralPath $h -ErrorAction SilentlyContinue) -match 'PC2Go Adobe block list') }
-    reservedstorage = { $v = Get-RegVal 'HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\ReserveManager' 'ShippedWithReserves'
-                        if ($null -eq $v) { return $false }
-                        return ("$v" -eq '0') }
+                        # both marker generations: the branded one machines already carry, and the current one
+                        return [bool](@(Get-Content -LiteralPath $h -ErrorAction SilentlyContinue) -match 'Adobe block list - begin') }
+    # MEASURED on 25H2, not copied from a .reg guide: DISM /Set-ReservedStorageState /State:Disabled
+    # leaves ShippedWithReserves at 1 (it records how the image shipped, and never changes) and
+    # flips PassedPolicy 1 -> 0 and MiscPolicyInfo 1 -> 2; /State:Enabled puts both back. The old
+    # probe read ShippedWithReserves, so the row was "not applied" for ever and DISM re-ran every batch.
+    reservedstorage = { (Test-RegVal 'HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\ReserveManager' 'PassedPolicy' 0) -and
+                        (Test-RegVal 'HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\ReserveManager' 'MiscPolicyInfo' 2) }
     # The child key being absent only means something if the PARENT exists - on Windows 10
     # and older Windows 11 builds NameSpace_36354489 is not there at all, and treating that
     # as "already applied" would tick a tweak that was never run.
@@ -7654,7 +9367,10 @@ $script:TweakTests = @{
                                    (Join-Path $env:ProgramFiles 'Microsoft OneDrive\OneDrive.exe'),
                                    (Join-Path ${env:ProgramFiles(x86)} 'Microsoft OneDrive\OneDrive.exe'))
                         return -not (@($paths | Where-Object { $_ -and (Test-Path -LiteralPath $_) }).Count) }
-    razerdisable    = { Test-RegVal 'HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\DriverSearching' 'SearchOrderConfig' 0 }
+    # Its OWN marker, not the SearchOrderConfig it shares with devicecompanion: probing the shared
+    # value made each row read "applied" whenever the OTHER one was, and made the two undos each
+    # leave the shared block to the other - so "undo everything" left both applied.
+    razerdisable    = { Test-RegVal 'HKLM\SOFTWARE\Policies\Microsoft\Windows\DriverSearching' 'DontSearchWindowsUpdate' 1 }
     # Promoted from Preferences. Each of these acts in ONE direction, so absent simply means not
     # applied - none of them needs the "absent counts as already-correct" rule the preferences
     # carried, because none of them targets a Windows default. That rule is why Window Snapping
@@ -7782,6 +9498,15 @@ $script:TweakTests = @{
     componentstore  = { $null }
     tempfiles       = { $null }
     recyclebin      = { $null }
+    browsercache    = { $null }
+    crashdumps      = { $null }
+    docache         = { $null }
+    shadowcap       = { $null }
+    searchscope     = { (Test-RegVal 'HKLM\SOFTWARE\Microsoft\Windows Search\Gather\Windows\SystemIndex' 'RespectPowerModes' 1) -and
+                        (Test-RegVal 'HKLM\SOFTWARE\Policies\Microsoft\Windows\Windows Search' 'PreventIndexOnBattery' 1) }
+    # Defender answers through its own cmdlet, not the registry: the policy hive mirrors it late
+    defenderscan    = { try { ([int](Get-MpPreference -ErrorAction Stop).ScanAvgCPULoadFactor) -le 20 } catch { $false } }
+    storagesense    = { Test-RegVal 'HKLM\SOFTWARE\Policies\Microsoft\Windows\StorageSense' 'AllowStorageSenseGlobal' 1 }
     windowsold      = { $null }
 }
 
@@ -7910,6 +9635,8 @@ function Invoke-TweakDetect {
     # and the dispatcher is pumped so each row's verdict paints as it lands.
     $all = @(Get-OptItems)
     $BtnDetect.IsEnabled = $false
+    # every other button on this toolbar refuses while this pumps - see Test-BatchBusy
+    $script:TweakChecking = $true
     $window.Cursor = [Windows.Input.Cursors]::Wait
     $TxtTweakHint.Text = "detecting... 0 of $($all.Count)"
     Update-UI
@@ -7941,6 +9668,7 @@ function Invoke-TweakDetect {
             }
         }
     } finally {
+        $script:TweakChecking = $false
         $script:SuspendDash = $false
         $window.Cursor = $null
         $BtnDetect.IsEnabled = $true
@@ -8071,11 +9799,16 @@ function Start-UserBatch([string]$Action, [hashtable]$Data) {
     $script:AwaitingScan = $false
     Remove-Item -LiteralPath $script:QueuePath, $script:StatusPath, $script:CancelPath, $script:SkipPath -ErrorAction SilentlyContinue
     Show-BatchStrip
+    # Built and protected BEFORE the worker is launched: Protect-QueueEntry throws by design
+    # when DPAPI is unavailable, and throwing after Start-Worker left an elevated process
+    # polling a queue that would never get its end marker. techUser is the signed-in account,
+    # which the worker cannot see for itself - see Test-AccountActionSafe.
+    $me = ''; try { $me = [Environment]::UserName } catch { }
+    $entry = (Protect-QueueEntry (@{ id = $row.Id; action = $Action; techUser = $me } + $Data)) | ConvertTo-Json -Compress -Depth 4
     if (-not (Start-Worker)) {
-        Abort-Batch 'elevation declined'
+        Abort-Batch 'the administrator prompt was declined, so nothing was run' 'warn'
         return
     }
-    $entry = (Protect-QueueEntry (@{ id = $row.Id; action = $Action } + $Data)) | ConvertTo-Json -Compress -Depth 4
     Add-Content -Path $script:QueuePath -Value $entry -Encoding UTF8
     Add-Content -Path $script:QueuePath -Value '{"end":true}' -Encoding UTF8
     $script:EndQueued = $true
@@ -8150,7 +9883,7 @@ function Start-ShareBatch([string]$Action, [object[]]$Items, [bool]$Anyone = $fa
     Remove-Item -LiteralPath $script:QueuePath, $script:StatusPath, $script:CancelPath, $script:SkipPath -ErrorAction SilentlyContinue
     Show-BatchStrip
     if (-not (Start-Worker)) {
-        Abort-Batch 'elevation declined'
+        Abort-Batch 'the administrator prompt was declined, so nothing was run' 'warn'
         return
     }
     foreach ($e in $entries) {
@@ -8186,10 +9919,18 @@ function Start-FwBatch([string]$Action, [object[]]$Sel) {
     $script:EndQueued = $false
     $script:Paused = $false
     $script:AwaitingScan = $false
+    $script:CancelRequested = $false
+    $script:CurJob = $null
+    # The same three the Update and Users starters set, for the same reasons: without RunStarted
+    # the Firewall run record carried the previous batch's clock, and the overall bar inherited
+    # the previous install batch's DlIndex.
+    $script:RunStarted = Get-Date
+    $script:DlIndex = 0
+    $script:LastLogKey = @{}
     Remove-Item -LiteralPath $script:QueuePath, $script:StatusPath, $script:CancelPath, $script:SkipPath -ErrorAction SilentlyContinue
     Show-BatchStrip
     if (-not (Start-Worker)) {
-        Abort-Batch 'elevation declined'
+        Abort-Batch 'the administrator prompt was declined, so nothing was run' 'warn'
         return
     }
     foreach ($s in $Sel) {
@@ -8247,19 +9988,22 @@ function Start-UserChain([object[]]$Steps) {
     $script:AwaitingScan = $false
     Remove-Item -LiteralPath $script:QueuePath, $script:StatusPath, $script:CancelPath, $script:SkipPath -ErrorAction SilentlyContinue
     Show-BatchStrip
-    if (-not (Start-Worker)) {
-        Abort-Batch 'elevation declined'
-        return
-    }
+    # every entry built and protected before the worker exists - same reason as Start-UserBatch
+    $me = ''; try { $me = [Environment]::UserName } catch { }
+    $entries = @()
     for ($i = 0; $i -lt $Steps.Count; $i++) {
         # `chain` tells the worker these are ORDERED and dependent: if one fails, the steps
         # after it must not run. Without it a failed "create the account" was followed by
         # "disable the old account" anyway.
-        $entry = (Protect-QueueEntry (@{ id = "chain$($i + 1)"; action = [string]$Steps[$i].action
-                                         chain = $true } + $Steps[$i].data)) |
-                 ConvertTo-Json -Compress -Depth 4
-        Add-Content -Path $script:QueuePath -Value $entry -Encoding UTF8
+        $entries += (Protect-QueueEntry (@{ id = "chain$($i + 1)"; action = [string]$Steps[$i].action
+                                            chain = $true; techUser = $me } + $Steps[$i].data)) |
+                    ConvertTo-Json -Compress -Depth 4
     }
+    if (-not (Start-Worker)) {
+        Abort-Batch 'the administrator prompt was declined, so nothing was run' 'warn'
+        return
+    }
+    foreach ($entry in $entries) { Add-Content -Path $script:QueuePath -Value $entry -Encoding UTF8 }
     Add-Content -Path $script:QueuePath -Value '{"end":true}' -Encoding UTF8
     $script:EndQueued = $true
     $script:Phase = 'Install'
@@ -8279,11 +10023,10 @@ function Start-TweakUndo([object[]]$Sel) {
     $explorerIds = @('taskbarclean', 'startclean', 'rightclickmenu', 'visualeffects', 'widgets',
                      'endtask', 'uisnappy', 'explorerhome', 'explorerprivacy', 'desktopicons', 'windowsai')
     $script:NeedExplorerRestart = [bool]@($Sel | Where-Object { $_.UnArgs -in $explorerIds }).Count
-    # The same rows, plus every preference - all of them write values Windows only re-reads when
-    # it is told to. Undo needs the broadcast exactly as much as apply does, or turning a
-    # preference back off looks just as broken as turning it on did.
-    $script:NeedSettingBroadcast = [bool]@($Sel | Where-Object {
-        $_.UnArgs -in $explorerIds }).Count
+    # The same rows write values Windows only re-reads when it is told to. Undo needs the
+    # broadcast exactly as much as apply does, or turning a tweak back off looks just as
+    # broken as turning it on did.
+    $script:NeedSettingBroadcast = $script:NeedExplorerRestart
     foreach ($s in $Sel) { Set-Status $s 'Queued' 'neutral'; Set-Ring $s 'queued' }
     $script:Pending = @($Sel)
     $script:BatchTab = 'Tweak'
@@ -8292,10 +10035,17 @@ function Start-TweakUndo([object[]]$Sel) {
     $script:EndQueued = $false
     $script:Paused = $false
     $script:AwaitingScan = $false
+    $script:CancelRequested = $false
+    $script:CurJob = $null
+    # the same three the Update and Users starters set: without RunStarted the Optimize run
+    # record carried the previous batch's clock, and the overall bar the previous DlIndex
+    $script:RunStarted = Get-Date
+    $script:DlIndex = 0
+    $script:LastLogKey = @{}
     Remove-Item -LiteralPath $script:QueuePath, $script:StatusPath, $script:CancelPath, $script:SkipPath -ErrorAction SilentlyContinue
     Show-BatchStrip
     if (-not (Start-Worker)) {
-        Abort-Batch 'elevation declined'
+        Abort-Batch 'the administrator prompt was declined, so nothing was run' 'warn'
         return
     }
     $sid = ''
@@ -8332,12 +10082,19 @@ function Start-Tweaks([object[]]$Sel) {
     $TxtNow.Text = 'Checking what is already applied...'
     $DotNow.Fill = '#FF4C8DFF'
     foreach ($s in $Sel) { Set-Status $s 'Checking...' 'neutral'; Set-Ring $s 'busy' }
+    # held for the whole check: Test-BatchBusy and Test-TweakListBusy refuse a nested press
+    # while this loop pumps the dispatcher (see Test-BatchBusy)
+    $script:TweakChecking = $true
     Update-UI
     $run = @(); $skipped = 0
     foreach ($s in $Sel) {
         $test = $script:TweakTests[$s.UnArgs]
         $res = $null
-        if ($test) { try { $res = & $test } catch { $res = $null } }
+        # A debloat row is never pre-skipped. Its probe can only see the TECHNICIAN'S profile
+        # (-AllUsers needs elevation), while the row removes for every user and deprovisions -
+        # so "absent here" is not "absent everywhere", and skipping it left the apps in place
+        # for the customer's account and every new profile.
+        if ($test -and $s.UnArgs -notlike 'debloat*') { try { $res = & $test } catch { $res = $null } }
         if ($res -eq $true) {
             Set-Status $s 'Already applied - skipped' 'warn'
             Set-Ring $s 'warn'
@@ -8363,8 +10120,10 @@ function Start-Tweaks([object[]]$Sel) {
         $TxtNow.Text = 'Nothing to do - already applied'
         $DotNow.Fill = '#FF34D399'
         Update-Dash
+        $script:TweakChecking = $false
         return
     }
+    $script:TweakChecking = $false
     if ($skipped) { Add-Log "Pre-apply check: $skipped row(s) already applied, $($real.Count) will run." }
 
     # Some rows change what Explorer draws (taskbar, Start, desktop icons, context menu);
@@ -8373,11 +10132,10 @@ function Start-Tweaks([object[]]$Sel) {
     $explorerIds = @('taskbarclean', 'startclean', 'rightclickmenu', 'visualeffects', 'widgets',
                      'endtask', 'uisnappy', 'explorerhome', 'explorerprivacy', 'desktopicons', 'windowsai')
     $script:NeedExplorerRestart = [bool]@($run | Where-Object { $_.UnArgs -in $explorerIds }).Count
-    # The same rows, plus every preference. Dark Theme was the case that exposed this: it wrote
-    # BOTH of its values correctly, Detect read them back and honestly said "applied", and the
-    # screen stayed light - because nothing ever told Windows. See Send-SettingChange.
-    $script:NeedSettingBroadcast = [bool]@($run | Where-Object {
-        $_.UnArgs -in $explorerIds }).Count
+    # The same rows. Dark Theme (since retired) was the case that exposed this: it wrote BOTH of
+    # its values correctly, Detect read them back and honestly said "applied", and the screen
+    # stayed light - because nothing ever told Windows. See Send-SettingChange.
+    $script:NeedSettingBroadcast = $script:NeedExplorerRestart
 
     # A restore point is the undo button for everything else here, so if it was selected
     # it is queued FIRST - after the other tweaks have run it would be worthless.
@@ -8391,10 +10149,17 @@ function Start-Tweaks([object[]]$Sel) {
     $script:EndQueued = $false
     $script:Paused = $false
     $script:AwaitingScan = $false
+    $script:CancelRequested = $false
+    $script:CurJob = $null
+    # the same three the Update and Users starters set: without RunStarted the Optimize run
+    # record carried the previous batch's clock, and the overall bar the previous DlIndex
+    $script:RunStarted = Get-Date
+    $script:DlIndex = 0
+    $script:LastLogKey = @{}
     Remove-Item -LiteralPath $script:QueuePath, $script:StatusPath, $script:CancelPath, $script:SkipPath -ErrorAction SilentlyContinue
     Show-BatchStrip
     if (-not (Start-Worker)) {
-        Abort-Batch 'elevation declined'
+        Abort-Batch 'the administrator prompt was declined, so nothing was run' 'warn'
         return
     }
     # The worker runs elevated and may be a DIFFERENT account than the technician's, so
@@ -9169,14 +10934,86 @@ function Get-CreatedDirs($before) {
     return @($after.Keys | Where-Object { -not $before.ContainsKey($_) } | ForEach-Object { $after[$_] })
 }
 
+# Get-CreatedDirs diffs the WHOLE of Program Files, ProgramData and AppData, so every folder a
+# CONCURRENT installer made lands in that list too - and on the killed-installer path the list is
+# handed to the leftover scan as this app's debris, pre-ticked for deletion. That is how a working
+# Office installation could be offered as SketchUp's leftovers. Only folders this app can claim by
+# name are passed on, and when nothing can be claimed nothing is offered: under-reporting a
+# leftover is a nuisance, over-reporting one deletes somebody else's product.
+function Select-OwnCreated($App, $Created) {
+    $tokens = @()
+    try { $tokens += @(('' + $App.name) -split '[^A-Za-z0-9]+') } catch { }
+    # the id too: it is the catalog's own handle for the product ("sketchup-pro", "officesetup")
+    # and it is the only token a queue entry that carries no display name can offer at all
+    try { $tokens += @(('' + $App.id) -split '[^A-Za-z0-9]+') } catch { }
+    try { if ($App.cleanup -and $App.cleanup.tokens) { $tokens += @($App.cleanup.tokens | ForEach-Object { '' + $_ }) } } catch { }
+    # Four characters, not three: "SketchUp Pro" yields "Pro", and "pro" is inside "Program Files",
+    # so a substring test claimed every folder on the machine. Words this short carry no ownership.
+    $tokens = @($tokens | Where-Object { $_ -and $_.Length -ge 4 } | ForEach-Object { $_.ToLower() } | Select-Object -Unique)
+    if (-not $tokens.Count) { return @() }
+    # Match SEGMENTS BELOW the shared roots, never the whole path: the roots are the same for every
+    # app, so testing them can only produce a false claim on somebody else's folder.
+    $roots = @($env:ProgramFiles, ${env:ProgramFiles(x86)}, $env:ProgramData, $env:LocalAppData, $env:AppData) |
+             Where-Object { $_ } | ForEach-Object { $_.TrimEnd('\').ToLower() }
+    $out = @()
+    foreach ($c in @($Created)) {
+        $low = ('' + $c).TrimEnd('\').ToLower()
+        $rest = $low
+        foreach ($r in $roots) { if ($low.StartsWith($r + '\')) { $rest = $low.Substring($r.Length + 1); break } }
+        if ($rest -eq $low -and $low -ne '') { continue }   # not under a root we snapshot: not ours to claim
+        $mine = $false
+        foreach ($seg in @($rest -split '\\')) {
+            foreach ($t in $tokens) { if ($seg -and $seg.Contains($t)) { $mine = $true; break } }
+            if ($mine) { break }
+        }
+        if ($mine) { $out += $c }
+    }
+    return @($out)
+}
+
+# Everything that offers folders to the leftover scan goes through here. Select-OwnCreated is
+# kept pure because the probe harness lifts it on its own, so the note saying what was dropped
+# lives in this wrapper. The ladder decisions keep reading the RAW list on purpose: "created
+# nothing" is what tells them the silent switch was wrong, and a concurrent installer's folders
+# making that list non-empty stops the ladder, which is the safe direction.
+function Get-OfferableCreated($App, $Created) {
+    $own = Select-OwnCreated $App $Created
+    if (@($Created).Count -ne @($own).Count) {
+        Write-Activity $App.id 'install' 'Note' ("$(@($Created).Count - @($own).Count) folder(s) created while this ran could not be attributed to $($App.name) and are not offered as leftovers")
+    }
+    return @($own)
+}
+
 function Get-InstallVerdict([int]$Code) {
     switch ($Code) {
         0     { return @{ Ok = $true;  Dirty = $false; Retry = $false; State = 'Done';      Text = 'installed' } }
         3010  { return @{ Ok = $true;  Dirty = $false; Retry = $false; State = 'Done';      Text = 'installed, reboot required' } }
         1641  { return @{ Ok = $true;  Dirty = $false; Retry = $false; State = 'Done';      Text = 'installed, reboot initiated' } }
-        1223  { return @{ Ok = $false; Dirty = $false; Retry = $false; State = 'Blocked';   Text = 'the UAC prompt was declined' } }
+        # Cancelled, not Blocked: somebody clicked No. Blocked is for a machine that refused
+        # (policy), which is a failure a technician has to act on; this is a decision a human made,
+        # and reporting a decision as a failure is the shape this product keeps being caught on.
+        1223  { return @{ Ok = $false; Dirty = $false; Retry = $false; State = 'Cancelled'; Text = 'the UAC prompt inside the installer was declined, so nothing was installed' } }
         1618  { return @{ Ok = $false; Dirty = $false; Retry = $true;  State = 'Busy';      Text = 'another installation is already running' } }
         1619  { return @{ Ok = $false; Dirty = $false; Retry = $false; State = 'Failed';    Text = 'the package could not be opened' } }
+        # 1601 is 1618 wearing a different number: the Windows Installer service could not be
+        # reached, usually because it is still starting or because something just restarted it
+        # (the Windows Update reset fix stops msiserver). It means "try again in a moment", not
+        # "your silent switch is wrong" - without Retry the ladder climbed every rung against a
+        # service that was never going to answer.
+        1601  { return @{ Ok = $false; Dirty = $false; Retry = $true;  State = 'Busy';      Text = 'the Windows Installer service is not available yet' } }
+        # Refusals made before a byte was written. The default branch called all four dirty and
+        # sent a technician into a leftover scan of a product that was never touched. 1639 is the
+        # one code that literally means the switch was wrong, so the ladder should still climb -
+        # it was only the dirty flag doing harm.
+        1639  { return @{ Ok = $false; Dirty = $false; Retry = $false; State = 'Failed';    Text = 'the silent switch was rejected as an invalid command line' } }
+        1633  { return @{ Ok = $false; Dirty = $false; Retry = $false; State = 'Failed';    Text = 'this package is for a different processor architecture' } }
+        1610  { return @{ Ok = $false; Dirty = $false; Retry = $false; State = 'Failed';    Text = 'the configuration data for this product is corrupt' } }
+        1612  { return @{ Ok = $false; Dirty = $false; Retry = $false; State = 'Failed';    Text = 'the installation source for this product is not available' } }
+        # Two more that Windows Installer returns BEFORE it writes a byte, so nothing is on disk
+        # to offer the leftover scan: the default branch called both dirty and sent a technician
+        # into a scan of a product that was never touched.
+        1625  { return @{ Ok = $false; Dirty = $false; Retry = $false; State = 'Blocked';   Text = 'the installation was blocked by system policy' } }
+        1638  { return @{ Ok = $false; Dirty = $false; Retry = $false; State = 'Failed';    Text = 'another version of this product is already installed - remove it first' } }
         1620  { return @{ Ok = $false; Dirty = $false; Retry = $false; State = 'Failed';    Text = 'the package could not be verified' } }
         1602  { return @{ Ok = $false; Dirty = $true;  Retry = $false; State = 'Cancelled'; Text = 'cancelled inside the installer' } }
         1603  { return @{ Ok = $false; Dirty = $true;  Retry = $false; State = 'Failed';    Text = 'fatal error during installation' } }
@@ -9343,6 +11180,7 @@ function Write-Status([string]$Id, [string]$State, [string]$Detail, [bool]$Dirty
     # REST of a chained sequence should still run. Set here rather than returned, because every
     # action reports its outcome through this function and none of them return anything.
     if ($State -eq 'Failed') { $script:StepFailed = $true }
+    if ($State -eq 'Skipped') { $script:StepSkipped = $true }
     # $Dirty is the verdict travelling back to the GUI: this failure left files on the
     # machine. The GUI turns it into a leftover scan, so the flag has to be on the wire -
     # the elevated side cannot show the preview itself.
@@ -9626,6 +11464,85 @@ function Invoke-PostInstall($app) {
     A brief window is NOT enough: some installers flash a splash even when silent. It has to be
     present continuously for UiGraceSec before that is called a verdict.
 #>
+# ---- the silent-switch ladder ----
+#
+# "Handle any exe." A detected or catalogued switch runs first. When it opens a window, or exits
+# having created nothing, the common silent switches are tried in turn - each under the guard,
+# each written to the record - before the row is failed. Never for an .msi (msiexec /qn IS the
+# answer), never for an app that declares allowUi, and never past the cap. Case matters to the
+# program (NSIS wants /S, InstallAware /s), so both spellings are here and the list is
+# de-duplicated case-sensitively against what was already tried.
+$script:UiGraceSec         = 180   # first attempt: a window up this long means the switch is wrong
+$script:LadderGraceSec     = 45    # ladder attempts: a wrong switch shows its wizard within seconds
+$script:UnGraceSec         = 120   # an uninstall as registered, watched: long enough to read a wizard
+$script:LadderCapSec       = 900   # the whole ladder, so a batch never spends an hour on one row
+$script:SilentSwitchLadder = @('/S', '/VERYSILENT /SUPPRESSMSGBOXES /NORESTART', '/silent', '/quiet /norestart',
+                               '/s', '-s', '/q', '--silent', '-q', '/exenoui /qn', '--mode unattended', '-y',
+                               '/qn', '/verysilent', '/SILENT')
+
+# Is the product gone? The detect target is the definition of "installed": the uninstall key
+# for a registry-discovered program, a file or key from the catalog otherwise.
+function Test-UninstallGone($app) {
+    if (-not $app.detect) { return $true }
+    if ($app.detect -match '^HK(LM|CU|CR|EY|U)') {
+        # Resolve-Reg, not ConvertTo-PSRegPath: an HKCU detect key must be read in the
+        # technician's hive, where the program was found, not the elevating admin's
+        return (-not (Test-Path -LiteralPath (Resolve-Reg $app.detect)))
+    }
+    return (-not (Test-Path -LiteralPath ([Environment]::ExpandEnvironmentVariables($app.detect))))
+}
+
+# An installer EXITING is not an installation FINISHING, and that gap is where the field failure
+# actually starts. Office's OfficeSetup.exe, Acrobat's autoplay.exe and every Autodesk
+# bootstrapper hand the work to an engine and return within seconds; the worker then launched the
+# NEXT queue entry straight on top of a live installation. Windows Installer answered the second
+# one with 1618, the row retried, decided its silent switch must be wrong, climbed the switch
+# ladder and retried again - which is what "it kept retrying and failing, non stop" looks like on
+# screen. The retry and ladder guards added earlier only make that REPORT honestly. This is the
+# cause.
+#
+# Global\_MSIExecute is the mutex Windows Installer holds for the whole of any MSI transaction on
+# the machine - the very contention that produces 1618. Being able to open it means an
+# installation is in progress; OpenExisting throwing WaitHandleCannotBeOpened means the machine is
+# quiet. Nothing else answers that question for installers this tool did not launch, including
+# Windows Update's. Access denied means it exists and we may not touch it, which is still busy.
+#
+# Bounded on purpose: five minutes, not until doomsday. A machine that is genuinely busy for
+# longer is no worse off than before this existed, and the technician is told what is being
+# waited for instead of watching a row sit still.
+function Wait-InstallerQuiet {
+    # Word and Phase, because this is called from the install ladder, the uninstall ladder and
+    # the leftover remover. With 'Installing' hard-coded, an uninstall that hit a busy machine
+    # put "Installing: <app>" on the row and wrote install-phase entries into the activity
+    # record for a removal.
+    param([int]$TimeoutSec = 300, [string]$RowId = '', [string]$Word = 'Installing', [string]$Phase = 'install')
+    if ($TimeoutSec -le 0) { return 0 }
+    # Stopwatch, not Get-Date: a laptop lid closed mid-install makes wall clock arithmetic jump
+    # by hours, and every deadline measured across it fires instantly on wake
+    $sw = [Diagnostics.Stopwatch]::StartNew()
+    $said = $false
+    while ($true) {
+        $busy = $false
+        $mx = $null
+        try { $mx = [Threading.Mutex]::OpenExisting('Global\_MSIExecute'); $busy = $true }
+        catch [Threading.WaitHandleCannotBeOpenedException] { $busy = $false }
+        catch { $busy = $true }
+        if ($mx) { try { $mx.Dispose() } catch { } }
+        if (-not $busy) { return [int]$sw.Elapsed.TotalSeconds }
+        if ($sw.Elapsed.TotalSeconds -ge $TimeoutSec) {
+            if ($RowId) { Write-Activity $RowId $Phase 'Note' "another installation was still running after $([int]$sw.Elapsed.TotalSeconds)s - carrying on" }
+            return [int]$sw.Elapsed.TotalSeconds
+        }
+        if ($CancelFile -and (Test-Path -LiteralPath $CancelFile)) { return [int]$sw.Elapsed.TotalSeconds }
+        if (-not $said -and $RowId -and $sw.Elapsed.TotalSeconds -ge 2) {
+            $said = $true
+            Write-Status $RowId $Word 'another installation is running on this PC - waiting for it to finish before carrying on'
+            Write-Activity $RowId $Phase 'Waiting' 'Global\_MSIExecute is held by another installation'
+        }
+        Start-Sleep -Milliseconds 1000
+    }
+}
+
 function Start-InstallerWatched {
     param(
         [Parameter(Mandatory = $true)][string]$FilePath,
@@ -9633,6 +11550,10 @@ function Start-InstallerWatched {
         [hashtable]$Extra = @{},
         [int]$TimeoutSec  = 5400,     # 90 minutes
         [int]$UiGraceSec  = 180,      # 3 minutes of a visible window
+        [int]$SettleSec   = 300,      # how long to wait for the machine to go quiet afterwards
+        [string]$RowId    = '',       # only so the wait can say on the row what it is waiting for
+        [string]$RowWord  = 'Installing',   # and in the caller's own vocabulary
+        [string]$RowPhase = 'install',
         [switch]$AllowUi
     )
     $sp = @{ FilePath = $FilePath; PassThru = $true }
@@ -9640,26 +11561,60 @@ function Start-InstallerWatched {
     foreach ($k in $Extra.Keys) { $sp[$k] = $Extra[$k] }
 
     $p  = Start-Process @sp
+    $null = $p.Handle   # or ExitCode reads $null after a fast exit
     $t0 = Get-Date
     $uiSince = $null
+    $tick = 0
 
     while ($true) {
         if ($p.WaitForExit(1000)) {
-            return [pscustomobject]@{ ExitCode = $p.ExitCode; ShowedUi = $false; TimedOut = $false }
+            $code = $p.ExitCode
+            # settle BEFORE returning, so the caller verifies, and the queue moves on, only once
+            # the machine is quiet - the whole point of this function's existence
+            $null = Wait-InstallerQuiet -TimeoutSec $SettleSec -RowId $RowId -Word $RowWord -Phase $RowPhase
+            return [pscustomobject]@{ ExitCode = $code; ShowedUi = $false; TimedOut = $false }
         }
         $hasUi = $false
         try { $p.Refresh(); $hasUi = ($p.MainWindowHandle -ne [IntPtr]::Zero) } catch { }
+        # The launched process is usually a stub; the window belongs to a CHILD. SketchUp's
+        # InstallShield Suite bootstrapper re-launches itself from %TEMP% (-runfromtemp) and the
+        # dialog is that copy's - the stub never had a window, so the guard watched nothing for
+        # 90 minutes. Every fifth second the whole tree is asked, which is what taskkill /T
+        # would kill anyway.
+        $tick++
+        if (-not $hasUi -and ($tick % 5) -eq 0) {
+            try {
+                $ids = @($p.Id)
+                $all = @(Get-CimInstance Win32_Process -ErrorAction Stop | Select-Object ProcessId, ParentProcessId)
+                $grew = $true
+                while ($grew) {
+                    $grew = $false
+                    foreach ($w in $all) { if (($ids -contains [int]$w.ParentProcessId) -and ($ids -notcontains [int]$w.ProcessId)) { $ids += [int]$w.ProcessId; $grew = $true } }
+                }
+                foreach ($cid in @($ids | Where-Object { $_ -ne $p.Id })) {
+                    $cp = Get-Process -Id $cid -ErrorAction SilentlyContinue
+                    if ($cp -and $cp.MainWindowHandle -ne [IntPtr]::Zero) { $hasUi = $true; break }
+                }
+            } catch { }
+        }
 
         if ($hasUi -and -not $AllowUi) {
             if (-not $uiSince) { $uiSince = Get-Date }
+            # the tree is only re-read every 5 s, so a child window seen once is held for the
+            # grace period by the timestamp rather than needing to be seen on every tick
             if (((Get-Date) - $uiSince).TotalSeconds -ge $UiGraceSec) {
                 Stop-ProcessTree $p.Id
+                # taskkill /T walks the PARENT CHAIN, and msiexec /V is a child of services.exe -
+                # so killing an InstallShield or WiX wrapper leaves the MSI engine rolling back for
+                # minutes afterwards. The next ladder rung used to launch straight into that.
+                $null = Wait-InstallerQuiet -TimeoutSec $SettleSec -RowId $RowId -Word $RowWord -Phase $RowPhase
                 return [pscustomobject]@{ ExitCode = -1; ShowedUi = $true; TimedOut = $false }
             }
-        } else { $uiSince = $null }
+        } elseif (($tick % 5) -eq 0) { $uiSince = $null }   # cleared only on a tick that actually looked at the tree
 
         if (((Get-Date) - $t0).TotalSeconds -ge $TimeoutSec) {
             Stop-ProcessTree $p.Id
+            $null = Wait-InstallerQuiet -TimeoutSec $SettleSec -RowId $RowId -Word $RowWord -Phase $RowPhase
             return [pscustomobject]@{ ExitCode = -1; ShowedUi = $hasUi; TimedOut = $true }
         }
     }
@@ -9979,84 +11934,198 @@ function Install-One($app) {
     $before = Get-DirSnapshot
     $created = @()
 
-    for ($try = 1; $try -le $maxTries; $try++) {
-        $t0 = Get-Date
-        # splatted rather than duplicating all three launch shapes: an unpacked package runs
-        # from its own folder, a bare installer keeps the worker's default
-        $extra = @{}
-        if ($workDir) { $extra['WorkingDirectory'] = $workDir }
-        # Per-app overrides: a genuinely long installer raises installTimeoutSec, and one that
-        # is known to show a window even when silent sets allowUi so the guard does not fire.
-        $watch = @{ Extra = $extra }
-        if ($app.PSObject.Properties['installTimeoutSec'] -and [int]$app.installTimeoutSec -gt 0) {
-            $watch['TimeoutSec'] = [int]$app.installTimeoutSec
+    # ---- the switch ladder (see $script:SilentSwitchLadder) ----
+    $ladder = @($launchArgs)
+    $ladderOn = ($ext -ne '.msi') -and -not ($app.PSObject.Properties['allowUi'] -and $app.allowUi)
+    if ($ladderOn) {
+        foreach ($sw in @($script:SilentSwitchLadder | Where-Object { $_ })) { if (@($ladder) -cnotcontains $sw) { $ladder += $sw } }
+    }
+    # the knobs, with their defaults restated: the harnesses lift this function without the table
+    $ladderCap = [int]$script:LadderCapSec;   if ($ladderCap -le 0) { $ladderCap = 900 }
+    $graceFirst = [int]$script:UiGraceSec;    if ($graceFirst -le 0) { $graceFirst = 180 }
+    $graceRung  = [int]$script:LadderGraceSec; if ($graceRung -le 0) { $graceRung = 45 }
+    $ladderT0  = Get-Date
+    $ladderSw  = ''
+    $installed = $false
+    for ($li = 0; $li -lt $ladder.Count; $li++) {
+        $launchArgs = [string]$ladder[$li]
+        $isLadder = ($li -gt 0)
+        if ($isLadder) { $argSource = 'ladder' }
+        $haveNext = ($ladderOn -and ($li + 1) -lt $ladder.Count -and ((Get-Date) - $ladderT0).TotalSeconds -lt $ladderCap)
+        if ($isLadder) {
+            Write-Activity $app.id 'install' 'Ladder' "trying '$launchArgs' ($li of $($ladder.Count - 1))"
+            Write-Status $app.id 'Installing' "trying the switch '$launchArgs' ($li of $($ladder.Count - 1))"
         }
-        if ($app.PSObject.Properties['allowUi'] -and $app.allowUi) { $watch['AllowUi'] = $true }
+        $outcome = ''
+        for ($try = 1; $try -le $maxTries; $try++) {
+            $t0 = Get-Date
+            # splatted rather than duplicating all three launch shapes: an unpacked package runs
+            # from its own folder, a bare installer keeps the worker's default
+            $extra = @{}
+            if ($workDir) { $extra['WorkingDirectory'] = $workDir }
+            # Per-app overrides: a genuinely long installer raises installTimeoutSec, and one that
+            # is known to show a window even when silent sets allowUi so the guard does not fire.
+            $watch = @{ Extra = $extra; RowId = $app.id }
+            $watch['UiGraceSec'] = $(if ($isLadder) { $graceRung } else { $graceFirst })
+            if ($app.PSObject.Properties['installTimeoutSec'] -and [int]$app.installTimeoutSec -gt 0) {
+                $watch['TimeoutSec'] = [int]$app.installTimeoutSec
+            }
+            if ($app.PSObject.Properties['allowUi'] -and $app.allowUi) { $watch['AllowUi'] = $true }
 
-        if ($ext -eq '.msi') {
-            $msiArgs = "/i `"$runFile`" /qn /norestart"
-            if ($launchArgs) { $msiArgs += " $launchArgs" }
-            # the full path, as every other system binary the worker launches: a bare name is
-            # resolved through PATH, and this process is elevated
-            $p = Start-InstallerWatched -FilePath (Join-Path $env:SystemRoot 'System32\msiexec.exe') -ArgumentList @($msiArgs) @watch
-        } elseif ([string]::IsNullOrWhiteSpace($launchArgs)) {
-            $p = Start-InstallerWatched -FilePath $runFile @watch
-        } else {
-            $p = Start-InstallerWatched -FilePath $runFile -ArgumentList @($launchArgs) @watch
-        }
-        $mins = [math]::Round(((Get-Date) - $t0).TotalMinutes, 1)
+            if ($ext -eq '.msi') {
+                $msiArgs = "/i `"$runFile`" /qn /norestart"
+                if ($launchArgs) { $msiArgs += " $launchArgs" }
+                # the full path, as every other system binary the worker launches: a bare name is
+                # resolved through PATH, and this process is elevated
+                $p = Start-InstallerWatched -FilePath (Join-Path $env:SystemRoot 'System32\msiexec.exe') -ArgumentList @($msiArgs) @watch
+            } elseif ([string]::IsNullOrWhiteSpace($launchArgs)) {
+                $p = Start-InstallerWatched -FilePath $runFile @watch
+            } else {
+                $p = Start-InstallerWatched -FilePath $runFile -ArgumentList @($launchArgs) @watch
+            }
+            $mins = [math]::Round(((Get-Date) - $t0).TotalMinutes, 1)
 
-        # These two are not exit codes and must not be read as one. A wrong silent switch is a
-        # catalog problem with a specific fix, so it is named rather than folded into "failed".
-        if ($p.ShowedUi -or $p.TimedOut) {
+            # These two are not exit codes and must not be read as one. A wrong silent switch is a
+            # catalog problem with a specific fix, so it is named rather than folded into "failed".
+            if ($p.ShowedUi -or $p.TimedOut) {
+                $created = Get-CreatedDirs $before
+                # A window is the verdict on THIS switch, not on the installer: the next rung of
+                # the ladder gets its turn. A timeout with no window is not - the installer may
+                # be genuinely working, and a second copy on top of it would be worse.
+                if ($p.ShowedUi -and $haveNext) {
+                    Write-Activity $app.id 'install' 'Ladder' "'$launchArgs' ($argSource) opened a window and was stopped after $mins min - trying the next switch"
+                    $outcome = 'next'; break
+                }
+                $why = $(if ($p.ShowedUi) {
+                            "the installer opened a window instead of installing silently, so it was stopped after $mins min - the silent switch '$launchArgs' ($argSource) is probably wrong for this installer" +
+                            $(if ($isLadder) { "; $li switch(es) were tried" } else { '' })
+                         } else {
+                            "the installer was still running after $mins min and was stopped - raise installTimeoutSec for this app if it genuinely takes longer"
+                         })
+                Write-Activity $app.id 'install' 'Failed' $why
+                # Dirty on purpose: it was killed part-way, so something may well be on disk and the
+                # leftover scan should offer it - but only the folders THIS app can claim. The
+                # snapshot cannot tell them apart from a concurrent installer's, and offering
+                # another product's folders for deletion is the worst thing this tool could do.
+                Write-Status $app.id 'Failed' $why $true (Get-OfferableCreated $app $created)
+                Remove-Unpacked
+                return
+            }
             $created = Get-CreatedDirs $before
-            $why = $(if ($p.ShowedUi) {
-                        "the installer opened a window instead of installing silently, so it was stopped after $mins min - the silent switch '$launchArgs' ($argSource) is probably wrong for this installer"
-                     } else {
-                        "the installer was still running after $mins min and was stopped - raise installTimeoutSec for this app if it genuinely takes longer"
-                     })
-            Write-Activity $app.id 'install' 'Failed' $why
-            # Dirty on purpose: it was killed part-way, so something may well be on disk and the
-            # leftover scan should offer it.
-            Write-Status $app.id 'Failed' $why $true $created
+            if (@($created).Count) {
+                Write-Activity $app.id 'install' 'Created' (@($created) -join ' | ')
+            }
+            $v = Get-InstallVerdict $p.ExitCode
+            Write-Activity $app.id 'install' $v.State "$($v.Text); exit $($p.ExitCode); $mins min; attempt $try of $maxTries"
+
+            if ($v.Ok) { $outcome = 'ok'; break }
+
+            # 1618 is the only genuinely transient case: another installer holds the Windows
+            # Installer mutex. Everything else is a decision or a break - retrying a cancel
+            # would override a person who already said no.
+            if ($v.Retry -and $try -lt $maxTries) {
+                Write-Status $app.id 'Installing' "$($v.Text) - retrying in 30s (attempt $try of $maxTries)"
+                # a 30-second sleep that ignores Cancel is 30 seconds the technician cannot stop;
+                # winget and robocopy already poll this file mid-run, the install path did not
+                for ($w = 0; $w -lt 30; $w += 2) {
+                    if ($CancelFile -and (Test-Path -LiteralPath $CancelFile)) {
+                        Write-Status $app.id 'Cancelled' 'cancelled while waiting for the other installation'
+                        Remove-Unpacked
+                        return
+                    }
+                    Start-Sleep -Seconds 2
+                }
+                continue
+            }
+            # A transient code says the MACHINE was busy - it is not evidence about the silent
+            # switch, because the switch was never parsed. Climbing the ladder on it relaunched the
+            # installer against the same held mutex once per rung: 45 launches over a quarter of an
+            # hour, which is what "it kept retrying, then fail, non stop" actually was. The row
+            # stops here and says what to do instead.
+            if ($v.Retry) {
+                $why = "$($v.Text) after $maxTries attempts - nothing was installed. Wait for the other installation to finish, then run this row again."
+                Write-Activity $app.id 'install' 'Failed' $why
+                Write-Status $app.id 'Failed' $why $false @()
+                Remove-Unpacked
+                return
+            }
+
+            # A failure that created nothing is, as far as the disk can tell, a switch the
+            # installer refused - the usual shape of a wrong one. The next rung gets its turn.
+            # The verdict's own Dirty flag is a guess about unknown codes; the directory
+            # snapshot is the fact, and it is what decides here.
+            if ($haveNext -and -not @($created).Count) {
+                Write-Activity $app.id 'install' 'Ladder' "'$launchArgs' ($argSource) exited $($p.ExitCode) ($($v.Text)) and created nothing - trying the next switch"
+                $outcome = 'next'; break
+            }
+
+            $detail = "$($v.Text) after $mins min"
+            if ($v.Dirty) { $detail += ' - a partial install is on disk; the leftover scan will offer to remove it' }
+            if ($isLadder) { $detail += "; $li switch(es) were tried" }
+            # the folders this attempt created travel with the verdict: on a dirty failure they are
+            # exactly what the leftover scan should offer, and they are FACTS, not name matches
+            #
+            # And the verdict's own KIND reaches the row. Get-InstallVerdict works out whether this
+            # was Blocked (the UAC prompt inside the installer was declined, or policy refused it),
+            # Cancelled (the technician clicked Cancel in the installer), Busy or Killed - and every
+            # one of them used to be written as 'Failed'. A technician who cancelled an installer
+            # himself was told it FAILED, in red, and the batch kept the download cache and reported
+            # a failure that never happened.
+            # Blocked stays Failed - policy refusing an install is something the technician must
+            # deal with, not a caveat. Only a human decision becomes Cancelled.
+            $word = $(if ($v.State -eq 'Cancelled') { 'Cancelled' } else { 'Failed' })
+            Write-Status $app.id $word $detail $v.Dirty (Get-OfferableCreated $app $created)
+            # our own scratch copy, not installer debris - the leftover scan looks at where the
+            # product installs, never in here, so nothing downstream wants these bytes
             Remove-Unpacked
             return
         }
-        $created = Get-CreatedDirs $before
-        if (@($created).Count) {
-            Write-Activity $app.id 'install' 'Created' (@($created) -join ' | ')
-        }
-        $v = Get-InstallVerdict $p.ExitCode
-        Write-Activity $app.id 'install' $v.State "$($v.Text); exit $($p.ExitCode); $mins min; attempt $try of $maxTries"
-
-        if ($v.Ok) { break }
-
-        # 1618 is the only genuinely transient case: another installer holds the Windows
-        # Installer mutex. Everything else is a decision or a break - retrying a cancel
-        # would override a person who already said no.
-        if ($v.Retry -and $try -lt $maxTries) {
-            Write-Status $app.id 'Installing' "$($v.Text) - retrying in 30s (attempt $try of $maxTries)"
-            Start-Sleep -Seconds 30
+        if ($outcome -eq 'next') { continue }
+        # A clean exit that created nothing and verifies nothing is the same refusal with a
+        # zero attached: plenty of installers answer an unknown switch with their usage text
+        # and exit 0. Nothing on disk, so the next rung is safe to try.
+        $vpMissing = @(@($app.verifyPaths) | Where-Object { $_ -and -not (Test-Path -LiteralPath ([Environment]::ExpandEnvironmentVariables($_))) })
+        if ($vpMissing.Count -and -not @($created).Count -and $haveNext) {
+            Write-Activity $app.id 'install' 'Ladder' "'$launchArgs' ($argSource) exited $($p.ExitCode) but created nothing and the verify paths are missing - trying the next switch"
             continue
         }
-
-        $detail = "$($v.Text) after $mins min"
-        if ($v.Dirty) { $detail += ' - a partial install is on disk; the leftover scan will offer to remove it' }
-        # the folders this attempt created travel with the verdict: on a dirty failure they are
-        # exactly what the leftover scan should offer, and they are FACTS, not name matches
-        Write-Status $app.id 'Failed' $detail $v.Dirty $created
-        # our own scratch copy, not installer debris - the leftover scan looks at where the
-        # product installs, never in here, so nothing downstream wants these bytes
-        Remove-Unpacked
-        return
+        $installed = $true
+        if ($isLadder) {
+            $ladderSw = $launchArgs
+            Write-Activity $app.id 'install' 'Ladder' "'$launchArgs' worked, $li switch(es) in - put it in the catalog as silentArgs"
+        }
+        break
     }
+    if (-not $installed) { return }   # every failing rung has already reported and returned
     # NOT deleted here. This used to be where the unpacked copy went, which quietly made it
     # impossible for a post-install step to take a file out of the package - the folder was
     # already gone by the time the steps ran. It is disposed of at the exits below instead.
+    # The same hand-off again, from the other side. A bootstrapper that returns in five seconds
+    # leaves its engine writing for another twenty minutes, so verifying the instant it exits
+    # finds nothing and the row told the technician to go and correct a catalog entry that was
+    # already right. verifyWaitSec lets the catalog say "this one hands off" and how long to
+    # allow; the default is 0, so nothing waits that has not asked to. The verifyPath APPEARING
+    # is the installation finishing - a better signal than any process name.
+    $vpWait = 0
+    if ($app.PSObject.Properties['verifyWaitSec']) { try { $vpWait = [int]$app.verifyWaitSec } catch { $vpWait = 0 } }
+    $vpSw = [Diagnostics.Stopwatch]::StartNew()
+    $saidHandoff = $false
     $ok = $true
-    foreach ($vp in @($app.verifyPaths)) {
-        if ($vp -and -not (Test-Path -LiteralPath ([Environment]::ExpandEnvironmentVariables($vp)))) { $ok = $false }
+    while ($true) {
+        $ok = $true
+        foreach ($vp in @($app.verifyPaths)) {
+            if ($vp -and -not (Test-Path -LiteralPath ([Environment]::ExpandEnvironmentVariables($vp)))) { $ok = $false }
+        }
+        if ($ok -or $vpWait -le 0 -or $vpSw.Elapsed.TotalSeconds -ge $vpWait) { break }
+        if ($CancelFile -and (Test-Path -LiteralPath $CancelFile)) { break }
+        if (-not $saidHandoff) {
+            $saidHandoff = $true
+            Write-Status $app.id 'Installing' 'the installer has handed off to its own engine - waiting for it to finish'
+            Write-Activity $app.id 'verify' 'Waiting' "verifyPaths not present yet; allowing $vpWait s for the hand-off"
+        }
+        Start-Sleep -Seconds 3
     }
+    if ($saidHandoff) { Write-Activity $app.id 'verify' 'Note' "waited $([int]$vpSw.Elapsed.TotalSeconds)s for the hand-off; verified=$ok" }
     if (-not $ok) {
         $missing = @(@($app.verifyPaths) | Where-Object {
             $_ -and -not (Test-Path -LiteralPath ([Environment]::ExpandEnvironmentVariables($_))) })
@@ -10093,7 +12162,8 @@ function Install-One($app) {
             Write-Status $app.id 'Failed' (
                 "installed but could not be verified - the installer created $(@($created).Count) folder(s) ($where), " +
                 "yet none of this app's verifyPaths exist (expected $(@($missing) -join ' | ')). " +
-                'Point verifyPaths in the catalog at a file inside the folder it created. Nothing is offered for removal.') $false @()
+                'Either verifyPaths points at the wrong file, or this installer hands off to an engine that is ' +
+                'still running - set verifyWaitSec on the entry to let it finish. Nothing is offered for removal.') $false @()
             Remove-Unpacked
             return
         }
@@ -10102,12 +12172,33 @@ function Install-One($app) {
         # wrapper that spawned the real engine and returned early, or a silent switch that made
         # it exit 0 without acting. Dirty by definition - something ran.
         Write-Activity $app.id 'verify' 'Failed' "verifyPaths missing after exit $($p.ExitCode)"
-        Write-Status $app.id 'Failed' 'installed nothing - verify paths are missing, so a partial install may be on disk' $true $created
+        Write-Status $app.id 'Failed' 'installed nothing - verify paths are missing, so a partial install may be on disk' $true (Get-OfferableCreated $app $created)
+        Remove-Unpacked
+        return
+    }
+    # An EMPTY verifyPaths array never enters the loop above, so $ok is still $true and the row
+    # goes green whatever happened. With folders created that is a fair call - something was
+    # installed. With nothing created and nothing to check, the tool knows precisely nothing and
+    # said "Installed" anyway. Skipped is this tool's word for "it worked, with a caveat", and
+    # the caveat is named.
+    # ...unless the app's real work is a post-install step. An entry that exists to copy a
+    # licence file or write a registry value creates no folders and needs no verifyPath, and
+    # returning here would report "nothing appeared on disk" having never run the step that was
+    # the whole point. Those fall through to Invoke-PostInstall below.
+    if (-not @(@($app.verifyPaths) | Where-Object { $_ }).Count -and -not @($created).Count -and
+        -not @(@($app.postInstall) | Where-Object { $_ }).Count) {
+        Write-Activity $app.id 'verify' 'Skipped' 'no verifyPaths, no post-install steps, and nothing was created'
+        Write-Status $app.id 'Skipped' ("the installer exited $($p.ExitCode) but nothing appeared on disk and this app has no verify path, " +
+                                        'so there is nothing to prove it installed. Add a verifyPath to the catalog entry.')
         Remove-Unpacked
         return
     }
     Write-Activity $app.id 'verify' 'Done' "verified in $mins min"
     $note = ''; if ($p.ExitCode -eq 3010) { $note = 'reboot required' }
+    if ($ladderSw) {
+        $found = "installed with the switch '$ladderSw', found by trying - put it in the catalog as silentArgs"
+        $note = $(if ($note) { "$note; $found" } else { $found })
+    }
 
     # Only now, with the install verified, run the app's own finishing steps. A failure here
     # is NOT an install failure - the product is on disk - so it reports amber with the exact
@@ -10181,45 +12272,107 @@ function Uninstall-One($app) {
         }
         return
     }
-    $exe = [Environment]::ExpandEnvironmentVariables($app.command)
+    $exe = [Environment]::ExpandEnvironmentVariables(('' + $app.command))
+    if (-not $exe) {
+        Write-Status $app.id 'Failed' 'no uninstall command for this entry'
+        return
+    }
     if (($exe -match '[\\/]') -and -not (Test-Path -LiteralPath $exe)) {
         Write-Status $app.id 'Failed' 'vendor uninstaller not found'
         return
     }
     # A bare name - "msiexec.exe", which is what every MSI uninstall string resolves to - is
     # found through PATH, and this process is elevated. Pin it to System32 when it lives
-    # there; a bare name that does not is left to Start-Process, as before.
+    # there; a bare name that does not is left to Start-Process, as before. With and without
+    # .exe: an old InstallShield entry says "RunDll32", and the file is rundll32.exe.
     if ($exe -notmatch '[\\/]') {
-        $sys = Join-Path $env:SystemRoot ('System32\' + $exe)
-        if (Test-Path -LiteralPath $sys) { $exe = $sys }
+        $cands = @($exe)
+        if (-not [IO.Path]::GetExtension($exe)) { $cands += ($exe + '.exe') }
+        foreach ($cand in $cands) {
+            $sys = Join-Path $env:SystemRoot ('System32\' + $cand)
+            if (Test-Path -LiteralPath $sys -PathType Leaf) { $exe = $sys; break }
+        }
     }
     # Time-boxed, for the same reason the INSTALL side is: Start-Process -Wait has no timeout,
     # this worker is elevated and hidden, and a vendor uninstaller that stops on a prompt would
-    # otherwise hold the whole batch open for ever with nothing on screen saying so. That was
-    # already fixed once for installs and never carried across to here.
+    # otherwise hold the whole batch open for ever with nothing on screen saying so.
     #
-    # The UI rule is the OPPOSITE of the install side, and deliberately. An install is supposed
-    # to be silent, so a window that stays up is a verdict: the silent switch is wrong. An
-    # uninstall is frequently NOT silent - Parse-UninstallString can only promise that for MSI -
-    # and the vendor's wizard appears on the technician's own desktop for them to click through.
-    # Killing that would be destroying work in progress, so an interactive uninstaller is
-    # allowed its window and bounded only by the clock.
-    # one clock for both shapes, so the failure text below says the number that was actually used
-    $unWatch = @{ TimeoutSec = 3600 }
-    if (-not $app.silent) {
-        $unWatch['AllowUi'] = $true
-        # long enough for somebody to actually read a wizard, short enough to end a hang
-    }
-    # named in the record, like the install side: a wrong family flag has to be diagnosable
-    Write-Activity $app.id 'uninstall' 'Started' "$exe $($app.args)$(if ($app.family) { " (silent via $($app.family) flags)" } elseif ($app.silent) { ' (silent)' } else { ' (may show its wizard)' })"
-    if ([string]::IsNullOrWhiteSpace($app.args)) {
-        $p = Start-InstallerWatched -FilePath $exe @unWatch
+    # An uninstall that is not provably silent used to run with its window allowed from the
+    # start, for the technician to click through. It now climbs a ladder first: as registered
+    # but WATCHED (many "not provably silent" strings are silent in fact), then the common
+    # silent switches appended one by one, and only then - as the last rung - as registered with
+    # its window allowed, bounded only by the clock. Between rungs the detect target is asked
+    # whether the product is already gone, so a removal that worked is never re-run.
+    $attempts = @()
+    if ($app.silent) {
+        $attempts += @{ Args = [string]$app.args; Guard = $false; Label = 'silent' }
     } else {
-        $p = Start-InstallerWatched -FilePath $exe -ArgumentList @([string]$app.args) @unWatch
+        $attempts += @{ Args = [string]$app.args; Guard = $true; Label = 'as registered, watched' }
+        foreach ($sw in @($script:SilentSwitchLadder | Where-Object { $_ })) {
+            if (('' + $app.args) -cmatch ('(^|\s)' + [regex]::Escape($sw) + '(\s|$)')) { continue }
+            $attempts += @{ Args = (('' + $app.args) + ' ' + $sw).Trim(); Guard = $true; Label = "with '$sw'" }
+        }
+        $attempts += @{ Args = [string]$app.args; Guard = $false; Label = 'as registered, with its window' }
     }
-    if ($p.TimedOut -or $p.ShowedUi) {
+    $ladderCap = [int]$script:LadderCapSec;    if ($ladderCap -le 0) { $ladderCap = 900 }
+    $graceFirst = [int]$script:UnGraceSec;     if ($graceFirst -le 0) { $graceFirst = 120 }
+    $graceRung  = [int]$script:LadderGraceSec; if ($graceRung -le 0) { $graceRung = 45 }
+    $ladT0 = Get-Date
+    $p = $null
+    $used = $null
+    $usedIdx = 0
+    for ($ai = 0; $ai -lt $attempts.Count; $ai++) {
+        $at = $attempts[$ai]
+        $isLast = ($ai -eq $attempts.Count - 1)
+        # past the cap the middle rungs are skipped, straight to the one with its window
+        if ($ai -gt 0 -and -not $isLast -and ((Get-Date) - $ladT0).TotalSeconds -ge $ladderCap) { continue }
+        $w = @{ TimeoutSec = 3600; RowId = $app.id; RowWord = 'Uninstalling'; RowPhase = 'uninstall' }
+        if ($at.Guard) { $w['UiGraceSec'] = $(if ($ai -eq 0) { $graceFirst } else { $graceRung }) }
+        else { $w['AllowUi'] = $true }
+        if ($ai -gt 0) { Write-Status $app.id 'Uninstalling' "trying $($at.Label) ($ai of $($attempts.Count - 1))" }
+        # named in the record, like the install side: a wrong family flag has to be diagnosable
+        Write-Activity $app.id 'uninstall' 'Started' "$exe $($at.Args) ($($at.Label)$(if ($app.family) { "; $($app.family) flags" }))"
+        if ([string]::IsNullOrWhiteSpace($at.Args)) {
+            $p = Start-InstallerWatched -FilePath $exe @w
+        } else {
+            $p = Start-InstallerWatched -FilePath $exe -ArgumentList @([string]$at.Args) @w
+        }
+        $used = $at; $usedIdx = $ai
+        if ($p.TimedOut) { break }
+        if ($p.ShowedUi) {
+            # it may have finished before the kill landed
+            if ($app.detect -and (Test-UninstallGone $app)) { break }
+            if (-not $isLast) { Write-Activity $app.id 'uninstall' 'Ladder' "$($at.Label): opened a window and was stopped - trying the next"; continue }
+            break
+        }
+        # 1618 is the machine saying "another installation is running", not "that switch is
+        # wrong". Without this the loop below reads "still detected" and climbs all sixteen
+        # rungs in about twenty-five seconds, launching the vendor uninstaller again on each
+        # one, and lands on a bare exit code with no explanation. The install side has the same
+        # guard; this is its twin.
+        if ($p.ExitCode -eq 1618) {
+            $busy = 'another installation is already running - wait for it to finish, then run this row again'
+            Write-Activity $app.id 'uninstall' 'Busy' $busy
+            Write-Status $app.id 'Failed' $busy
+            return
+        }
+        # it exited. With a detect target the disk decides whether to climb on; without one
+        # the exit code is the only evidence there is, and the first exit ends it.
+        if (-not $app.detect -or $isLast) { break }
+        if (Test-UninstallGone $app) { break }
+        Write-Activity $app.id 'uninstall' 'Ladder' "$($at.Label): exit $($p.ExitCode) and the product is still detected - trying the next"
+    }
+    # 1641 with the other two: "reboot initiated" is a removal that worked, and the install
+    # side has always read it that way
+    $badCode = ($p.ExitCode -notin 0, 3010, 1641)
+    # verify removal. For registry-discovered apps the detect target is the uninstall key
+    # itself - the install folder often survives as leftovers even on a clean uninstall,
+    # so the key disappearing is the reliable signal.
+    $gone = Test-UninstallGone $app
+    $proven = ([bool]$app.detect -and $gone)
+    if ($p.TimedOut -or ($p.ShowedUi -and -not $proven)) {
         $why = $(if ($p.ShowedUi) {
-                    "the uninstaller opened a window instead of removing silently and was stopped - '$($app.args)' is probably the wrong silent switch for it"
+                    "the uninstaller opened a window instead of removing silently and was stopped - '$($used.Args)' is probably the wrong silent switch for it"
                  } else {
                     'the uninstaller was still running after 60 min and was stopped - it may have been waiting on a prompt'
                  })
@@ -10228,36 +12381,24 @@ function Uninstall-One($app) {
         Write-Status $app.id 'Failed' $why $true
         return
     }
-    $badCode = ($p.ExitCode -ne 0 -and $p.ExitCode -ne 3010)
-    # verify removal. For registry-discovered apps the detect target is the uninstall key
-    # itself - the install folder often survives as leftovers even on a clean uninstall,
-    # so the key disappearing is the reliable signal.
-    $gone = $true
-    if ($app.detect) {
-        if ($app.detect -match '^HK(LM|CU|CR|EY|U)') {
-            # Resolve-Reg, not ConvertTo-PSRegPath: an HKCU detect key must be read in the
-            # technician's hive, where the program was found, not the elevating admin's
-            if (Test-Path -LiteralPath (Resolve-Reg $app.detect)) { $gone = $false }
-        } elseif (Test-Path -LiteralPath ([Environment]::ExpandEnvironmentVariables($app.detect))) {
-            $gone = $false
-        }
-    }
     # An uninstaller that removed the product and STILL returned non-zero is common: plenty
     # delete their own folder while running, so cmd cannot read its next line and returns a
     # failure for work that is already done. The detect target is the definition of "installed",
     # so when it is gone the product IS gone - reporting red there sends a technician chasing a
     # removal that already worked. The exit code still decides on its own when there is no
     # detect target to check, because then it is the only evidence there is.
-    $proven = ([bool]$app.detect -and $gone)
+    $found = ''
+    if ($used -and $usedIdx -gt 0 -and $used.Guard) { $found = "removed with '$($used.Args)', found by trying" }
     if ($badCode -and -not $proven) {
         Write-Status $app.id 'Failed' "Uninstaller exit code $($p.ExitCode)"
     } elseif (-not $gone) {
         Write-Status $app.id 'Failed' 'application still detected after uninstall'
     } else {
-        Write-Status $app.id 'Uninstalled' $(if ($badCode) {
-            "removed, though the uninstaller returned exit code $($p.ExitCode)" } else { '' })
+        $codeNote = $(if ($badCode) { "removed, though the uninstaller returned exit code $($p.ExitCode)" } else { '' })
+        Write-Status $app.id 'Uninstalled' $(if ($found -and $codeNote) { "$found; exit code $($p.ExitCode)" } elseif ($found) { $found } else { $codeNote })
     }
 }
+
 # The GUI's protected-root list, restated on the elevated side.
 #
 # Not duplication for its own sake: Scan-Leftovers filters these out when it BUILDS the kill
@@ -10275,6 +12416,31 @@ $script:WipeProtected = @(
     (Join-Path $env:ProgramFiles 'Common Files'), (Join-Path ${env:ProgramFiles(x86)} 'Common Files')
 ) | Where-Object { $_ } | ForEach-Object { $_.TrimEnd('\').ToLower() }
 
+# The queue is a file any process running as this user can write to, so every destructive value
+# in it is re-checked on the elevated side. userSid was the exception, and it is the only one used
+# to BUILD a path: the recyclebin tweak joins it to "<drive>:\$Recycle.Bin\", and ".." there
+# normalises to the drive root, whose contents that tweak then deletes recursively - on every
+# fixed drive and every attached USB disk.
+#
+# Check the SHAPE of a SID, not one authority. The first cut of this pinned the pattern to
+# S-1-5-21-a-b-c-RID, which is a local or domain account and nothing else. That refused every
+# Entra ID (Azure AD) account, whose SID is S-1-12-1-a-b-c-d, and every session an RMM agent
+# started as SYSTEM, S-1-5-18. On those machines the SID fell back to '', which sends HKCU work
+# into the ELEVATING ADMIN'S hive and then reports it applied - the exact wrong-profile bug
+# userSid exists to prevent, on the machines most likely to belong to a paying customer.
+# Digits and hyphens is the whole property this needs: no '\', no '..', nothing that can walk
+# out of the hive it names.
+function Get-SafeUserSid([string]$Sid, [string]$Id) {
+    $s = ('' + $Sid).Trim()
+    if ($s -match '^S-1-\d{1,10}(-\d{1,10}){1,14}$') { return $s }
+    # Refusing is loud. Per-user work against the wrong profile is worse than not doing it, and
+    # the worker has no logger of its own - Write-Activity is the one channel it does have. An
+    # earlier version called Add-Log here, which is defined in the GUI half of this file and not
+    # inside the worker here-string: the refusal path threw CommandNotFound and failed the row.
+    if ($s) { Write-Activity $Id 'sid' 'Refused' "userSid '$s' is not a SID - per-user steps in this entry would have gone to the wrong account" }
+    return ''
+}
+
 function Test-WipeAllowed([string]$Path) {
     if ([string]::IsNullOrWhiteSpace($Path)) { return $false }
     $full = ''
@@ -10288,6 +12454,15 @@ function Test-WipeAllowed([string]$Path) {
     if ($full -notmatch '^[A-Za-z]:\\') { return $false }
     $t = $full.TrimEnd('\')
     if ($script:WipeProtected -contains $t.ToLower()) { return $false }
+    # ...and anything INSIDE Windows itself. The list above is an EQUALITY test, so it protected
+    # C:\Windows and not C:\Windows\System32\config - which passed every guard here and reached
+    # Remove-Stubborn, which takes ownership of the tree and schedules whatever it cannot delete
+    # for delete-on-reboot. That is an unbootable customer machine. No program leftover worth
+    # sweeping lives under %SystemRoot%; Test-FwRoot already does this exact prefix test on a far
+    # less destructive path.
+    $low = $t.ToLower()
+    $win = ('' + $env:SystemRoot).TrimEnd('\').ToLower()
+    if ($win -and ($low -eq $win -or $low.StartsWith($win + '\'))) { return $false }
     # The list above is built from THIS process's environment - the elevating admin's - so
     # another account's profile roots are not in it. Every user's profile and AppData roots
     # are refused by shape instead; a leftover lives INSIDE one of these, never IS one.
@@ -10362,6 +12537,15 @@ function Wipe-One($app) {
                     # other product's autostart entry too, and removing it would stop them all.
                     $rk = Resolve-Reg $t.path
                     if (-not $t.name) { throw 'regvalue target has no value name' }
+                    # The scan only ever emits these for autostart entries, so that is the only
+                    # shape accepted here. Every other target type re-checks its input on this
+                    # side; this one took the queue on trust, and a value under Winlogon or Lsa
+                    # is not one this tool ever wrote.
+                    if (('' + $t.path) -notmatch '(?i)\\CurrentVersion\\Run(Once)?$') {
+                        $failed++
+                        Write-Activity $app.id 'wipe' 'Refused' "$($t.path) \ $($t.name) is not an autostart entry"
+                        break
+                    }
                     if (Test-Path -LiteralPath $rk) {
                         Remove-ItemProperty -LiteralPath $rk -Name ([string]$t.name) -Force -ErrorAction Stop
                     }
@@ -10447,7 +12631,10 @@ function Wipe-One($app) {
                         }
                     }
                     Write-Activity $app.id 'wipe' 'Running' "$($t.name): $exe $($t.args)"
-                    $rw = @{ FilePath = $exe; AllowUi = $true; TimeoutSec = 1800 }
+                    # RowId, or the settle wait after a vendor deep remover - which is exactly the
+                    # thing that leaves an MSI transaction running - sits silent for five minutes
+                    $rw = @{ FilePath = $exe; AllowUi = $true; TimeoutSec = 1800
+                             RowId = $app.id; RowWord = 'Cleaning'; RowPhase = 'wipe' }
                     if (-not [string]::IsNullOrWhiteSpace([string]$t.args)) { $rw['ArgumentList'] = @([string]$t.args) }
                     $p = Start-InstallerWatched @rw
                     if ($staged) { try { Remove-Item -LiteralPath $staged -Force -ErrorAction SilentlyContinue } catch { } }
@@ -10477,7 +12664,13 @@ function Wipe-One($app) {
                     }
                 }
             }
-        } catch { $failed++ }
+        } catch {
+            $failed++
+            # The reason used to die right here. A removal tool that failed its hash check, a
+            # task Windows would not unregister, a key that would not delete - every one of
+            # them came back as "1 could not be removed" with nothing anywhere saying why.
+            Write-Activity $app.id 'wipe' 'Failed' "$($t.type) $($t.path): $($_.Exception.Message)"
+        }
     }
 
     # hosts is rewritten once, dropping only the exact approved lines. Never regenerated
@@ -10502,6 +12695,16 @@ function Wipe-One($app) {
     $detail = "$removed trace(s) removed"
     if ($pending -gt 0) { $detail += ", $pending scheduled for next restart" }
     if ($failed -gt 0)  { $detail += ", $failed could not be removed" }
+    # Cleaned is a DONE word on the client side, so this used to paint green, count as completed,
+    # leave the batch's failure flag clear and fold the strip away even when every single target
+    # had been refused - a service under %SystemRoot%, a protected registry trunk. The technician
+    # was told a cleanup happened that did not. Removing nothing is a failure; removing some of it
+    # is a partial. Remove-NamedFwRules already reports this shape correctly.
+    if ($removed -eq 0 -and ($failed -gt 0 -or $pending -gt 0)) {
+        Write-Status $app.id 'Failed' "$detail - nothing was removed"
+        return
+    }
+    if ($failed -gt 0) { Write-Status $app.id 'Skipped' $detail; return }
     Write-Status $app.id 'Cleaned' $detail
 }
 # ---------- tweaks ----------
@@ -10790,11 +12993,21 @@ function New-LocalAdmin($app) {
 # process running as this user can write to, so the elevated side must never take a
 # destructive instruction on trust. Cheap to verify, and it is the difference between a
 # UI validation and an actual safety property.
-function Test-AccountActionSafe([string]$Name, [string]$What) {
+function Test-AccountActionSafe([string]$Name, [string]$What, [string]$SignedIn = '') {
     if (-not $Name) { return 'no account name given' }
-    $u = $null
-    try { $u = Get-LocalUser -Name $Name -ErrorAction Stop } catch { return "no local account called $Name" }
-    $sid = ('' + $u.SID.Value)
+    $sid = ''
+    if (Get-Command Get-LocalUser -ErrorAction SilentlyContinue) {
+        $u = $null
+        try { $u = Get-LocalUser -Name $Name -ErrorAction Stop } catch { return "no local account called $Name" }
+        $sid = ('' + $u.SID.Value)
+    } else {
+        # No LocalAccounts module - the very machine every net.exe fallback below exists for.
+        # The cmdlet's absence used to land in the catch above and come back as "no local
+        # account called bob" for an account sitting on screen, so every disable, demote and
+        # delete was refused there and the fallbacks were never reached. Resolve by SID instead.
+        $sid = Get-UserSid $Name
+        if (-not $sid) { return "no local account called $Name" }
+    }
     # Built-ins cannot be deleted or demoted - Windows forbids both. DISABLING one is normal
     # hardening: Administrator and Guest ship disabled, so refusing that is wrong, and it left
     # a machine with the built-in Administrator switched on and no way to switch it back off.
@@ -10802,9 +13015,13 @@ function Test-AccountActionSafe([string]$Name, [string]$What) {
     if ($What -in 'deleted', 'demoted') {
         if ($sid -match '-(500|501|503|504)$') { return "$Name is a built-in Windows account and cannot be $What" }
     }
+    # Two accounts are "in use", and they are not always the same person: the one that answered
+    # the UAC prompt runs this worker, and the one signed in at the GUI is the technician. The
+    # GUI ships the latter as techUser; [Environment]::UserName here is only ever the former.
     try {
-        if ($Name -eq [Environment]::UserName) { return "$Name is the signed-in account and cannot be $What" }
+        if ($Name -eq [Environment]::UserName) { return "$Name is the account that elevated this tool and cannot be $What while it is running" }
     } catch {}
+    if ($SignedIn -and $Name -eq $SignedIn) { return "$Name is the signed-in account and cannot be $What" }
     if ($What -in 'deleted', 'disabled', 'demoted') {
         # would this leave the machine with no way to elevate?
         $admins = @()
@@ -10828,7 +13045,7 @@ function Set-AccountAdmin($app) {
     $makeAdmin = [bool]$app.admin
     Write-Status $app.id 'Applying' ''
     if (-not $makeAdmin) {
-        $why = Test-AccountActionSafe $name 'demoted'
+        $why = Test-AccountActionSafe $name 'demoted' ([string]$app.techUser)
         if ($why) { Write-Status $app.id 'Failed' "refused: $why"; return }
     }
     $grp = Get-AdminGroupName
@@ -10883,7 +13100,7 @@ function Set-AccountEnabled($app) {
     $enable = [bool]$app.enable
     Write-Status $app.id 'Applying' ''
     if (-not $enable) {
-        $why = Test-AccountActionSafe $name 'disabled'
+        $why = Test-AccountActionSafe $name 'disabled' ([string]$app.techUser)
         if ($why) { Write-Status $app.id 'Failed' "refused: $why"; return }
     }
     try {
@@ -10899,7 +13116,7 @@ function Set-AccountEnabled($app) {
 function Remove-Account($app) {
     $name = [string]$app.username
     Write-Status $app.id 'Applying' ''
-    $why = Test-AccountActionSafe $name 'deleted'
+    $why = Test-AccountActionSafe $name 'deleted' ([string]$app.techUser)
     if ($why) { Write-Status $app.id 'Failed' "refused: $why"; return }
     # deliberately account-only: the profile folder is left on disk so nothing the
     # migration missed is lost with it
@@ -11039,12 +13256,18 @@ function Invoke-RobocopyWatched {
     $Source = Get-CanonicalPath $Source
     # Every path quoted - see Format-RcPath. The LOG path too: it lives under %LOCALAPPDATA%, and
     # an account named "John Smith" puts a space in it without anybody choosing one.
-    $argv = @((Format-RcPath $Source), (Format-RcPath $Dest), '/E', '/COPY:DAT', '/DCOPY:DAT', '/XJ', '/R:1', '/W:1',
+    # /XX: files that exist only at the DESTINATION are not reported. With /NC stripping the
+    # "*EXTRA File" tag they were indistinguishable from copied files, so the drain below counted
+    # them - and a repeat backup, or a copy into a profile that already had data, reported the
+    # destination's own contents as bytes it had just moved. Nothing is deleted by /XX.
+    $argv = @((Format-RcPath $Source), (Format-RcPath $Dest), '/E', '/COPY:DAT', '/DCOPY:DAT', '/XJ', '/XX', '/R:1', '/W:1',
               '/MT:16', '/J', '/BYTES', '/NP', '/NJH', '/NJS', '/NDL', '/NC', "/LOG:$(Format-RcPath $LogPath)")
     # /XD by NAME matches that folder at any depth - which is what a browser's caches need:
     # 'Cache' sits under every profile. The same list goes to the /L listings, or the verify
     # would count every excluded cache file as missing.
     if (@($ExcludeDirs).Count) { $argv += '/XD'; foreach ($x in $ExcludeDirs) { $argv += ('"' + $x + '"') } }
+    # per-job switches the caller sets (see Copy-ProfileData: /XO for a restore into a live account)
+    foreach ($x in @($script:__rcExtra)) { if ($x) { $argv += [string]$x } }
     try { if (Test-Path -LiteralPath $LogPath) { Remove-Item -LiteralPath $LogPath -Force -ErrorAction Stop } } catch { }
     $t0 = Get-Date
     $p = Start-Process -FilePath $rcExe -ArgumentList $argv -PassThru -WindowStyle Hidden
@@ -11139,7 +13362,12 @@ function Get-RobocopyListing([string]$Root, [string]$LogPath, [string[]]$Exclude
         # Quoted for the same reason as the copy itself: unquoted, a root with a space in it lists
         # nothing and returns 0, which this would read as "the tree is empty" rather than "I could
         # not look". The verification would then report every file missing.
-        $largs = @((Format-RcPath $Root), 'NULL', '/L', '/E', '/BYTES', '/NC', '/NDL', '/NJH', '/NJS', '/NP',
+        # /XJ, exactly as the copy itself: the copy skips junctions, so the listing that says what
+        # the copy SHOULD contain must skip them too. Without it Documents\My Pictures (a junction
+        # to Pictures) was listed, never copied, and every backup of Documents came back "N
+        # file(s) missing at the destination". /R:0 /W:0 because a folder robocopy cannot scan
+        # would otherwise be retried a million times, thirty seconds apart.
+        $largs = @((Format-RcPath $Root), 'NULL', '/L', '/E', '/XJ', '/R:0', '/W:0', '/BYTES', '/NC', '/NDL', '/NJH', '/NJS', '/NP',
                    "/UNILOG:$(Format-RcPath $LogPath)")
         if (@($ExcludeDirs).Count) { $largs += '/XD'; foreach ($x in $ExcludeDirs) { $largs += ('"' + $x + '"') } }
         $p = Start-Process -FilePath $rcExe -WindowStyle Hidden -PassThru -Wait -ArgumentList $largs
@@ -11277,9 +13505,25 @@ function Connect-Share([string]$Path, [string]$User, [string]$Password) {
     $nr.dwType = 1                                     # RESOURCETYPE_DISK
     $nr.lpRemoteName = $root
     $rc = 0
-    try { $rc = [Native.Share]::WNetAddConnection2([ref]$nr, $Password, $User, 0) }
+    # NULL, never "": to WNetAddConnection2 a NULL user and password mean "the identity this
+    # process runs as", while an EMPTY password means "there is no password" - so a share the
+    # signed-in account could already open (a domain share, a workgroup PC with the same
+    # sign-in) was refused with error 5 whenever no credentials had been typed. Measured
+    # against \\localhost\C$ from an elevated session: "" refused, NULL connected.
+    $u = $(if ([string]::IsNullOrEmpty($User)) { $null } else { $User })
+    $p = $(if ($null -eq $u -or [string]::IsNullOrEmpty($Password)) { $null } else { $Password })
+    try { $rc = [Native.Share]::WNetAddConnection2([ref]$nr, $p, $u, 0) }
     catch { return "could not reach $root - $($_.Exception.Message)" }
     if ($rc -eq 0) { return '' }
+    # No credentials given and the share answers to this identity as it is: nothing to map,
+    # nothing to refuse. An explicit connection to an administrative share on the SAME machine
+    # comes back 5 while every path under it opens fine - measured on \\localhost\C$ - and a
+    # domain share the signed-in account already reaches is the same case from the outside.
+    if ($null -eq $u) {
+        $open = $false
+        try { $open = (Test-Path -LiteralPath $root) } catch { $open = $false }
+        if ($open) { return '' }
+    }
     # 1219 is worth naming precisely: Windows allows only ONE identity per server at a time, so
     # the fix is to drop the existing session, not to retype the password.
     if ($rc -eq 1219) {
@@ -11324,13 +13568,14 @@ function Copy-ProfileData($app) {
     $netUser = [string]$app.netUser
     $netPass = Unprotect-Secret ([string]$app.netPassword)
     $script:NetMapped = @()
+    # inside the try, so a second share that refuses still lets the finally release the first
+    try {
     foreach ($unc in @($src, $dstPath)) {
         $why = Connect-Share $unc $netUser $netPass
         if ($why) { Write-Status $app.id 'Failed' "refused: $why"; return }
         $rootShare = Get-ShareRoot $unc
         if ($rootShare -and $script:NetMapped -notcontains $rootShare) { $script:NetMapped += $rootShare }
     }
-    try {
     # 'paths' carries its sources in $app.paths, one per folder or drive; there is no single root
     if (('' + $app.srcKind).ToLower() -ne 'paths' -and -not (Test-Path -LiteralPath $src)) { Write-Status $app.id 'Failed' "source not found: $src"; return }
 
@@ -11440,7 +13685,10 @@ function Copy-ProfileData($app) {
         # just wrote, walks into that, and fills the disk. A technician picking "Desktop\backup" as
         # the target is not doing anything unreasonable, so this has to be caught rather than
         # trusted not to happen.
-        if ($dstKey -eq $srcKey -or $dstKey.StartsWith($srcKey + [string][char]92)) {
+        # $srcKey is EMPTY for a folders-and-drives backup (each of its sources is checked in the
+        # loop below). Unguarded, '' + '\' is '\', which every network path starts with - so a
+        # backup of picked folders to a share was refused as "inside the profile" every time.
+        if ($srcKey -and ($dstKey -eq $srcKey -or $dstKey.StartsWith($srcKey + [string][char]92))) {
             Write-Status $app.id 'Failed' (
                 "refused: $dstPath is inside the profile being backed up. Copying a folder into " +
                 'itself grows without limit until the disk fills. Pick somewhere outside it.')
@@ -11448,7 +13696,7 @@ function Copy-ProfileData($app) {
         }
         # And the reverse: a destination that CONTAINS the source is the same loop seen from the
         # other end - backing C:\Users\bob up to C:\ would recurse just as happily.
-        if ($srcKey.StartsWith($dstKey + [string][char]92)) {
+        if ($srcKey -and $srcKey.StartsWith($dstKey + [string][char]92)) {
             Write-Status $app.id 'Failed' (
                 "refused: $dstPath contains the profile being backed up, so the copy would " +
                 'include its own destination. Pick a folder that is not a parent of it.')
@@ -11530,7 +13778,7 @@ function Copy-ProfileData($app) {
         }
     }
 
-    $copied = 0; $failed = 0; $bytes = [long]0; $elapsed = 0
+    $copied = 0; $failed = 0; $cancelled = 0; $bytes = [long]0; $elapsed = 0
     $started  = Get-Date
     $manifest = @()
     $problems = @()
@@ -11580,6 +13828,16 @@ function Copy-ProfileData($app) {
                 $s = $(if ($srcKind -eq 'folder') { Resolve-InProfile $src 'Public' } else { Join-Path (Split-Path -Parent $src) 'Public' })
                 $d = $(if ($dstKind -eq 'folder') { Join-Path $dstPath 'Public' } else { Join-Path (Split-Path -Parent $dstPath) 'Public' })
                 if (-not $s -or -not $d) { $failed++; $problems += 'Public (refused)'; continue }
+                # The self-copy guard above compares the destination with the PROFILE root only.
+                # Public lives beside the profiles, so a backup folder picked under C:\Users\Public
+                # - a perfectly ordinary choice - with Public ticked walked into itself, the one
+                # arrangement that fills the disk rather than merely failing.
+                if ($dstKind -eq 'folder' -and (Test-Path -LiteralPath $s)) {
+                    $pk = ''; try { $pk = (Get-CanonicalPath $s).ToLower() } catch { $pk = '' }
+                    if ($pk -and ($dstKey -eq $pk -or $dstKey.StartsWith($pk + [string][char]92))) {
+                        $failed++; $problems += "Public (refused - $dstPath is inside it, and a folder copied into itself grows until the disk fills)"; continue
+                    }
+                }
                 $jobs += @{ rel = 'Public'; s = $s; d = $d; source = '' }
                 continue
             }
@@ -11593,9 +13851,28 @@ function Copy-ProfileData($app) {
             $jobs += @{ rel = $rel; s = $s; d = $d; source = '' }
         }
     }
-    foreach ($job in $jobs) {
+    # A restore into a LIVE location must not roll it back: a file the client edited since the
+    # backup was taken is newer than the copy in the backup, and robocopy replaces it by default.
+    # /XO leaves the newer file where it is.
+    #
+    # 'paths' was excluded here and must not be - it is what BOTH restore destinations use,
+    # "restore to where it came from" and "choose a folder", i.e. exactly the live locations the
+    # rule exists for. The confirm sheet has been promising "a file the account has changed since
+    # the backup is kept rather than rolled back" while robocopy overwrote it. Restoring D:\Photos
+    # over D:\Photos after the customer kept working destroyed the newer copies, silently.
+    #
+    # 'folder' is the one destination that still takes everything: it is a backup being written,
+    # not a live tree, and a backup must mirror the source rather than argue with it.
+    $script:__rcExtra = @()
+    if ($dstKind -ne 'folder') { $script:__rcExtra = @('/XO') }
+    $cancelledAt = -1
+    for ($jobNo = 0; $jobNo -lt $jobs.Count; $jobNo++) {
+        $job = $jobs[$jobNo]
         $rel = [string]$job.rel; $s = [string]$job.s; $d = [string]$job.d
         if (-not (Test-Path -LiteralPath $s)) { continue }
+        # a Cancel pressed during the previous folder ends the batch here, before this one is
+        # even measured - the listing below is a full walk of the tree with no cancel check
+        if ($CancelFile -and (Test-Path -LiteralPath $CancelFile)) { $cancelledAt = $jobNo; break }
 
         # What this folder weighs, so a percentage means something. Measured with robocopy /L for
         # the same reason the verification below uses it: a .NET walk is capped at MAX_PATH.
@@ -11641,9 +13918,12 @@ function Copy-ProfileData($app) {
         $elapsed += $run.Seconds
 
         if ($run.Cancelled) {
-            $failed++
+            # counted twice on purpose: $failed keeps the detail line's arithmetic intact, and
+            # $cancelled is what lets the verdict below tell a cancel apart from a real failure
+            $failed++; $cancelled++
             $problems += "$rel (cancelled)"
-            continue
+            $cancelledAt = $jobNo + 1
+            break
         }
         # Robocopy returns a BITFIELD, not a severity: 1 copied, 2 extra, 4 mismatched,
         # 8 some files failed, 16 fatal. Only 16 means the copy itself broke. Treating
@@ -11686,6 +13966,11 @@ function Copy-ProfileData($app) {
                                  verified = ($missing -eq 0 -and $wrong -eq 0); source = "$($job.source)" }
         Write-Status $app.id 'Applying' "verified $rel  -  $($listSrc.Count) file(s)" $false @() 100 $run.Bytes $wantBytes -1 $run.Seconds
     }
+    if ($cancelledAt -ge 0 -and $cancelledAt -lt $jobs.Count) {
+        $rest = @($jobs[$cancelledAt..($jobs.Count - 1)] | ForEach-Object { [string]$_.rel })
+        $failed += $rest.Count; $cancelled += $rest.Count
+        $problems += "$($rest.Count) item(s) not started after the cancel ($($rest -join ', '))"
+    }
 
     # Everything above was written by the elevated worker. If the destination profile does
     # not actually grant its own user access, the copy "succeeds" and the client signs in
@@ -11717,6 +14002,22 @@ function Copy-ProfileData($app) {
     # would be litter in somebody's home folder, and a restore that later scanned that profile
     # would find a manifest describing a different machine entirely.
     if ($copied -gt 0 -and $dstKind -eq 'folder') {
+        # Merged with what the folder already holds, never replaced: the confirm sheet promises
+        # that running again copies only what changed, and a second run that backs up Pictures
+        # used to write a manifest naming Pictures alone - so Documents and Desktop from the
+        # first run, still on the disk, were refused at restore as "not an item of this backup".
+        # Only a manifest of the same kind is merged; a folder backup and a profile backup are
+        # different things and must not be mixed into one list.
+        $thisKind = $(if ($srcKind -eq 'paths') { 'paths-backup' } else { 'profile-backup' })
+        $prev = Read-BackupManifest $dstPath
+        if ($prev -and ('' + $prev.kind) -eq $thisKind) {
+            foreach ($old in @($prev.items)) {
+                if (-not $old -or -not ('' + $old.rel)) { continue }
+                if (@($manifest | Where-Object { "$($_.rel)" -eq "$($old.rel)" }).Count) { continue }
+                $manifest += [ordered]@{ rel = "$($old.rel)"; files = [int]$old.files; bytes = [long]$old.bytes
+                                         verified = [bool]$old.verified; source = "$($old.source)" }
+            }
+        }
         if (-not (Write-BackupManifest $dstPath $(if ($srcKind -eq 'paths') { "$env:COMPUTERNAME - folders and drives" } else { $src }) $manifest $started $elapsed $(if ($srcKind -eq 'paths') { 'paths-backup' } else { 'profile-backup' }))) {
             $problems += 'the backup manifest could not be written - restore will have to be done by hand'
         }
@@ -11730,12 +14031,18 @@ function Copy-ProfileData($app) {
     $detail = "$copied item(s) copied, $(Format-SizeW $bytes) $where in $took; source left untouched"
     if ($dstKind -eq 'folder' -and $copied -gt 0) { $detail += '; a pc2go-backup.json manifest was written beside them' }
     if ($srcKind -eq 'folder') { $detail = $detail -replace 'source left untouched', 'the backup is left untouched' }
-    if ($failed) { $detail += "; $failed failed outright" }
+    if ($failed -gt [int]$cancelled) { $detail += "; $($failed - [int]$cancelled) failed outright" }
+    if ($cancelled) { $detail += "; $cancelled item(s) stopped by the cancel" }
     if ($problems.Count) { $detail += ". Check: " + (($problems | Select-Object -First 4) -join ', ') }
     if ($problems.Count -gt 4) { $detail += " (+$($problems.Count - 4) more)" }
     # Anything skipped is worth the technician's attention but is not a failed migration -
     # a file open in Word is the normal case, not a broken run. Say which, precisely.
-    if ($failed) { Write-Status $app.id 'Failed' $detail $false @() -1 $bytes -1 -1 $elapsed }
+    # Cancel is invited by the sheet - "you can press Cancel on the progress row while it copies" -
+    # so it must not come back red. Every cancel path increments $failed, so the only branch a
+    # cancelled backup could reach was Failed: the tool told the technician that a supported,
+    # documented action had broken. Only a problem BESIDES the cancel makes this a failed run.
+    if ($failed -gt [int]$cancelled) { Write-Status $app.id 'Failed' $detail $false @() -1 $bytes -1 -1 $elapsed }
+    elseif ($cancelled) { Write-Status $app.id 'Cancelled' $detail $false @() -1 $bytes -1 -1 $elapsed }
     elseif ($problems.Count) { Write-Status $app.id 'Skipped' $detail $false @() 100 $bytes $bytes -1 $elapsed }
     else { Write-Status $app.id 'Applied' $detail $false @() 100 $bytes $bytes -1 $elapsed }
     }
@@ -11780,15 +14087,23 @@ function Get-SlowPcReport {
     $R = New-Object Collections.Generic.List[string]
     $Verdict = [ordered]@{}
     function Add-Line([string]$s) { $R.Add($s) }
+    # "1 read error", "3 read errors" - the number and the right word, never a bracketed s
+    function Plural([int]$n, [string]$one, [string]$many) { if ($n -eq 1) { "$n $one" } else { "$n $many" } }
     $up = 0.0
     try { $up = ((Get-Date) - (Get-CimInstance Win32_OperatingSystem -ErrorAction Stop).LastBootUpTime).TotalHours } catch { }
 
     # ---------------- L0: is it hardware-doomed ----------------
     Add-Line '== L0  hardware =='
     $l0 = @()
+    # Only the disk Windows runs from decides "spinning disk": a USB backup drive that happens to
+    # be an HDD says nothing about how this PC feels. Other disks are listed, not judged.
+    $sysNums = @()
+    try { $sysNums = @(Get-Disk -ErrorAction Stop | Where-Object { $_.IsBoot -or $_.IsSystem } | ForEach-Object { '' + $_.Number }) } catch { }
     try {
         foreach ($d in @(Get-PhysicalDisk -ErrorAction Stop)) {
-            Add-Line ("   disk    {0}  {1}  {2:N0} GB" -f $d.MediaType, $d.BusType, ($d.Size / 1GB))
+            $isSys = ($sysNums.Count -eq 0) -or ($sysNums -contains ('' + $d.DeviceId))
+            Add-Line ("   disk    {0}  {1}  {2:N0} GB  {3}{4}" -f $d.MediaType, $d.BusType, ($d.Size / 1GB), $d.FriendlyName, $(if ($isSys) { '  (Windows)' } else { '' }))
+            if (-not $isSys) { continue }
             if ("$($d.MediaType)" -eq 'HDD') { $l0 += 'spinning disk - software cleanup buys very little' }
             if ("$($d.BusType)" -match 'SD|MMC') { $l0 += "$($d.BusType) storage - same conversation as an HDD" }
         }
@@ -11805,10 +14120,29 @@ function Get-SlowPcReport {
         if ($pct -lt 10 -or ($vol.SizeRemaining/1GB) -lt 15) { $l0 += "only $pct% free - Windows degrades hard below this" }
     } catch { }
     try {
-        foreach ($c in @(Get-PhysicalDisk -ErrorAction Stop | Get-StorageReliabilityCounter -ErrorAction Stop)) {
-            if ($c.Wear -gt 80)      { $l0 += "SSD wear $($c.Wear)% - the drive is near end of life" }
-            if ($c.ReadErrorsTotal)  { $l0 += "$($c.ReadErrorsTotal) read error(s) - back this machine up NOW" }
+        # per disk, so the sentence names the drive: read errors on an external disk are a reason
+        # to copy its files off, not to declare this PC's Windows disk dying
+        $smart = 0
+        foreach ($d in @(Get-PhysicalDisk -ErrorAction Stop)) {
+            $c = $null
+            try { $c = @($d | Get-StorageReliabilityCounter -ErrorAction Stop) | Select-Object -First 1 } catch { }
+            if (-not $c) { continue }
+            $smart++
+            $isSys = ($sysNums.Count -eq 0) -or ($sysNums -contains ('' + $d.DeviceId))
+            $name  = "$($d.BusType) disk $($d.FriendlyName)"
+            # two sentences, not one with a variable in it: the remedy table answers "not the Windows
+            # disk" with a note and the Windows disk with Back this machine up, and the suite maps
+            # each literal sentence to its row
+            if ($c.Wear -gt 80) {
+                if ($isSys) { $l0 += "SSD wear $($c.Wear)% on the Windows disk ($($d.FriendlyName)) - the drive is near end of life" }
+                else        { $l0 += "SSD wear $($c.Wear)% on $name, not the Windows disk - near end of life, copy what you need off it" }
+            }
+            if ($c.ReadErrorsTotal) {
+                if ($isSys) { $l0 += "$(Plural ([int]$c.ReadErrorsTotal) 'read error' 'read errors') on the Windows disk ($($d.FriendlyName)) - back this machine up NOW" }
+                else        { $l0 += "$(Plural ([int]$c.ReadErrorsTotal) 'read error' 'read errors') on $name, not the Windows disk - copy what you need off it" }
+            }
         }
+        if ($smart -eq 0) { Add-Line '   smart   (needs admin, or unsupported)' }
     } catch { Add-Line '   smart   (needs admin, or unsupported)' }
     try {
         $cpu = (Get-CimInstance Win32_Processor -ErrorAction Stop | Select-Object -First 1).Name
@@ -11830,25 +14164,44 @@ function Get-SlowPcReport {
         # The shell comparison only means something once the shell has had time to accumulate.
         # Ten minutes after boot explorer has almost no CPU-seconds and everything looks guilty.
         if ($up -ge 1) {
-            foreach ($p in @($procs | Select-Object -First 10)) {
+            # One sentence per PROGRAM, not per process: a browser or an editor runs a dozen
+            # processes, and "firefox ...; firefox ..." on one verdict line was one finding said
+            # twice. Windows' own infrastructure - svchost, WmiPrvSE, services, the Defender engine -
+            # legitimately accumulates thousands of CPU-seconds on any machine that has been up a
+            # while. Flagging it made a healthy i9 workstation read as infected. What matters is
+            # THIRD-PARTY software outrunning the shell, which is what a rogue scanner is - and,
+            # on a workstation up for days where the shell itself has burned little, also averaging
+            # more than 2% of one core over the uptime; an editor at 0.8% is a person working.
+            $byName = @{}
+            foreach ($p in @($procs)) {
                 $exe = ''
                 try { $exe = [string]$p.Path } catch { }
                 if (-not $exe) { continue }
-                # Windows' own infrastructure - svchost, WmiPrvSE, services, the Defender engine -
-                # legitimately accumulates thousands of CPU-seconds on any machine that has been up
-                # a while. Flagging it made a healthy i9 workstation read as infected. What matters
-                # is THIRD-PARTY software outrunning the shell, which is what a rogue scanner is.
                 if ($exe -like "$env:SystemRoot\*") { continue }
-                if ($shell -gt 0 -and $p.CPU -gt $shell) {
-                    $l1 += "$($p.ProcessName) has used $([int]$p.CPU) CPU-seconds, more than explorer and dwm together ($([int]$shell))"
+                $n = [string]$p.ProcessName
+                if (-not $byName.ContainsKey($n)) { $byName[$n] = @{ Cpu = 0.0; N = 0 } }
+                $byName[$n].Cpu += [double]$p.CPU
+                $byName[$n].N++
+            }
+            $floor = [math]::Max(60, $up * 3600 * 0.02)
+            $ranked = @($byName.Keys | Sort-Object { $byName[$_].Cpu } -Descending)
+            foreach ($name in @($ranked | Select-Object -First 10)) {
+                $g = $byName[$name]
+                if ($shell -gt 0 -and $g.Cpu -gt $shell -and $g.Cpu -gt $floor) {
+                    # a browser outrunning the shell is tabs and extensions, not a rogue helper -
+                    # its own sentence, so the remedy is advice rather than "find it in Uninstall"
+                    if ($name -match '^(firefox|chrome|msedge|brave|opera|vivaldi|iexplore)$') {
+                        $l1 += "$name has used $([int]$g.Cpu) CPU-seconds in $(Plural $g.N 'process' 'processes') - a browser: tabs and extensions, not Windows"
+                    } else {
+                        $l1 += "$name has used $([int]$g.Cpu) CPU-seconds in $(Plural $g.N 'process' 'processes'), more than explorer and dwm together ($([int]$shell))"
+                    }
                 }
             }
             # Named even when no verdict fires. The bar - beating explorer and dwm combined - is
             # deliberately conservative, because a triage tool that cries wolf stops being read.
             # But the top third-party consumer is the candidate a technician wants to see anyway,
-            # so it goes in the evidence with the number it has to beat.
-            $out = @($procs | Where-Object { $_.Path -and ($_.Path -notlike "$env:SystemRoot\*") } | Select-Object -First 1)
-            if ($out.Count) { Add-Line ("   top third-party: {0} at {1:N0} cpu-s (shell total {2:N0})" -f $out[0].ProcessName, $out[0].CPU, $shell) }
+            # so it goes in the evidence with the numbers it has to beat.
+            if ($ranked.Count) { Add-Line ("   top third-party: {0} at {1:N0} cpu-s over {2} (shell total {3:N0}, floor {4:N0})" -f $ranked[0], $byName[$ranked[0]].Cpu, (Plural $byName[$ranked[0]].N 'process' 'processes'), $shell, $floor) }
         } else {
             Add-Line ("   (uptime {0:N1}h - too early to compare against the shell)" -f $up)
         }
@@ -11890,7 +14243,7 @@ function Get-SlowPcReport {
     } catch { }
     try {
         $br = @(Get-Process -Name 'chrome', 'msedge', 'firefox' -ErrorAction SilentlyContinue).Count
-        Add-Line "   browser     $br process(es)"
+        Add-Line "   browser     $(Plural $br 'process' 'processes')"
         if ($br -gt 40) { $l3 += "$br browser processes - this is tabs and extensions, not Windows" }
     } catch { }
     $Verdict['L3'] = $(if ($l3.Count) { $l3 -join '; ' } else { 'OK' })
@@ -11939,7 +14292,7 @@ function Get-SlowPcReport {
         }
     } catch { }
     $seen = @($seen | Sort-Object -Unique)
-    if ($seen.Count) { $l5 += "$($seen.Count) startup item(s) worth reviewing: $($seen -join ', ')" }
+    if ($seen.Count) { $l5 += "$(Plural $seen.Count 'startup item' 'startup items') worth reviewing: $($seen -join ', ')" }
     $Verdict['L5'] = $(if ($l5.Count) { $l5 -join '; ' } else { 'OK' })
 
     # ---------------- L6: faults and throttling ----------------
@@ -11951,9 +14304,9 @@ function Get-SlowPcReport {
         $disk = @($ev | Where-Object { $_.Id -in 7, 51, 153 }).Count
         $whea = @($ev | Where-Object { $_.ProviderName -match 'WHEA' }).Count
         $kp   = @($ev | Where-Object { $_.Id -eq 41 }).Count
-        if ($disk) { $l6 += "$disk disk error event(s) - suspect the drive" }
-        if ($whea) { $l6 += "$whea hardware error event(s) (WHEA)" }
-        if ($kp)   { $l6 += "$kp unexpected shutdown(s) - Kernel-Power 41" }
+        if ($disk) { $l6 += "$(Plural $disk 'disk error event' 'disk error events') - suspect the drive" }
+        if ($whea) { $l6 += "$(Plural $whea 'hardware error event' 'hardware error events') (WHEA)" }
+        if ($kp)   { $l6 += "$(Plural $kp 'unexpected shutdown' 'unexpected shutdowns') - Kernel-Power 41" }
     } catch { Add-Line '   errors  (event log needs admin)' }
     try {
         $c = Get-CimInstance Win32_Processor -ErrorAction Stop | Select-Object -First 1
@@ -11970,6 +14323,214 @@ function Get-SlowPcReport {
     $Verdict['L6'] = $(if ($l6.Count) { $l6 -join '; ' } else { 'OK' })
 
     return @{ Lines = $R; Verdicts = $Verdict }
+}
+
+# ---------- update: winget per package, the Store as a set ----------
+# The GUI resolved winget as the technician; this process may be the admin who answered UAC,
+# for whom the per-user alias does not exist. Its path is taken when it works, and re-resolved
+# here when it does not.
+function Get-WingetExe($app) {
+    $w = [string]$app.winget
+    if ($w -and (Test-Path -LiteralPath $w)) { return $w }
+    try {
+        $g = @(Get-ChildItem "$env:ProgramFiles\WindowsApps\Microsoft.DesktopAppInstaller_*_x64__8wekyb3d8bbwe\winget.exe" -ErrorAction SilentlyContinue |
+               Sort-Object { try { [version](($_.Directory.Name -split '_')[1]) } catch { [version]'0.0' } } -Descending)
+        if ($g.Count) { return $g[0].FullName }
+    } catch { }
+    $c = Get-Command winget.exe -ErrorAction SilentlyContinue
+    if ($c -and $c.Source -and (Test-Path -LiteralPath $c.Source)) { return $c.Source }
+    return ''
+}
+
+# winget with its output in files, polled: the last line it printed becomes the row's live
+# status, a percentage in it drives the ring, the cancel file stops it, and a vendor installer
+# that opens a window nobody can see is killed at the deadline instead of holding the batch.
+function Invoke-Winget([string]$Id, [string]$Name, [string]$Exe, [string[]]$ArgList, [int]$TimeoutSec) {
+    $out = Join-Path $script:CacheDir "winget-$Id.out"
+    $err = Join-Path $script:CacheDir "winget-$Id.err"
+    Remove-Item -LiteralPath $out, $err -Force -ErrorAction SilentlyContinue
+    $p = Start-Process -FilePath $Exe -ArgumentList $ArgList -RedirectStandardOutput $out -RedirectStandardError $err -NoNewWindow -PassThru -ErrorAction Stop
+    # Touch the handle NOW. A Process object whose handle was never read reports ExitCode as
+    # $null once the process is gone, and [int]$null is 0 - which turned "no such package"
+    # into "Installed" on the lab VM.
+    $null = $p.Handle
+    $deadline = (Get-Date).AddSeconds($TimeoutSec)
+    $last = ''; $timedOut = $false
+    while (-not $p.WaitForExit(2000)) {
+        # the TREE, not winget alone: the thing that is stuck is the vendor installer winget
+        # launched, and killing winget by itself left it running, window and all
+        if ((Get-Date) -gt $deadline) { $timedOut = $true; Stop-ProcessTree $p.Id; break }
+        if ($CancelFile -and (Test-Path -LiteralPath $CancelFile)) { Stop-ProcessTree $p.Id; return @{ Code = -2; Output = ''; TimedOut = $false; Cancelled = $true } }
+        try {
+            $tail = @((([IO.File]::ReadAllText($out)) -replace "[`b`r]", "`n") -split "`n" | Where-Object { $_.Trim() -and $_.Trim() -notmatch '^[-\\|/]$' }) | Select-Object -Last 1
+            if ($tail -and $tail -ne $last) {
+                $last = $tail
+                $pct = -1
+                if ($tail -match '(\d{1,3})%') { $pct = [int]$Matches[1] }
+                Write-Status $Id 'Installing' ("$Name - " + $tail.Trim()) $false @() $pct
+            }
+        } catch { }
+    }
+    $text = ''; try { $text = [IO.File]::ReadAllText($out) } catch { }
+    $e = '';    try { $e = [IO.File]::ReadAllText($err) } catch { }
+    return @{ Code = $(if ($timedOut) { -1 } else { $p.ExitCode }); Output = ($text + "`n" + $e); TimedOut = $timedOut; Cancelled = $false }
+}
+
+function Update-One($app) {
+    $name = [string]$app.name
+    $wid = [string]$app.wingetId
+    if (-not $wid) { Write-Status $app.id 'Failed' 'no winget id on the queue entry'; return }
+    $exe = Get-WingetExe $app
+    if (-not $exe) { Write-Status $app.id 'Failed' 'winget.exe is not available to the elevated account - install "App Installer" from the Microsoft Store (or Toolbox > WinGet - Reinstall) and retry'; return }
+    Write-Status $app.id 'Installing' "winget upgrade $wid"
+    $wargs = @('upgrade', '--id', $wid, '--exact', '--silent', '--accept-package-agreements', '--accept-source-agreements', '--disable-interactivity')
+    if ($app.source) { $wargs += @('--source', [string]$app.source) }
+    if ([string]$app.installed -eq 'Unknown') { $wargs += '--include-unknown' }
+    $r = Invoke-Winget $app.id $name $exe $wargs (30 * 60)
+    if ($r.Cancelled) { Write-Status $app.id 'Cancelled' 'stopped by the technician'; return }
+    if ($r.TimedOut)  { Write-Status $app.id 'Failed' 'winget was still running after 30 minutes and was stopped - the vendor installer probably opened a window nobody could see'; return }
+    $code = [int]$r.Code
+    $lastLine = @(($r.Output -replace "[`b`r]", "`n") -split "`n" | Where-Object { $_.Trim() -and $_.Trim() -notmatch '^[-\\|/]$' -and $_ -notmatch '^\s*[\d.]+ [KMG]B' }) | Select-Object -Last 1
+    $from = [string]$app.installed; $to = [string]$app.available
+    # 'a restart is needed' is the phrase Finish-Batch counts restarts by, so every branch that
+    # means one says exactly that. winget does not pass MSI's 3010/1641 through: it answers with
+    # its own 0x8A150109 (reboot required to finish), 0x8A15010A (reboot required BEFORE it can
+    # install) and 0x8A15010B (reboot initiated) - checked against winget's AppInstallerErrors.h.
+    # Those three fell into the default branch and painted a finished update red.
+    switch ($code) {
+        0            { Write-Status $app.id 'Installed' "updated $from -> $to" }
+        3010         { Write-Status $app.id 'Installed' "updated to $to - a restart is needed to finish it" }
+        1641         { Write-Status $app.id 'Installed' "updated to $to - the installer is restarting the machine; a restart is needed to finish it" }
+        -1978334967  { Write-Status $app.id 'Installed' "updated to $to - a restart is needed to finish it" }                                      # 0x8A150109
+        -1978334965  { Write-Status $app.id 'Installed' "updated to $to - the installer is restarting the machine; a restart is needed to finish it" }  # 0x8A15010B
+        -1978334966  { Write-Status $app.id 'Failed' 'a restart is needed before this update can install - restart the machine, then retry' }   # 0x8A15010A
+        -1978334963  { Write-Status $app.id 'Skipped' 'already installed according to winget' }                                                 # 0x8A15010D
+        -1978335189  { Write-Status $app.id 'Skipped' 'winget found no applicable upgrade - already current, or the installed copy could not be matched to the package' }
+        -1978335135  { Write-Status $app.id 'Skipped' 'already at the latest version according to winget' }
+        1618         { Write-Status $app.id 'Failed' 'another installation is already in progress (MSI 1618) - wait for it and retry' }
+        default {
+            $hex = '0x{0:X8}' -f $code
+            $why = switch ($hex) {
+                '0x8A150011' { 'installer hash mismatch - the vendor changed the download; retry later' }
+                '0x8A150014' { 'no installed program matches that id any more - press Rescan' }   # measured: "No installed package found matching input criteria"
+                '0x8A150056' { 'the installer refuses to run elevated - update this one from the user''s own session' }
+                '0x8A150068' { 'the package is pinned - unpin with "winget pin remove"' }
+                '0x8A150101' { 'the program is running - close it and retry' }
+                default      { '' }
+            }
+            Write-Status $app.id 'Failed' ("winget exited with $hex" + $(if ($why) { " - $why" }) + $(if ($lastLine) { " - $($lastLine.Trim())" }))
+        }
+    }
+}
+
+# The Store updates its apps as a set. This asks the same updater the Store's own "Get updates"
+# button asks, through the MDM bridge; the downloads then run in the background.
+function Update-StoreApps($app) {
+    Write-Status $app.id 'Installing' 'asking the Microsoft Store to scan for and install updates'
+    try {
+        $ci = Get-CimInstance -Namespace 'root/cimv2/mdm/dmmap' -ClassName 'MDM_EnterpriseModernAppManagement_AppManagement01' -ErrorAction Stop
+        if (-not $ci) { Write-Status $app.id 'Failed' 'the app-management provider returned nothing - open Microsoft Store > Library > Get updates instead'; return }
+        $res = $ci | Invoke-CimMethod -MethodName 'UpdateScanMethod' -ErrorAction Stop
+        $rv = [int]$res.ReturnValue
+        if ($rv -ne 0) { Write-Status $app.id 'Failed' "the Store updater answered $rv - open Microsoft Store > Library > Get updates instead"; return }
+        Write-Status $app.id 'Applied' 'Store update scan started - the Store downloads and installs its updates in the background over the next few minutes (Microsoft Store > Library shows progress)'
+    } catch {
+        Write-Status $app.id 'Failed' "$($_.Exception.Message) - open Microsoft Store > Library > Get updates instead"
+    }
+}
+
+# One Windows update, by its UpdateID, through the Windows Update Agent: found again (it may
+# have been installed or superseded since the scan), EULA accepted, downloaded if it is not
+# already, installed. Result codes are the agent's: 2 succeeded, 3 succeeded with errors,
+# 4 failed, 5 aborted. A restart is REPORTED, never triggered.
+function Install-WindowsUpdate($app) {
+    $id = [string]$app.updateId
+    $title = [string]$app.name
+    if (-not $id) { Write-Status $app.id 'Failed' 'no update id on the queue entry'; return }
+    Write-Status $app.id 'Installing' "asking Windows Update for $title"
+    try {
+        $sess = New-Object -ComObject Microsoft.Update.Session
+        $sess.ClientApplicationID = 'App Installer'
+        # By id, and then by id as an OPTIONAL installation: a preview update ("2026-08 Preview
+        # Update (KB...)") is offered only in that class and a plain id search returns nothing
+        # for it - measured, KB5120998 - so the row was listed, ticked, and then reported
+        # "no longer offered" without ever downloading.
+        $searcher = $sess.CreateUpdateSearcher()
+        $res = $searcher.Search("UpdateID='$id'")
+        if ($res.Updates.Count -eq 0) {
+            try { $res = $searcher.Search("UpdateID='$id' and DeploymentAction='OptionalInstallation'") } catch { }
+        }
+        if ($res.Updates.Count -eq 0) { Write-Status $app.id 'Skipped' 'Windows Update no longer offers this update - already installed or superseded since the scan'; return }
+        $u = $res.Updates.Item(0)
+        if ($u.IsInstalled) { Write-Status $app.id 'Skipped' 'already installed'; return }
+        if (-not $u.EulaAccepted) { try { $u.AcceptEula() } catch { } }
+        $coll = New-Object -ComObject Microsoft.Update.UpdateColl
+        [void]$coll.Add($u)
+        if (-not $u.IsDownloaded) {
+            $size = $(if ($u.MaxDownloadSize -gt 0) { ' ({0:N0} MB)' -f ($u.MaxDownloadSize / 1MB) } else { '' })
+            Write-Status $app.id 'Installing' "downloading $title$size"
+            $d = $sess.CreateUpdateDownloader()
+            $d.Updates = $coll
+            $dr = $d.Download()
+            if ([int]$dr.ResultCode -ne 2) {
+                $dhr = [int]$dr.HResult
+                if ($dhr -eq 0x80240016 -or $dhr -eq 0x80240022) {
+                    Write-Status $app.id 'Failed' ('Windows Update is busy installing something else (0x{0:X8}) - wait a few minutes, then retry' -f $dhr); return
+                }
+                Write-Status $app.id 'Failed' ('download failed - Windows Update result {0}, 0x{1:X8}' -f $dr.ResultCode, $dr.HResult); return
+            }
+        }
+        # the one point a Cancel can be honoured: the download is done and nothing has been
+        # written yet. An install that has started is left to finish - Windows Update does
+        # not survive being killed part-way, and neither would the machine.
+        if ($CancelFile -and (Test-Path -LiteralPath $CancelFile)) {
+            Write-Status $app.id 'Cancelled' 'stopped by the technician before the install step - the download is kept for next time'
+            return
+        }
+        Write-Status $app.id 'Installing' "installing $title"
+        $i = $sess.CreateUpdateInstaller()
+        $i.Updates = $coll
+        try { $i.ForceQuiet = $true } catch { }
+        $ir = $i.Install()
+        $code = [int]$ir.ResultCode
+        $restart = $(if ($ir.RebootRequired) { ' - a restart is needed to finish it' } else { '' })
+        # Windows Update installs things on its own schedule, and a machine that has just come
+        # up is usually mid-way through exactly the update the technician ticked. The agent
+        # then refuses this install with 0x80240016 ("another installation is in progress")
+        # or 0x80240022, and Windows finishes the update itself half a minute later - so the
+        # row went red for an update that was, by then, installed. Ask again before saying so.
+        if ($code -notin 2, 3, 5) {
+            # the agent hands the HResult over as a SIGNED 32-bit number, and so is a hex literal
+            # in PowerShell 5.1 (0x80240022 IS -2145124318) - compare them as they are; -f X8
+            # prints the two's-complement form, so the text still reads 0x80240022
+            $hr = [int]$ir.HResult
+            $busy = ($hr -eq 0x80240016 -or $hr -eq 0x80240022)
+            $nowInstalled = $false
+            if ($busy) {
+                Write-Status $app.id 'Installing' "Windows Update is installing on its own right now - waiting for it to finish $title"
+                $until = (Get-Date).AddSeconds(180)
+                while (-not $nowInstalled -and (Get-Date) -lt $until) {
+                    Start-Sleep -Seconds 10
+                    try {
+                        $again = $searcher.Search("UpdateID='$id'")
+                        if ($again.Updates.Count -eq 0) { try { $again = $searcher.Search("UpdateID='$id' and DeploymentAction='OptionalInstallation'") } catch { } }
+                        if ($again.Updates.Count -gt 0 -and $again.Updates.Item(0).IsInstalled) { $nowInstalled = $true }
+                        elseif ($again.Updates.Count -eq 0 -and $searcher.Search("UpdateID='$id' and IsInstalled=1").Updates.Count -gt 0) { $nowInstalled = $true }
+                    } catch { }
+                }
+            }
+            if ($nowInstalled) { Write-Status $app.id 'Installed' 'installed - Windows Update was already installing it and finished on its own'; return }
+            if ($busy) { Write-Status $app.id 'Failed' ('Windows Update is busy installing something else (0x{0:X8}) - wait a few minutes, then retry' -f $hr); return }
+        }
+        switch ($code) {
+            2 { Write-Status $app.id 'Installed' "installed$restart" }
+            3 { Write-Status $app.id 'Installed' (('installed, with errors reported by Windows Update (0x{0:X8})' -f $ir.HResult) + $restart) }
+            5 { Write-Status $app.id 'Cancelled' 'Windows Update aborted the install' }
+            default { Write-Status $app.id 'Failed' ('Windows Update result {0}, 0x{1:X8}' -f $code, $ir.HResult) }
+        }
+    } catch {
+        Write-Status $app.id 'Failed' $_.Exception.Message
+    }
 }
 
 function Invoke-Fix($app) {
@@ -12029,7 +14590,11 @@ function Invoke-Fix($app) {
             & "$env:SystemRoot\System32\ipconfig.exe" /release 2>&1 | Out-Null
             & "$env:SystemRoot\System32\ipconfig.exe" /renew   2>&1 | Out-Null
             & "$env:SystemRoot\System32\ipconfig.exe" /flushdns 2>&1 | Out-Null
-            Write-Status $app.id 'Skipped' "reset $($out -join ', '), released/renewed DHCP and flushed DNS - RESTART REQUIRED before the stack changes take effect"
+            # Applied, not Skipped: this branch has no failure path, so the one word it could ever
+            # write was the client's word for "did not happen". A Network Reset that worked
+            # perfectly reported "0 completed, 0 failed, 1 with warnings", kept the strip open and
+            # titled the closing sheet "check the details". Needing a reboot is not a warning.
+            Write-Status $app.id 'Applied' "reset $($out -join ', '), released/renewed DHCP and flushed DNS - RESTART REQUIRED before the stack changes take effect"
             return
         }
 
@@ -12045,6 +14610,35 @@ function Invoke-Fix($app) {
             return
         }
 
+        'restart' {
+            # Sixty seconds with the reason on screen, so whoever is at the machine can save first;
+            # "shutdown /a" from any prompt cancels it. The worker exits with the restart, which is
+            # the point: a pending update finishes, and the next diagnosis reads a real machine.
+            $out = & "$env:SystemRoot\System32\shutdown.exe" /r /t 60 /c "PC2Go App Installer: this PC restarts in 60 seconds so pending changes can finish. Save your work now." 2>&1
+            if ($LASTEXITCODE -ne 0) {
+                Write-Status $app.id 'Failed' ("shutdown.exe refused (exit $LASTEXITCODE): " + (@((($out | Out-String).Trim() -split "`r?`n") | Where-Object { $_.Trim() }) | Select-Object -Last 1))
+                return
+            }
+            Write-Status $app.id 'Applied' 'restarting in 60 seconds - "shutdown /a" cancels it'
+            return
+        }
+        'searchrebuild' {
+            # The documented reset: stop Windows Search, mark setup incomplete, drop the index
+            # file (Windows.edb before 24H2, Windows.db after) and let the service rebuild it.
+            # Results are patchy for an hour or so - said in the row, not discovered later.
+            try { Stop-Service WSearch -Force -ErrorAction Stop } catch { Write-Status $app.id 'Failed' "Windows Search could not be stopped: $($_.Exception.Message)"; return }
+            Set-Reg 'HKLM\SOFTWARE\Microsoft\Windows Search' 'SetupCompletedSuccessfully' 0
+            $size = [long]0
+            foreach ($f in 'Windows.edb', 'Windows.db') {
+                $idx = Join-Path $env:ProgramData ('Microsoft\Search\Data\Applications\Windows\' + $f)
+                if (-not (Test-Path -LiteralPath $idx)) { continue }
+                $size += (Get-Item -LiteralPath $idx).Length
+                try { Remove-Item -LiteralPath $idx -Force -ErrorAction Stop } catch { }
+            }
+            try { Start-Service WSearch -ErrorAction Stop } catch { }
+            Write-Status $app.id 'Applied' ('index dropped' + $(if ($size) { ' ({0:N0} MB)' -f ($size / 1MB) } else { '' }) + ' - Windows Search is rebuilding it in the background; results are incomplete until it finishes')
+            return
+        }
         'sfc' {
             # Both tools are slow and chatty; capture the verdict rather than the progress.
             $sfc = & "$env:SystemRoot\System32\sfc.exe" /scannow 2>&1
@@ -12152,7 +14746,8 @@ $script:FwProtected = @(
     $env:SystemRoot, (Join-Path $env:SystemRoot 'System32'), (Join-Path $env:SystemRoot 'SysWOW64'),
     $env:ProgramFiles, ${env:ProgramFiles(x86)}, $env:ProgramData, $env:SystemDrive,
     (Join-Path $env:ProgramFiles 'Common Files'), (Join-Path ${env:ProgramFiles(x86)} 'Common Files'),
-    (Join-Path $env:ProgramFiles 'WindowsApps'), $env:UserProfile, $env:LocalAppData, $env:AppData
+    (Join-Path $env:ProgramFiles 'WindowsApps'), $env:UserProfile, $env:LocalAppData, $env:AppData,
+    $env:Public, (Split-Path $env:UserProfile)
 ) | Where-Object { $_ } | ForEach-Object { $_.TrimEnd('\').ToLower() }
 
 function Test-FwRoot([string]$Root) {
@@ -12160,6 +14755,9 @@ function Test-FwRoot([string]$Root) {
     $r = $Root.TrimEnd('\').ToLower()
     if ($r.Length -lt 4) { return $false }
     if ($script:FwProtected -contains $r) { return $false }
+    # every user's profile and AppData roots, by shape - the list holds only this account's
+    # (same rule as Test-WipeAllowed; a per-user program lives inside one, never is one)
+    if ($r -match '^[a-z]:\\users\\[^\\]+(\\appdata(\\(local|roaming|locallow))?)?$') { return $false }
     $win = $env:SystemRoot.TrimEnd('\').ToLower()
     if ($r -eq $win -or $r.StartsWith($win + '\')) { return $false }
     return $true
@@ -12197,7 +14795,14 @@ function Block-AppNetwork($app) {
     if (-not (Test-Path -LiteralPath $root)) { Write-Status $app.id 'Failed' "folder no longer exists: $root"; return }
 
     $exes = @()
-    try { $exes = @([IO.Directory]::EnumerateFiles($root, '*.exe', 'AllDirectories')) } catch {}
+    # EnumerateFiles gives up on the FIRST subfolder it cannot read or path it cannot hold, and
+    # loses everything it had already found - so one odd subfolder read as "no executables
+    # found" for a folder full of them. Get-ChildItem skips what it cannot read and keeps the rest.
+    try { $exes = @([IO.Directory]::EnumerateFiles($root, '*.exe', 'AllDirectories')) }
+    catch {
+        $exes = @(Get-ChildItem -LiteralPath $root -Recurse -File -Filter '*.exe' -Force -ErrorAction SilentlyContinue |
+                  Where-Object { $_.Extension -eq '.exe' } | ForEach-Object { $_.FullName })
+    }
     if (-not $exes.Count) { Write-Status $app.id 'Skipped' 'no executables found in that folder'; return }
 
     # Skip anything already covered, so re-running does not pile up duplicates. Only an
@@ -12495,6 +15100,20 @@ function Set-GuestMark([bool]$On) {
     } catch { }
 }
 function Test-GuestMark { try { return ([int](Get-ItemProperty -LiteralPath $script:ShareGuestMark -Name 'GuestEnabledForSharing' -ErrorAction Stop).GuestEnabledForSharing -eq 1) } catch { return $false } }
+# The same mark for the firewall: Stop sharing may only switch the File and Printer Sharing
+# rules OFF if Share this PC was what switched them on. A machine that shares a printer, or had
+# them open by hand, keeps them - the tool leaves the firewall as it found it.
+function Set-FwMark([bool]$On) {
+    try {
+        if ($On) {
+            if (-not (Test-Path -LiteralPath $script:ShareGuestMark)) { New-Item -Path $script:ShareGuestMark -Force | Out-Null }
+            New-ItemProperty -Path $script:ShareGuestMark -Name 'FirewallEnabledForSharing' -Value 1 -PropertyType DWord -Force | Out-Null
+        } else {
+            Remove-ItemProperty -Path $script:ShareGuestMark -Name 'FirewallEnabledForSharing' -ErrorAction SilentlyContinue
+        }
+    } catch { }
+}
+function Test-FwMark { try { return ([int](Get-ItemProperty -LiteralPath $script:ShareGuestMark -Name 'FirewallEnabledForSharing' -ErrorAction Stop).FirewallEnabledForSharing -eq 1) } catch { return $false } }
 
 function Enable-Sharing($app) {
     Write-Status $app.id 'Applying' 'turning on file sharing'
@@ -12536,6 +15155,7 @@ function Enable-Sharing($app) {
             return
         }
         $did += 'enabled the File and Printer Sharing firewall rules for Private and Domain networks'
+        Set-FwMark $true
     }
     # 4. no password at all, only when asked for
     if ($app.anyone) {
@@ -12638,8 +15258,16 @@ function Disable-SharingIfIdle($app) {
         Write-Status $app.id 'Skipped' ("file sharing left on: still shared - " + (@($left | ForEach-Object { $_.Name }) -join ', ') + $guestNote)
         return
     }
+    # Only what this tool switched on is switched off. Get-AllShares counts folder shares, so a
+    # PC sharing a printer - or one that had sharing open before Share this PC was ever pressed -
+    # reads as "nothing left", and closing the rules there cut off a printer nobody here touched.
+    if (-not (Test-FwMark)) {
+        Write-Status $app.id 'Applied' ('the shares are gone; the firewall is left as it was found, because file sharing was already on before Share this PC was used' + $guestNote)
+        return
+    }
     $why = Set-SharingFirewall $false
     if ($why) { Write-Status $app.id 'Failed' $why; return }
+    Set-FwMark $false
     Write-Status $app.id 'Applied' ('file sharing turned back off - no shares remain. The network stays Private' + $guestNote)
 }
 
@@ -12659,6 +15287,14 @@ function Format-Reclaim([long]$Before) {
 function Remove-AppxSet([string[]]$Patterns) {
     $n = 0
     foreach ($p in $Patterns) { $n += Remove-AppxByName "$p*" }
+    # What is STILL there afterwards, for any account. Remove-AppxByName swallows every error,
+    # so "0 package(s) removed" used to be reported Applied whether the machine was clean or
+    # the package simply would not go. The caller turns a non-zero count into a failure.
+    $script:AppxLeft = 0
+    try {
+        $all = @(Get-AppxPackage -AllUsers -ErrorAction Stop)
+        foreach ($p in $Patterns) { $script:AppxLeft += @($all | Where-Object { $_.Name -like "$p*" -and -not $_.IsFramework }).Count }
+    } catch { $script:AppxLeft = 0 }
     return $n
 }
 
@@ -12754,6 +15390,34 @@ function Initialize-NvApi {
     return $script:NvReady
 }
 
+# The hosts file, replaced whole and atomically: the content is written to a sibling temp file
+# first and moved over the original only when complete, so a failure part-way leaves the file
+# exactly as it was. Plain ASCII, CRLF, no BOM - what Windows' resolver reads. The Read-only
+# attribute some security products set is lifted for the swap and put back afterwards.
+function Write-HostsFile([string]$Path, [string[]]$Lines) {
+    $tmp = $Path + '.new'
+    # UTF-8 without a BOM, never ASCII: ASCII turned every non-ASCII character in the lines
+    # being KEPT - a comment in French, an accented host name - into "?", damaging a file this
+    # promised to leave alone apart from its own block. Windows reads hosts as UTF-8.
+    [IO.File]::WriteAllText($tmp, (($Lines -join "`r`n") + "`r`n"), (New-Object Text.UTF8Encoding $false))
+    $attrs = $null
+    try { $attrs = [IO.File]::GetAttributes($Path) } catch { }
+    if ($null -ne $attrs -and ($attrs -band [IO.FileAttributes]::ReadOnly)) {
+        [IO.File]::SetAttributes($Path, ($attrs -bxor [IO.FileAttributes]::ReadOnly))
+    }
+    try {
+        # a rename over the original, so the file is whole at every instant; File.Copy
+        # truncated it first and rewrote it in place, which is what the comment above used to
+        # claim it did not do
+        if (Test-Path -LiteralPath $Path) { try { [IO.File]::Replace($tmp, $Path, $null) } catch { [IO.File]::Copy($tmp, $Path, $true) } }
+        else { [IO.File]::Move($tmp, $Path) }
+    }
+    finally {
+        if ($null -ne $attrs) { try { [IO.File]::SetAttributes($Path, $attrs) } catch { } }
+        try { [IO.File]::Delete($tmp) } catch { }
+    }
+}
+
 function Apply-Tweak($app) {
     $id = [string]$app.tweak
     Write-Status $app.id 'Applying' ''
@@ -12800,34 +15464,79 @@ function Apply-Tweak($app) {
         'diskcleanup' {
             $before = Get-FreeBytes
             $vc = 'Registry::HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\VolumeCaches'
+            # Everything cleanmgr offers EXCEPT what is somebody else's decision. Measured on a
+            # 25H2 VM, the handler list includes categories no pre-ticked row may run:
+            #   DownloadsFolder         - the user's Downloads folder. Deleting it is data loss.
+            #   Previous Installations  - Windows.old, the CAUTION row with its own dialog.
+            #   Update Cleanup          - the DISM component cleanup; that is the componentstore
+            #                             row, and one batch must not do it twice.
+            #   Windows ESD installation files - what "Reset this PC" needs to work.
+            #   User file versions      - File History copies of the user's documents.
+            #   Recycle Bin             - its own row.
+            $never = @('Recycle Bin', 'DownloadsFolder', 'Previous Installations', 'Update Cleanup',
+                       'Windows ESD installation files', 'User file versions')
             $set = 0
             foreach ($k in @(Get-ChildItem -LiteralPath $vc -ErrorAction SilentlyContinue)) {
-                if ($k.PSChildName -eq 'Recycle Bin') { continue }
+                if ($never -contains $k.PSChildName) { continue }
                 try { New-ItemProperty -LiteralPath $k.PSPath -Name 'StateFlags0064' -Value 2 -PropertyType DWord -Force -ErrorAction Stop | Out-Null; $set++ } catch {}
             }
-            & "$env:SystemRoot\System32\cleanmgr.exe" /sagerun:64 2>&1 | Out-Null
-            foreach ($k in @(Get-ChildItem -LiteralPath $vc -ErrorAction SilentlyContinue)) {
-                try { Remove-ItemProperty -LiteralPath $k.PSPath -Name 'StateFlags0064' -Force -ErrorAction SilentlyContinue } catch {}
+            # Bounded: a cleanmgr that wedges on one handler used to wedge the entire batch,
+            # with every row after it sitting at Queued for ever.
+            $timedOut = $false
+            try {
+                $p = Start-Process -FilePath "$env:SystemRoot\System32\cleanmgr.exe" -ArgumentList '/sagerun:64' -PassThru -WindowStyle Hidden -ErrorAction Stop
+                if (-not $p.WaitForExit(30 * 60 * 1000)) { $timedOut = $true; try { $p.Kill() } catch {} }
+            } catch { Write-Status $app.id 'Failed' "cleanmgr could not be started: $($_.Exception.Message)"; return }
+            finally {
+                foreach ($k in @(Get-ChildItem -LiteralPath $vc -ErrorAction SilentlyContinue)) {
+                    try { Remove-ItemProperty -LiteralPath $k.PSPath -Name 'StateFlags0064' -Force -ErrorAction SilentlyContinue } catch {}
+                }
             }
             $gain = Format-Reclaim $before
-            $detail = "disk cleanup ran across $set categor(ies)" + $(if ($gain) { " - $gain" } else { '' })
+            if ($timedOut) { Write-Status $app.id 'Failed' "disk cleanup was still running after 30 minutes and was stopped$(if ($gain) { " - $gain so far" })"; return }
+            $detail = "disk cleanup ran across $set categor(ies) - Downloads, Windows.old, ESD and File History left alone" + $(if ($gain) { " - $gain" } else { '' })
         }
         'componentstore' {
             # the DISM half split out of diskcleanup - typically the slow part, minutes to
             # well over half an hour on an old disk. Never /ResetBase: that reclaims more
             # but makes every installed update permanently uninstallable.
             $before = Get-FreeBytes
-            & "$env:SystemRoot\System32\Dism.exe" /Online /Cleanup-Image /StartComponentCleanup /Quiet 2>&1 | Out-Null
+            $code = -1; $timedOut = $false
+            try {
+                $p = Start-Process -FilePath "$env:SystemRoot\System32\Dism.exe" -ArgumentList '/Online', '/Cleanup-Image', '/StartComponentCleanup', '/Quiet', '/NoRestart' -PassThru -WindowStyle Hidden -ErrorAction Stop
+                $null = $p.Handle   # or ExitCode reads $null after a fast exit (see Invoke-Winget)
+                if ($p.WaitForExit(90 * 60 * 1000)) { $code = $p.ExitCode } else { $timedOut = $true; try { $p.Kill() } catch {} }
+            } catch { Write-Status $app.id 'Failed' "DISM could not be started: $($_.Exception.Message)"; return }
             $gain = Format-Reclaim $before
-            $detail = 'component store cleanup completed' + $(if ($gain) { " - $gain" } else { '' })
+            if ($timedOut) { Write-Status $app.id 'Failed' 'DISM was still running after 90 minutes and was stopped'; return }
+            # 0 = done, 3010 = done and wants a reboot. Anything else used to be reported as
+            # "completed" because nothing looked at the exit code.
+            if ($code -ne 0 -and $code -ne 3010) { Write-Status $app.id 'Failed' ('DISM exited with 0x{0:X8} - see {1}\Logs\DISM\dism.log' -f $code, $env:SystemRoot); return }
+            $detail = 'component store cleanup completed' + $(if ($code -eq 3010) { ' (reboot to finish)' }) + $(if ($gain) { " - $gain" } else { '' })
         }
         'recyclebin' {
             $before = Get-FreeBytes
-            # -DriveLetter unset = every volume; Clear-RecycleBin throws on an already
-            # empty bin on some builds, which is a non-event
+            # The TECHNICIAN's bins, by SID, on every fixed drive. Clear-RecycleBin empties the
+            # bin of whoever this elevated process runs as - the admin who answered the UAC prompt,
+            # who may not be the person whose desktop this is. Same wrong-profile trap tempfiles
+            # already avoids. Windows keeps a desktop.ini in each bin folder and rebuilds it anyway.
+            $n = 0
+            $sids = @()
+            if ($script:UserSid) { $sids += $script:UserSid }
+            try { $me = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value; if ($sids -notcontains $me) { $sids += $me } } catch {}
+            foreach ($d in @(Get-PSDrive -PSProvider FileSystem -ErrorAction SilentlyContinue | Where-Object { $_.Root -match '^[A-Z]:\\$' -and $_.Free -ne $null })) {
+                foreach ($sid in $sids) {
+                    $bin = Join-Path $d.Root ('$Recycle.Bin\' + $sid)
+                    if (-not (Test-Path -LiteralPath $bin)) { continue }
+                    foreach ($e in @(Get-ChildItem -LiteralPath $bin -Force -ErrorAction SilentlyContinue | Where-Object { $_.Name -ne 'desktop.ini' })) {
+                        try { Remove-Item -LiteralPath $e.FullName -Recurse -Force -ErrorAction Stop; $n++ } catch {}
+                    }
+                }
+            }
+            # and the shell's own notion of it, so the icon on the desktop updates
             try { Clear-RecycleBin -Force -ErrorAction Stop } catch {}
             $gain = Format-Reclaim $before
-            $detail = 'recycle bin emptied on all drives' + $(if ($gain) { " - $gain" } else { '' })
+            $detail = "recycle bin emptied on all drives ($n item(s))" + $(if ($gain) { " - $gain" } else { '' })
         }
         'windowsold' {
             # The biggest single disk number available - and the reason this row is
@@ -12836,7 +15545,8 @@ function Apply-Tweak($app) {
             $before = Get-FreeBytes
             $old = Join-Path $env:SystemDrive 'Windows.old'
             $removedOld = $false
-            if (Test-Path -LiteralPath $old) {
+            $hadOld = (Test-Path -LiteralPath $old)
+            if ($hadOld) {
                 # Windows.old is ACL-armoured; take ownership first or Remove-Item dies on
                 # the first TrustedInstaller-owned file
                 & "$env:SystemRoot\System32\takeown.exe" /F $old /R /A /D Y 2>&1 | Out-Null
@@ -12844,19 +15554,43 @@ function Apply-Tweak($app) {
                 try { Remove-Item -LiteralPath $old -Recurse -Force -ErrorAction Stop; $removedOld = $true }
                 catch { $removedOld = -not (Test-Path -LiteralPath $old) }
             }
-            $svcs = @('wuauserv', 'bits', 'cryptsvc', 'msiserver')
+            # DoSvc and UsoSvc as well as the classic four: Delivery Optimization owns the
+            # download cache on current Windows and the orchestrator re-opens it, so with only
+            # wuauserv stopped one file stayed in use every time
+            $svcs = @('wuauserv', 'bits', 'cryptsvc', 'msiserver', 'DoSvc', 'UsoSvc')
             foreach ($s in $svcs) { try { Stop-Service -Name $s -Force -ErrorAction SilentlyContinue } catch {} }
+            # Stop-Service can return while wuauserv is still StopPending - it does on a machine
+            # mid-scan, which a freshly started one always is - and the files it still holds
+            # then fail to delete, silently. Wait for the stop, and give a held file one retry.
+            foreach ($s in $svcs) { try { (Get-Service -Name $s -ErrorAction Stop).WaitForStatus('Stopped', [TimeSpan]::FromSeconds(30)) } catch {} }
             $dl = Join-Path $env:SystemRoot 'SoftwareDistribution\Download'
-            $clearedDl = 0
+            $clearedDl = 0; $leftDl = 0
             if (Test-Path -LiteralPath $dl) {
                 foreach ($e in @(Get-ChildItem -LiteralPath $dl -Force -ErrorAction SilentlyContinue)) {
-                    try { Remove-Item -LiteralPath $e.FullName -Recurse -Force -ErrorAction Stop; $clearedDl++ } catch {}
+                    try { Remove-Item -LiteralPath $e.FullName -Recurse -Force -ErrorAction Stop; $clearedDl++ }
+                    catch {
+                        # Newer download folders are TrustedInstaller-owned and refuse an
+                        # administrator outright - "access denied", not "in use". Same
+                        # answer as Windows.old itself: take ownership, then delete.
+                        & "$env:SystemRoot\System32\takeown.exe" /F $e.FullName /R /A /D Y 2>&1 | Out-Null
+                        & "$env:SystemRoot\System32\icacls.exe" $e.FullName /grant "*S-1-5-32-544:(OI)(CI)F" /T /C /Q 2>&1 | Out-Null
+                        Start-Sleep -Seconds 1
+                        try { Remove-Item -LiteralPath $e.FullName -Recurse -Force -ErrorAction Stop; $clearedDl++ } catch { $leftDl++ }
+                    }
                 }
             }
             foreach ($s in $svcs) { try { Start-Service -Name $s -ErrorAction SilentlyContinue } catch {} }
             $gain = Format-Reclaim $before
+            # A Windows.old that was there and is STILL there is a failure, not "no Windows.old
+            # on this machine" - which is what this row said, in green, when the delete lost to
+            # an open handle or an ACL takeown could not lift.
+            if ($hadOld -and -not $removedOld) {
+                Write-Status $app.id 'Failed' ("Windows.old could not be removed - something still holds files in it (restart and retry); " +
+                    "$clearedDl update cache item(s) cleared" + $(if ($gain) { " - $gain" } else { '' }))
+                return
+            }
             $detail = $(if ($removedOld) { 'Windows.old removed (version rollback is gone)' } else { 'no Windows.old on this machine' }) +
-                      "; $clearedDl update cache item(s) cleared" + $(if ($gain) { " - $gain" } else { '' })
+                      "; $clearedDl update cache item(s) cleared" + $(if ($leftDl) { " ($leftDl could not be removed and left in place)" } else { '' }) + $(if ($gain) { " - $gain" } else { '' })
         }
         'endtask' {
             Set-Reg 'HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced\TaskbarDeveloperSettings' 'TaskbarEndTask' 1
@@ -12891,9 +15625,20 @@ function Apply-Tweak($app) {
         }
         'restorepoint' {
             try { Enable-ComputerRestore -Drive "$env:SystemDrive\" -ErrorAction Stop } catch {}
-            # Windows silently refuses a second restore point within 24h; 0 lifts that
-            Set-Reg 'HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\SystemRestore' 'SystemRestorePointCreationFrequency' 0
-            Checkpoint-Computer -Description 'PC2Go App Installer - before tweaks' -RestorePointType 'MODIFY_SETTINGS' -ErrorAction Stop
+            # Windows silently refuses a second restore point within 24h; 0 lifts that - for
+            # THIS point only. Left at 0 it is a lasting machine-wide change: every installer
+            # could then mint a point per run, each evicting an older one from the shadow
+            # budget, which is the very throttle Windows put there. Put back whatever happens.
+            $srKey = 'HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\SystemRestore'
+            $hadFreq = $null
+            try { $hadFreq = Get-WorkerReg $srKey 'SystemRestorePointCreationFrequency' } catch { $hadFreq = $null }
+            Set-Reg $srKey 'SystemRestorePointCreationFrequency' 0
+            try {
+                Checkpoint-Computer -Description 'Before tweaks (App Installer)' -RestorePointType 'MODIFY_SETTINGS' -ErrorAction Stop
+            } finally {
+                if ($null -eq $hadFreq) { Remove-RegVal $srKey 'SystemRestorePointCreationFrequency' }
+                else { try { Set-Reg $srKey 'SystemRestorePointCreationFrequency' ([int]$hadFreq) } catch { } }
+            }
             $detail = 'restore point created'
         }
         'servicesmanual' {
@@ -12925,6 +15670,129 @@ function Apply-Tweak($app) {
             $t += [int](Disable-Task '\Microsoft\Windows\Shell\' 'FamilySafetyMonitor')
             $t += [int](Disable-Task '\Microsoft\Windows\Shell\' 'FamilySafetyRefreshTask')
             $detail = "telemetry policy set, DiagTrack disabled, $t scheduled task(s) disabled"
+        }
+        # ---------------- performance ----------------
+        'searchscope' {
+            # Classic scope (libraries and the desktop - Windows' own default, forced back on for
+            # machines somebody switched to Enhanced), no indexing on battery, and the indexer
+            # yielding to the power mode: the three settings that stop SearchIndexer owning the
+            # disk on a laptop or an HDD machine. Outlook indexing is deliberately left alone -
+            # Outlook's own search depends on it.
+            Set-Reg 'HKLM\SOFTWARE\Microsoft\Windows Search\Gather\Windows\SystemIndex' 'EnableFindMyFiles' 0
+            Set-Reg 'HKLM\SOFTWARE\Microsoft\Windows Search\Gather\Windows\SystemIndex' 'RespectPowerModes' 1
+            Set-Reg 'HKLM\SOFTWARE\Policies\Microsoft\Windows\Windows Search' 'PreventIndexOnBattery' 1
+            $detail = 'indexer on classic scope, paused on battery and yielding under load'
+        }
+        'defenderscan' {
+            # Defender keeps this in its own store, so its cmdlet is the only honest way to set
+            # it. 20% instead of the 50% default, and the idle-time exemption off, so a scheduled
+            # scan never takes the machine away from the person sitting at it.
+            try { Set-MpPreference -ScanAvgCPULoadFactor 20 -DisableCpuThrottleOnIdleScans $false -ErrorAction Stop }
+            catch { Write-Status $app.id 'Failed' "Defender refused the preference: $($_.Exception.Message)"; return }
+            $detail = 'Defender scans capped at 20% CPU, idle scans throttled too'
+        }
+        'storagesense' {
+            # Monthly, and only what is safe to lose: temp files, and recycle-bin items older
+            # than 30 days. Downloads are NEVER touched (0 = never) and OneDrive files are never
+            # made online-only - both are the customer's data, not cache.
+            $k = 'HKLM\SOFTWARE\Policies\Microsoft\Windows\StorageSense'
+            Set-Reg $k 'AllowStorageSenseGlobal' 1
+            Set-Reg $k 'ConfigStorageSenseGlobalCadence' 30
+            Set-Reg $k 'AllowStorageSenseTemporaryFilesCleanup' 1
+            Set-Reg $k 'ConfigStorageSenseRecycleBinCleanupThreshold' 30
+            Set-Reg $k 'ConfigStorageSenseDownloadsCleanupThreshold' 0
+            Set-Reg $k 'ConfigStorageSenseCloudContentDehydrationThreshold' 0
+            $detail = 'Storage Sense monthly: temp files and 30-day-old recycle bin items; Downloads and OneDrive never touched'
+        }
+        # ---------------- cleanup (continued) ----------------
+        'browsercache' {
+            # Cache folders ONLY - never cookies, passwords, history or open sessions. The
+            # technician's profile, through the same path resolver tempfiles uses. A browser that
+            # is running holds some of these open; those are counted and left, not forced.
+            $before = Get-FreeBytes
+            $n = 0; $skipped = 0
+            foreach ($r in 'AppData\Local\Microsoft\Edge\User Data', 'AppData\Local\Google\Chrome\User Data', 'AppData\Local\BraveSoftware\Brave-Browser\User Data') {
+                $ud = Resolve-UserPath $r
+                if (-not (Test-Path -LiteralPath $ud)) { continue }
+                foreach ($prof in @(Get-ChildItem -LiteralPath $ud -Directory -ErrorAction SilentlyContinue | Where-Object { $_.Name -eq 'Default' -or $_.Name -like 'Profile *' -or $_.Name -eq 'Guest Profile' })) {
+                    foreach ($c in 'Cache', 'Code Cache', 'GPUCache', 'Service Worker\CacheStorage') {
+                        $dir = Join-Path $prof.FullName $c
+                        if (-not (Test-Path -LiteralPath $dir)) { continue }
+                        foreach ($e in @(Get-ChildItem -LiteralPath $dir -Force -ErrorAction SilentlyContinue)) {
+                            try { Remove-Item -LiteralPath $e.FullName -Recurse -Force -ErrorAction Stop; $n++ } catch { $skipped++ }
+                        }
+                    }
+                }
+            }
+            $ff = Resolve-UserPath 'AppData\Local\Mozilla\Firefox\Profiles'
+            if (Test-Path -LiteralPath $ff) {
+                foreach ($prof in @(Get-ChildItem -LiteralPath $ff -Directory -ErrorAction SilentlyContinue)) {
+                    $dir = Join-Path $prof.FullName 'cache2'
+                    if (-not (Test-Path -LiteralPath $dir)) { continue }
+                    foreach ($e in @(Get-ChildItem -LiteralPath $dir -Force -ErrorAction SilentlyContinue)) {
+                        try { Remove-Item -LiteralPath $e.FullName -Recurse -Force -ErrorAction Stop; $n++ } catch { $skipped++ }
+                    }
+                }
+            }
+            $gain = Format-Reclaim $before
+            $detail = "$n cache item(s) removed" + $(if ($skipped) { ", $skipped in use by a running browser - left" } else { '' }) + $(if ($gain) { " - $gain" } else { '' })
+        }
+        'crashdumps' {
+            # MEMORY.DMP alone is often gigabytes on a machine that has blue-screened; the
+            # minidumps, the kernel live reports and both WER queues go with it. The evidence a
+            # technician would want from them is in the event log, which is not touched.
+            $before = Get-FreeBytes
+            $n = 0
+            $targets = @((Join-Path $env:SystemRoot 'MEMORY.DMP'))
+            foreach ($d in @((Join-Path $env:SystemRoot 'Minidump'), (Join-Path $env:SystemRoot 'LiveKernelReports'),
+                             (Join-Path $env:ProgramData 'Microsoft\Windows\WER\ReportQueue'), (Join-Path $env:ProgramData 'Microsoft\Windows\WER\ReportArchive'),
+                             (Join-Path $env:ProgramData 'Microsoft\Windows\WER\Temp'),
+                             (Resolve-UserPath 'AppData\Local\CrashDumps'), (Resolve-UserPath 'AppData\Local\Microsoft\Windows\WER\ReportQueue'),
+                             (Resolve-UserPath 'AppData\Local\Microsoft\Windows\WER\ReportArchive'))) {
+                if (Test-Path -LiteralPath $d) { $targets += @(Get-ChildItem -LiteralPath $d -Force -ErrorAction SilentlyContinue | ForEach-Object { $_.FullName }) }
+            }
+            foreach ($t in $targets) {
+                if (-not (Test-Path -LiteralPath $t)) { continue }
+                try { Remove-Item -LiteralPath $t -Recurse -Force -ErrorAction Stop; $n++ } catch { }
+            }
+            $gain = Format-Reclaim $before
+            $detail = "$n dump(s) and report(s) removed" + $(if ($gain) { " - $gain" } else { '' })
+        }
+        'docache' {
+            # The deliveryopt TWEAK turns the peer service off; this clears the cache it left,
+            # which nothing else ever empties. The service's own cmdlet first; on a build without
+            # it, the folder the service owns, with the service stopped around the delete.
+            $before = Get-FreeBytes
+            $how = ''
+            try { Delete-DeliveryOptimizationCache -Force -ErrorAction Stop; $how = 'cache cleared through Delivery Optimization' }
+            catch {
+                $cache = Join-Path $env:SystemRoot 'ServiceProfiles\NetworkService\AppData\Local\Microsoft\Windows\DeliveryOptimization\Cache'
+                try { Stop-Service DoSvc -Force -ErrorAction SilentlyContinue } catch { }
+                $n = 0
+                if (Test-Path -LiteralPath $cache) {
+                    foreach ($e in @(Get-ChildItem -LiteralPath $cache -Force -ErrorAction SilentlyContinue)) { try { Remove-Item -LiteralPath $e.FullName -Recurse -Force -ErrorAction Stop; $n++ } catch { } }
+                }
+                try { Start-Service DoSvc -ErrorAction SilentlyContinue } catch { }
+                $how = "$n cache item(s) removed from the service folder"
+            }
+            $gain = Format-Reclaim $before
+            $detail = $how + $(if ($gain) { " - $gain" } else { '' })
+        }
+        'shadowcap' {
+            # Older restore points go with the space; the newest survive within the cap, and the
+            # one this batch created first is the newest of all. CAUTION row for exactly that.
+            $before = Get-FreeBytes
+            $sd = $env:SystemDrive
+            $out = & "$env:SystemRoot\System32\vssadmin.exe" resize shadowstorage /for=$sd /on=$sd /maxsize=5% 2>&1
+            $txt = ($out | Out-String)
+            if ($txt -match '(?i)not found') { $detail = "no System Restore storage on $sd - nothing to cap" }
+            elseif ($txt -notmatch '(?i)successfully') {
+                Write-Status $app.id 'Failed' ('vssadmin did not confirm the resize: ' + (@($txt.Trim() -split "`r?`n" | Where-Object { $_.Trim() }) | Select-Object -Last 1))
+                return
+            } else {
+                $gain = Format-Reclaim $before
+                $detail = "System Restore capped at 5% of $sd" + $(if ($gain) { " - $gain" } else { '' })
+            }
         }
         'tempfiles' {
             # the TECHNICIAN'S temp, not the elevating admin's - $env:TEMP in this elevated
@@ -12970,13 +15838,13 @@ function Apply-Tweak($app) {
                 'k.sni.global.fastly.net', 'cc-api-data.adobe.io'
             )
             $existing = @()
-            if (Test-Path -LiteralPath $hostsFile) { $existing = @(Get-Content -LiteralPath $hostsFile -ErrorAction SilentlyContinue) }
+            if (Test-Path -LiteralPath $hostsFile) { $existing = @([IO.File]::ReadAllLines($hostsFile)) }
             $add = @($domains | Where-Object { $d = $_; -not ($existing | Where-Object { $_ -match "\s$([regex]::Escape($d))\s*$" }) })
             if ($add.Count) {
-                $block = @('', '# PC2Go Adobe block list - begin') +
+                $block = @('', '# Adobe block list - begin (App Installer)') +
                          @($add | ForEach-Object { "0.0.0.0 $_" }) +
-                         @('# PC2Go Adobe block list - end')
-                Add-Content -LiteralPath $hostsFile -Value $block -Encoding ASCII -ErrorAction Stop
+                         @('# Adobe block list - end')
+                Write-HostsFile $hostsFile (@($existing) + $block)
             }
             $detail = "$($add.Count) domain(s) added to the hosts block list"
         }
@@ -12987,7 +15855,14 @@ function Apply-Tweak($app) {
             $detail = 'UWP background execution disabled'
         }
         'reservedstorage' {
-            & "$env:SystemRoot\System32\Dism.exe" /Online /Set-ReservedStorageState /State:Disabled 2>&1 | Out-Null
+            # DISM refuses this while a servicing operation is pending - routine right after an
+            # update - and the row used to say Applied regardless, then re-run every batch
+            $dout = & "$env:SystemRoot\System32\Dism.exe" /Online /Set-ReservedStorageState /State:Disabled 2>&1
+            if ($LASTEXITCODE -ne 0) {
+                $why = @(($dout | ForEach-Object { "$_".Trim() }) | Where-Object { $_ -and $_ -notmatch '^(Deployment Image|Version|Image Version|Error:|The operation|For more)' }) | Select-Object -Last 1
+                Write-Status $app.id 'Failed' ("DISM refused to disable reserved storage (exit $LASTEXITCODE)" + $(if ($why) { " - $why" } else { ' - usually a Windows update is still pending; restart and retry' }))
+                return
+            }
             $detail = 'reserved storage disabled'
         }
         'explorerhome' {
@@ -13174,13 +16049,35 @@ function Apply-Tweak($app) {
             # Disabled, for the same reason as servicesmanual: Windows can still start
             # them on demand, so nothing breaks that quietly depended on one.
             $svcN = 0; $taskN = 0
+            # What this row changes is written down (HKLM\SOFTWARE\PC2Go), so the undo can put
+            # back exactly those - and only those. Undo used to promote EVERY matching service
+            # that was Manual, including ones that shipped Manual and had never been touched.
+            $changedSvcs = @(); $changedTasks = @()
             foreach ($p in $script:OemBloatPatterns) {
                 foreach ($svc in @(Get-Service -Name $p -ErrorAction SilentlyContinue)) {
-                    if ($svc.StartType -eq 'Automatic' -and (Set-SvcStart $svc.Name 'Manual')) { $svcN++ }
+                    if ($svc.StartType -eq 'Automatic' -and (Set-SvcStart $svc.Name 'Manual')) { $svcN++; $changedSvcs += [string]$svc.Name }
                 }
                 foreach ($t in @(Get-ScheduledTask -TaskName $p -ErrorAction SilentlyContinue | Where-Object { $_.State -ne 'Disabled' })) {
-                    try { Disable-ScheduledTask -TaskName $t.TaskName -TaskPath $t.TaskPath -ErrorAction Stop | Out-Null; $taskN++ } catch {}
+                    try { Disable-ScheduledTask -TaskName $t.TaskName -TaskPath $t.TaskPath -ErrorAction Stop | Out-Null; $taskN++; $changedTasks += ([string]$t.TaskPath + [string]$t.TaskName) } catch {}
                 }
+            }
+            if ($changedSvcs.Count -or $changedTasks.Count) {
+                try {
+                    $prevS = @(); $prevT = @()
+                    try { $prevS = @(Get-WorkerReg 'HKLM\SOFTWARE\PC2Go' 'OemBloatServices') | Where-Object { $_ } } catch { }
+                    try { $prevT = @(Get-WorkerReg 'HKLM\SOFTWARE\PC2Go' 'OemBloatTasks') | Where-Object { $_ } } catch { }
+                    Set-Reg 'HKLM\SOFTWARE\PC2Go' 'OemBloatServices' ([string[]]@(@($prevS) + $changedSvcs | Select-Object -Unique)) 'MultiString'
+                    Set-Reg 'HKLM\SOFTWARE\PC2Go' 'OemBloatTasks' ([string[]]@(@($prevT) + $changedTasks | Select-Object -Unique)) 'MultiString'
+                } catch { }
+            }
+            # Nothing matched is not "Applied": the probe reads false on a machine with no OEM
+            # updaters, so a green row here was re-flagged "could not confirm" by every batch.
+            if (($svcN + $taskN) -eq 0) {
+                $any = $false
+                foreach ($p in $script:OemBloatPatterns) {
+                    if (@(Get-Service -Name $p -ErrorAction SilentlyContinue).Count -or @(Get-ScheduledTask -TaskName $p -ErrorAction SilentlyContinue).Count) { $any = $true; break }
+                }
+                if (-not $any) { Write-Status $app.id 'Skipped' 'no OEM updater services or tasks on this machine - nothing to change'; return }
             }
             $detail = "$svcN OEM updater service(s) set to Manual, $taskN scheduled task(s) disabled"
         }
@@ -13212,12 +16109,12 @@ function Apply-Tweak($app) {
         # Six grouped rows; patterns live in $script:DebloatPacks, shared with the GUI's
         # detection probes. Remove-AppxByName removes -AllUsers AND deprovisions, so the
         # apps do not return for new profiles. Everything here reinstalls from the Store.
-        'debloatweb'    { $n = Remove-AppxSet $script:DebloatPacks['debloatweb'];    $detail = "$n package(s) removed - Windows Update can reinstall these on its own; the Store row under CAUTION is what stops that" }
-        'debloatdev'    { $n = Remove-AppxSet $script:DebloatPacks['debloatdev'];    $detail = "$n package(s) removed - Windows Update can reinstall these on its own; the Store row under CAUTION is what stops that" }
-        'debloatxbox'   { $n = Remove-AppxSet $script:DebloatPacks['debloatxbox'];   $detail = "$n package(s) removed - Xbox sign-in goes too (accepted: business machines); Windows Update can reinstall these on its own" }
-        'debloatmsapps' { $n = Remove-AppxSet $script:DebloatPacks['debloatmsapps']; $detail = "$n package(s) removed - Windows Update can reinstall these on its own; the Store row under CAUTION is what stops that" }
-        'debloatmobile' { $n = Remove-AppxSet $script:DebloatPacks['debloatmobile']; $detail = "$n package(s) removed - Windows Update can reinstall these on its own; the Store row under CAUTION is what stops that" }
-        'debloatutil'   { $n = Remove-AppxSet $script:DebloatPacks['debloatutil'];   $detail = "$n package(s) removed - Windows Update can reinstall these on its own; the Store row under CAUTION is what stops that" }
+        'debloatweb'    { $n = Remove-AppxSet $script:DebloatPacks['debloatweb']; if ($script:AppxLeft) { Write-Status $app.id 'Failed' "$($script:AppxLeft) package(s) would not go (still present for some account) - $n removed"; return };    $detail = "$n package(s) removed - Windows Update can reinstall these on its own; the Store row under CAUTION is what stops that" }
+        'debloatdev'    { $n = Remove-AppxSet $script:DebloatPacks['debloatdev']; if ($script:AppxLeft) { Write-Status $app.id 'Failed' "$($script:AppxLeft) package(s) would not go (still present for some account) - $n removed"; return };    $detail = "$n package(s) removed - Windows Update can reinstall these on its own; the Store row under CAUTION is what stops that" }
+        'debloatxbox'   { $n = Remove-AppxSet $script:DebloatPacks['debloatxbox']; if ($script:AppxLeft) { Write-Status $app.id 'Failed' "$($script:AppxLeft) package(s) would not go (still present for some account) - $n removed"; return };   $detail = "$n package(s) removed - Xbox sign-in goes too (accepted: business machines); Windows Update can reinstall these on its own" }
+        'debloatmsapps' { $n = Remove-AppxSet $script:DebloatPacks['debloatmsapps']; if ($script:AppxLeft) { Write-Status $app.id 'Failed' "$($script:AppxLeft) package(s) would not go (still present for some account) - $n removed"; return }; $detail = "$n package(s) removed - Windows Update can reinstall these on its own; the Store row under CAUTION is what stops that" }
+        'debloatmobile' { $n = Remove-AppxSet $script:DebloatPacks['debloatmobile']; if ($script:AppxLeft) { Write-Status $app.id 'Failed' "$($script:AppxLeft) package(s) would not go (still present for some account) - $n removed"; return }; $detail = "$n package(s) removed - Windows Update can reinstall these on its own; the Store row under CAUTION is what stops that" }
+        'debloatutil'   { $n = Remove-AppxSet $script:DebloatPacks['debloatutil']; if ($script:AppxLeft) { Write-Status $app.id 'Failed' "$($script:AppxLeft) package(s) would not go (still present for some account) - $n removed"; return };   $detail = "$n package(s) removed - Windows Update can reinstall these on its own; the Store row under CAUTION is what stops that" }
 
         # ---------------- post-format setup ----------------
         'taskbarclean' {
@@ -13547,10 +16444,215 @@ $script:ServiceDefaults = @{
     'SSDPSRV' = 'Manual'; 'upnphost' = 'Manual'; 'wisvc' = 'Manual'; 'PerfHost' = 'Manual'
 }
 
+# ---------- disks ----------
+# Shrink, Extend, and the one job Disk Management cannot do: extend a volume when the Windows
+# Recovery partition sits between it and the free space. That last one is the five-step dance
+# every technician knows - disable WinRE so the image goes back into the Windows folder, delete
+# the recovery partition, extend, take a gigabyte back at the end for a new recovery partition
+# marked the way Windows expects, re-enable WinRE so the image lands in it. A full gigabyte on
+# purpose: the too-small recovery partition is also what fails the January 2024 update.
+#
+# Rails, because this is the one tab where a mistake costs the machine: dynamic disks are refused
+# (the Storage cmdlets cannot resize them), the partition in the way must BE a recovery partition
+# (an OEM or data partition there is never deleted), and on the boot disk BitLocker must be
+# suspended before WinRE is touched (ReAgentC refuses otherwise, half way through). Every step
+# reports before the next runs, so a failure says exactly where it stopped.
+function Get-DiskLdm([int]$Disk) {
+    try { foreach ($p in @(Get-CimInstance Win32_DiskPartition -Filter "DiskIndex = $Disk" -ErrorAction Stop)) { if ("$($p.Type)" -match 'Logical Disk Manager') { return $true } } } catch { }
+    return $false
+}
+function Format-SizeD([long]$Bytes) {
+    if ($Bytes -ge 1GB) { return ('{0:N1} GB' -f ($Bytes / 1GB)) }
+    if ($Bytes -ge 1MB) { return ('{0:N0} MB' -f ($Bytes / 1MB)) }
+    return ('{0:N0} KB' -f ($Bytes / 1KB))
+}
+function Invoke-DiskAction($app) {
+    $action = [string]$app.action
+    $disk = [int]$app.disk; $partNo = [int]$app.partition; $bytes = [long]$app.bytes
+    Write-Status $app.id 'Applying' ''
+    if (Get-DiskLdm $disk) { Write-Status $app.id 'Failed' "disk $disk is a dynamic disk - Windows cannot resize those from here; convert it to basic first"; return }
+    $d = $null; $p = $null
+    try { $d = Get-Disk -Number $disk -ErrorAction Stop; $p = Get-Partition -DiskNumber $disk -PartitionNumber $partNo -ErrorAction Stop }
+    catch { Write-Status $app.id 'Failed' "disk $disk partition $partNo was not found: $($_.Exception.Message)"; return }
+    $letter = ('' + $p.DriveLetter).Trim([char]0).Trim()
+    # Prove it is the same partition the panel read, before touching it. Disk numbers come from
+    # enumeration order, so a USB disk swapped between the read and the press renumbers underneath
+    # a cached card - and "shrink disk 2 partition 1 by 200 GB" then resolves, correctly, to
+    # somebody else's drive. Offset and size do not move for a given partition; a mismatch means
+    # the layout changed and the only safe answer is to refuse and make the technician re-read it.
+    if ($app.PSObject.Properties['offset'] -and $app.PSObject.Properties['size']) {
+        $wantOff = [long]$app.offset; $wantSize = [long]$app.size
+        if ($wantOff -gt 0 -and ([long]$p.Offset -ne $wantOff -or [long]$p.Size -ne $wantSize)) {
+            Write-Status $app.id 'Failed' (
+                "the disk layout changed since it was read - disk $disk partition $partNo is not the same " +
+                "partition any more (it now starts at $(Format-SizeD ([long]$p.Offset)) and is " +
+                "$(Format-SizeD ([long]$p.Size)); it was $(Format-SizeD $wantOff) / $(Format-SizeD $wantSize)). " +
+                'Nothing was changed. Press Rescan and set it up again.')
+            return
+        }
+    }
+    $recoveryGpt = '{de94bba4-06d1-4d40-a16a-bfd50179d6ac}'
+    $isGpt = ("$($d.PartitionStyle)" -eq 'GPT')
+    $what = $(if ($letter) { "${letter}:" } else { "partition $partNo" })
+    switch ($action) {
+        'diskshrink' {
+            if (-not $letter) { Write-Status $app.id 'Failed' 'only a volume with a drive letter is shrunk here'; return }
+            $s = $null
+            try { $s = Get-PartitionSupportedSize -DiskNumber $disk -PartitionNumber $partNo -ErrorAction Stop } catch { Write-Status $app.id 'Failed' "Windows would not say how far $what can shrink: $($_.Exception.Message)"; return }
+            $room = [long]$p.Size - [long]$s.SizeMin
+            if ($bytes -le 0 -or $bytes -gt $room) { Write-Status $app.id 'Failed' "$what can shrink by at most $(Format-SizeD $room) - unmovable files (the pagefile, hibernation, shadow copies) sit at the end of it"; return }
+            $target = [long]$p.Size - $bytes
+            Write-Status $app.id 'Applying' "shrinking $what by $(Format-SizeD $bytes)..."
+            try { Resize-Partition -DiskNumber $disk -PartitionNumber $partNo -Size $target -ErrorAction Stop }
+            catch { Write-Status $app.id 'Failed' "Windows refused the shrink: $($_.Exception.Message)"; return }
+            $after = Get-Partition -DiskNumber $disk -PartitionNumber $partNo -ErrorAction SilentlyContinue
+            Write-Status $app.id 'Applied' "$what shrunk by $(Format-SizeD ([long]$p.Size - [long]$after.Size)) - $(Format-SizeD ([long]$p.Size - [long]$after.Size)) is now unallocated behind it"
+            return
+        }
+        'diskextend' {
+            if (-not $letter) { Write-Status $app.id 'Failed' 'only a volume with a drive letter is extended here'; return }
+            $s = $null
+            try { $s = Get-PartitionSupportedSize -DiskNumber $disk -PartitionNumber $partNo -ErrorAction Stop } catch { Write-Status $app.id 'Failed' "Windows would not say how far $what can extend: $($_.Exception.Message)"; return }
+            $room = [long]$s.SizeMax - [long]$p.Size
+            if ($room -lt 1MB) { Write-Status $app.id 'Failed' "nothing to extend $what into - there is no unallocated space directly behind it"; return }
+            $target = $(if ($bytes -gt 0) { [Math]::Min([long]$s.SizeMax, [long]$p.Size + $bytes) } else { [long]$s.SizeMax })
+            Write-Status $app.id 'Applying' "extending $what by $(Format-SizeD ($target - [long]$p.Size))..."
+            try { Resize-Partition -DiskNumber $disk -PartitionNumber $partNo -Size $target -ErrorAction Stop }
+            catch { Write-Status $app.id 'Failed' "Windows refused the extend: $($_.Exception.Message)"; return }
+            $after = Get-Partition -DiskNumber $disk -PartitionNumber $partNo -ErrorAction SilentlyContinue
+            Write-Status $app.id 'Applied' "$what extended by $(Format-SizeD ([long]$after.Size - [long]$p.Size)) to $(Format-SizeD ([long]$after.Size))"
+            return
+        }
+        'diskextendmove' {
+            if (-not $letter) { Write-Status $app.id 'Failed' 'only a volume with a drive letter is extended here'; return }
+            # the partition directly behind this one, by offset - and it must be a recovery partition
+            $all = @(Get-Partition -DiskNumber $disk -ErrorAction SilentlyContinue | Sort-Object Offset)
+            $next = $null
+            foreach ($q in $all) { if ([long]$q.Offset -ge ([long]$p.Offset + [long]$p.Size)) { $next = $q; break } }
+            if (-not $next) { Write-Status $app.id 'Failed' "nothing sits behind $what - use Extend"; return }
+            $nextIsRec = (('' + $next.GptType).ToLower() -eq $recoveryGpt) -or ((-not $isGpt) -and [int]$next.MbrType -eq 39)
+            if (-not $nextIsRec) { Write-Status $app.id 'Failed' "the partition behind $what (partition $($next.PartitionNumber), $(Format-SizeD ([long]$next.Size))) is not a recovery partition - it is not touched from here"; return }
+            $afterNext = $null
+            foreach ($q in $all) { if ([long]$q.Offset -ge ([long]$next.Offset + [long]$next.Size)) { $afterNext = $q; break } }
+            $gapEnd = $(if ($afterNext) { [long]$afterNext.Offset } else { [long]$d.Size })
+            $gap = $gapEnd - ([long]$next.Offset + [long]$next.Size)
+            $reserve = [long]1GB
+            if ($gap -lt 64MB) { Write-Status $app.id 'Failed' "there is no free space behind the recovery partition either ($(Format-SizeD $gap)) - nothing to extend into"; return }
+            # Not just the boot disk. WinRE does not have to live on the disk Windows boots from -
+            # a rebuild, a recovery-media tool or an OEM image can leave it on a second disk - and
+            # with this gated on IsBoot the worker skipped ReAgentc /disable, deleted the partition
+            # holding Winre.wim out from under a registered, ENABLED WinRE, and reported Applied.
+            # Reset-this-PC and every boot-repair path were dead and nothing said so. Get-DiskLayout
+            # already parses `ReAgentc /info` for the answer; ask it directly here.
+            $bootDisk = [bool]$d.IsBoot
+            if (-not $bootDisk) {
+                try {
+                    $ri = (& "$env:SystemRoot\System32\ReAgentc.exe" /info 2>&1) -join ' '
+                    if ($ri -match 'harddisk(\d+)\\partition(\d+)' -and [int]$Matches[1] -eq $disk) { $bootDisk = $true }
+                } catch { }
+            }
+            if ($bootDisk) {
+                # WinRE is on this disk: BitLocker must be suspended before ReAgentC will touch it
+                try {
+                    $bl = Get-BitLockerVolume -MountPoint "${letter}:" -ErrorAction Stop
+                    if ("$($bl.ProtectionStatus)" -eq 'On') { Write-Status $app.id 'Failed' "BitLocker is on for ${letter}: - suspend it first (manage-bde -protectors -disable ${letter}:), then run this again"; return }
+                } catch { }
+                Write-Status $app.id 'Applying' 'step 1 of 5: disabling Windows Recovery so its image returns to the Windows folder...'
+                $dis = (& "$env:SystemRoot\System32\ReAgentc.exe" /disable 2>&1 | Out-String)
+                $info = (& "$env:SystemRoot\System32\ReAgentc.exe" /info 2>&1 | Out-String)
+                if ($info -match '(?i)Windows RE status:\s*Enabled') { Write-Status $app.id 'Failed' ("Windows Recovery could not be disabled - " + ($dis.Trim() -split "`r?`n" | Select-Object -Last 1) + '. Nothing was changed.'); return }
+            }
+            Write-Status $app.id 'Applying' "step 2 of 5: removing the recovery partition ($(Format-SizeD ([long]$next.Size)))..."
+            try { Remove-Partition -DiskNumber $disk -PartitionNumber $next.PartitionNumber -Confirm:$false -ErrorAction Stop }
+            catch {
+                if ($bootDisk) { & "$env:SystemRoot\System32\ReAgentc.exe" /enable 2>&1 | Out-Null }
+                Write-Status $app.id 'Failed' "the recovery partition could not be removed: $($_.Exception.Message). Windows Recovery was re-enabled where it was."; return
+            }
+            $s = Get-PartitionSupportedSize -DiskNumber $disk -PartitionNumber $partNo -ErrorAction Stop
+            $target = [long]$s.SizeMax - $reserve
+            if ($target -le [long]$p.Size) { $target = [long]$s.SizeMax }   # a tiny gap: take it all, recreate nothing
+            Write-Status $app.id 'Applying' "step 3 of 5: extending $what by $(Format-SizeD ($target - [long]$p.Size))..."
+            try { Resize-Partition -DiskNumber $disk -PartitionNumber $partNo -Size $target -ErrorAction Stop }
+            catch {
+                # The recovery partition is already deleted and WinRE is already disabled by the
+                # time this can fire. Returning here left the customer with no recovery environment
+                # AND WinRE switched off, under a red row that mentioned neither. The Remove-Partition
+                # failure path a few lines above has always re-enabled it; this one did not.
+                $back = ''
+                if ($bootDisk) {
+                    try { & "$env:SystemRoot\System32\ReAgentc.exe" /enable 2>&1 | Out-Null
+                          $back = ' Windows Recovery has been switched back on - it now lives in C:\Recovery on the Windows volume rather than in its own partition.' }
+                    catch { $back = ' WINDOWS RECOVERY IS STILL SWITCHED OFF on this machine - run "reagentc /enable" from an admin prompt.' }
+                }
+                Write-Status $app.id 'Failed' "Windows refused the extend after the recovery partition was removed: $($_.Exception.Message). The space is unallocated; extend from Disk Management, then recreate a recovery partition.$back"
+                return
+            }
+            $recreated = ''
+            if ($target -lt [long]$s.SizeMax) {
+                Write-Status $app.id 'Applying' 'step 4 of 5: creating a new recovery partition at the end of the disk...'
+                try {
+                    $np = $(if ($isGpt) { New-Partition -DiskNumber $disk -UseMaximumSize -GptType $recoveryGpt -ErrorAction Stop }
+                            else { New-Partition -DiskNumber $disk -UseMaximumSize -MbrType 0x27 -ErrorAction Stop })
+                    Format-Volume -Partition $np -FileSystem NTFS -NewFileSystemLabel 'Recovery' -Confirm:$false -ErrorAction Stop | Out-Null
+                    if ($isGpt) {
+                        # the "required, no drive letter" attributes only diskpart can set
+                        $dp = Join-Path $env:TEMP ('pc2go-recovery-' + [Guid]::NewGuid().ToString('N').Substring(0, 8) + '.txt')
+                        @("select disk $disk", "select partition $($np.PartitionNumber)", 'gpt attributes=0x8000000000000001') | Set-Content -LiteralPath $dp -Encoding ASCII
+                        & "$env:SystemRoot\System32\diskpart.exe" /s $dp 2>&1 | Out-Null
+                        Remove-Item -LiteralPath $dp -Force -ErrorAction SilentlyContinue
+                    }
+                    $recreated = "a new $(Format-SizeD ([long]$np.Size)) recovery partition sits at the end of the disk"
+                } catch { $recreated = "the new recovery partition could not be created ($($_.Exception.Message)) - Windows Recovery is off until one exists" }
+            }
+            $re = ''
+            if ($bootDisk) {
+                Write-Status $app.id 'Applying' 'step 5 of 5: re-enabling Windows Recovery...'
+                & "$env:SystemRoot\System32\ReAgentc.exe" /enable 2>&1 | Out-Null
+                $info = (& "$env:SystemRoot\System32\ReAgentc.exe" /info 2>&1 | Out-String)
+                $re = $(if ($info -match '(?i)Windows RE status:\s*Enabled') { 'Windows Recovery is enabled again' } else { 'Windows Recovery did NOT re-enable - run "reagentc /enable" and check its message' })
+            }
+            $after = Get-Partition -DiskNumber $disk -PartitionNumber $partNo -ErrorAction SilentlyContinue
+            $detail = "$what extended by $(Format-SizeD ([long]$after.Size - [long]$p.Size)) to $(Format-SizeD ([long]$after.Size))" + $(if ($recreated) { "; $recreated" } else { '' }) + $(if ($re) { "; $re" } else { '' })
+            if ($re -match 'NOT' -or $recreated -match 'could not') { Write-Status $app.id 'Skipped' $detail } else { Write-Status $app.id 'Applied' $detail }
+            return
+        }
+        default { Write-Status $app.id 'Failed' "unknown disk action '$action'" }
+    }
+}
+
+# A startup entry switched off or back on. Nothing is deleted or uninstalled: the Run value
+# and the Startup-folder shortcut stay exactly where they are, and only the StartupApproved
+# verdict changes - the same 12 bytes Task Manager writes (02 enabled, 03 disabled plus the
+# time it was disabled), so Task Manager > Startup shows the same state and can undo it.
+# The queue names the entry and where it lives; the key that holds the verdict is decided here.
+function Set-StartupEntry($app) {
+    $name = [string]$app.name
+    $loc  = [string]$app.location
+    $on   = ([string]$app.action -eq 'startupon')
+    Write-Status $app.id 'Applying' ''
+    $key = switch ($loc) {
+        'HKCU\Run'      { 'HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run' }
+        'HKLM\Run'      { 'HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run' }
+        'HKLM\Run32'    { 'HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run32' }
+        'StartupFolder' { 'HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\StartupFolder' }
+        'CommonStartup' { 'HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\StartupFolder' }
+        default         { '' }
+    }
+    if (-not $name -or -not $key) { Write-Status $app.id 'Failed' "refused: unknown startup location '$loc'"; return }
+    $bytes = New-Object byte[] 12
+    if ($on) { $bytes[0] = 2 } else { $bytes[0] = 3; [BitConverter]::GetBytes([DateTime]::UtcNow.ToFileTimeUtc()).CopyTo($bytes, 4) }
+    try { Set-Reg $key $name $bytes 'Binary' }
+    catch { Write-Status $app.id 'Failed' "could not write the StartupApproved entry: $($_.Exception.Message)"; return }
+    Write-Status $app.id 'Applied' $(if ($on) { "$name starts with Windows again" }
+                                     else { "$name no longer starts with Windows - the program itself is untouched, and Task Manager > Startup can switch it back on" })
+}
+
 function Undo-Tweak($app) {
     $id = [string]$app.tweak
     Write-Status $app.id 'Undoing' ''
     $detail = ''
+    # per row, same as Apply-Tweak: a soft write the build refuses is named in this row's detail
+    $script:RegDenied = @()
     switch ($id) {
 
         'activityhistory' {
@@ -13571,7 +16673,10 @@ function Undo-Tweak($app) {
             $detail = 'consumer features policy removed'
         }
         'deliveryopt' {
-            Set-Reg 'HKLM\SOFTWARE\Policies\Microsoft\Windows\DeliveryOptimization' 'DODownloadMode' 1
+            # Deleted, not set to 1: a policy value left behind is still a policy, and Settings
+            # shows the option greyed out as "managed by your organisation" for as long as it
+            # exists. Absent is what lets Windows decide again.
+            Remove-RegVal 'HKLM\SOFTWARE\Policies\Microsoft\Windows\DeliveryOptimization' 'DODownloadMode'
             Remove-RegVal 'HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\DeliveryOptimization\Config' 'DODownloadMode'
             [void](Set-SvcStart 'DoSvc' 'Automatic')
             $detail = 'delivery optimization back to LAN peering (default)'
@@ -13581,7 +16686,33 @@ function Undo-Tweak($app) {
         'tempfiles'      { Write-Status $app.id 'Skipped' 'deleted temp files cannot be restored'; return }
         'recyclebin'     { Write-Status $app.id 'Skipped' 'emptied recycle bins cannot be restored'; return }
         'windowsold'     { Write-Status $app.id 'Skipped' 'Windows.old and the update cache cannot be restored'; return }
+        'browsercache'   { Write-Status $app.id 'Skipped' 'cleared caches are rebuilt by the browsers as they are used'; return }
+        'crashdumps'     { Write-Status $app.id 'Skipped' 'deleted crash dumps cannot be restored'; return }
+        'docache'        { Write-Status $app.id 'Skipped' 'the Delivery Optimization cache refills on its own'; return }
+        'shadowcap'      { Write-Status $app.id 'Skipped' 'restore points removed by the cap cannot be restored - raise the cap in System Protection if wanted'; return }
         'restorepoint'   { Write-Status $app.id 'Skipped' 'restore points are left in place deliberately'; return }
+        'searchscope' {
+            Remove-RegVal 'HKLM\SOFTWARE\Policies\Microsoft\Windows\Windows Search' 'PreventIndexOnBattery'
+            Set-Reg 'HKLM\SOFTWARE\Microsoft\Windows Search\Gather\Windows\SystemIndex' 'RespectPowerModes' 0
+            # and the scope. The apply WRITES EnableFindMyFiles 0 to force classic, so leaving it
+            # behind is not "leaving the default as it stands" - it is leaving our own override on
+            # a machine whose owner may have chosen Enhanced. Removing the value is the real
+            # inverse: Windows then decides for itself, which is what a default means.
+            Remove-RegVal 'HKLM\SOFTWARE\Microsoft\Windows Search\Gather\Windows\SystemIndex' 'EnableFindMyFiles'
+            $detail = 'indexer runs on battery and under load again, and the search scope is back under Windows control'
+        }
+        'defenderscan' {
+            try { Set-MpPreference -ScanAvgCPULoadFactor 50 -DisableCpuThrottleOnIdleScans $true -ErrorAction Stop }
+            catch { Write-Status $app.id 'Failed' "Defender refused the preference: $($_.Exception.Message)"; return }
+            $detail = 'Defender scan CPU back to the 50% default'
+        }
+        'storagesense' {
+            foreach ($v in 'AllowStorageSenseGlobal', 'ConfigStorageSenseGlobalCadence', 'AllowStorageSenseTemporaryFilesCleanup',
+                           'ConfigStorageSenseRecycleBinCleanupThreshold', 'ConfigStorageSenseDownloadsCleanupThreshold', 'ConfigStorageSenseCloudContentDehydrationThreshold') {
+                Remove-RegVal 'HKLM\SOFTWARE\Policies\Microsoft\Windows\StorageSense' $v
+            }
+            $detail = "Storage Sense policy removed - the user's own setting applies again"
+        }
         { $_ -like 'debloat*' } {
             Write-Status $app.id 'Skipped' 'removed Store apps are NOT reinstalled here - the Microsoft Store can restore any of them in seconds'
             return
@@ -13596,10 +16727,19 @@ function Undo-Tweak($app) {
             # (HiberbootEnabled currently 0), re-assert it after - undoing hibernation
             # must not silently re-enable Fast Startup.
             $fastStartupApplied = ("$(Get-WorkerReg 'HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Power' 'HiberbootEnabled')" -eq '0')
+            # powercfg writes HibernateEnabled = 1 itself; deleting it straight afterwards - which
+            # this used to do - threw away the very value the enabler had just set, leaving a
+            # state that was neither stock nor off. HibernateEnabledDefault ships as 1.
             & "$env:SystemRoot\System32\powercfg.exe" /hibernate on 2>&1 | Out-Null
-            Remove-RegVal 'HKLM\SYSTEM\CurrentControlSet\Control\Power' 'HibernateEnabled'
-            Remove-RegVal 'HKLM\SYSTEM\CurrentControlSet\Control\Power' 'HibernateEnabledDefault'
+            Set-Reg 'HKLM\SYSTEM\CurrentControlSet\Control\Power' 'HibernateEnabledDefault' 1
             $detail = 'hibernation re-enabled'
+            # Firmware that cannot hibernate (most VMs) makes powercfg refuse, and the 0 the apply
+            # wrote would then stay behind as if the tweak were still on. The value goes in that
+            # case - absent is what such a machine had - and the row says what happened.
+            if ("$(Get-WorkerReg 'HKLM\SYSTEM\CurrentControlSet\Control\Power' 'HibernateEnabled')" -eq '0') {
+                Remove-RegVal 'HKLM\SYSTEM\CurrentControlSet\Control\Power' 'HibernateEnabled'
+                $detail = 'hibernation could not be switched back on (this machine does not support it) - the override is removed'
+            }
             if ($fastStartupApplied) {
                 Set-Reg 'HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Power' 'HiberbootEnabled' 0
                 $detail += '; Fast Startup - Disable is still applied, so HiberbootEnabled was re-asserted to 0'
@@ -13618,19 +16758,20 @@ function Undo-Tweak($app) {
             Remove-RegVal 'HKCU\Software\Policies\Microsoft\Windows\Explorer' 'DisableSearchBoxSuggestions'
             Remove-RegVal 'HKLM\SOFTWARE\Policies\Microsoft\Windows\Windows Search' 'DisableWebSearch'
             Set-Reg 'HKCU\Software\Microsoft\Windows\CurrentVersion\Search' 'BingSearchEnabled' 1
+            Remove-RegVal 'HKCU\Software\Microsoft\Windows\CurrentVersion\Search' 'CortanaConsent'
             $detail = 'web and store search suggestions restored'
         }
         'devicecompanion' {
-            # COLLISION with razerdisable: both rows write PreventDeviceMetadataFromNetwork
-            # and SearchOrderConfig. Razer's unique marker is DontSearchWindowsUpdate - if
-            # it is still present, Razer still owns the shared values and clearing them
-            # here would silently half-undo that row.
+            # Shares PreventDeviceMetadataFromNetwork and SearchOrderConfig with razerdisable. Each
+            # undo used to defer to the other ("still applied, undo that row"), so undoing BOTH in
+            # one batch - the ordinary Undo-everything - cleared neither, measured on a 25H2 VM.
+            # Now each row clears what it wrote. Razer is detected by its own marker, so it still
+            # reads correctly afterwards; if it should stay in force, its detail says to re-apply.
+            Remove-RegVal 'HKLM\SOFTWARE\Policies\Microsoft\Windows\Device Metadata' 'PreventDeviceMetadataFromNetwork'
+            Set-Reg 'HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\DriverSearching' 'SearchOrderConfig' 1
+            $detail = 'device metadata and companion apps allowed again'
             if ("$(Get-WorkerReg 'HKLM\SOFTWARE\Policies\Microsoft\Windows\DriverSearching' 'DontSearchWindowsUpdate')" -eq '1') {
-                $detail = 'Razer Software Auto-Install - Disable is still applied and owns the shared device-metadata block - undo that row to clear it'
-            } else {
-                Remove-RegVal 'HKLM\SOFTWARE\Policies\Microsoft\Windows\Device Metadata' 'PreventDeviceMetadataFromNetwork'
-                Set-Reg 'HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\DriverSearching' 'SearchOrderConfig' 1
-                $detail = 'device metadata and companion apps allowed again'
+                $detail += ' - Razer Software Auto-Install - Disable shares these values: re-apply that row if it should stay in force'
             }
         }
         'servicesmanual' {
@@ -13644,8 +16785,13 @@ function Undo-Tweak($app) {
         }
         'telemetry' {
             Remove-RegVal 'HKLM\SOFTWARE\Policies\Microsoft\Windows\DataCollection' 'AllowTelemetry'
-            Remove-RegVal 'HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\DataCollection' 'AllowTelemetry'
+            # Written back as 1, not deleted: this one is not a policy but the machine's own
+            # diagnostic-data setting, and Windows re-creates it within seconds of a delete with
+            # whatever the last effective level was - 0, because the policy above had forced it
+            # there. 1 (Required) is what a 25H2 Pro ships with, measured on a clean VM.
+            Set-Reg 'HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\DataCollection' 'AllowTelemetry' 1
             Remove-RegVal 'HKLM\SOFTWARE\Policies\Microsoft\Windows\DataCollection' 'DoNotShowFeedbackNotifications'
+            Remove-RegVal 'HKCU\Software\Microsoft\Siuf\Rules' 'NumberOfSIUFInPeriod'
             [void](Set-SvcStart 'DiagTrack' 'Automatic')
             [void](Set-SvcStart 'dmwappushservice' 'Manual')
             foreach ($t in @(@('\Microsoft\Windows\Application Experience\', 'Microsoft Compatibility Appraisal'),
@@ -13673,8 +16819,10 @@ function Undo-Tweak($app) {
             if ("$(Get-WorkerReg 'HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced' 'TaskbarMn')" -eq '0') {
                 $detail = 'widgets policy removed; taskbar button left hidden because Taskbar - Clean Up is still applied'
             } else {
-                Set-Reg 'HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced' 'TaskbarDa' 1
-                $detail = 'widgets button restored - the Web Experience Pack is NOT reinstalled (Store can restore it)'
+                # Soft, like the apply: 25H2 refuses TaskbarDa from any process, and a hard write
+                # here made the whole undo report Failed after the policy had already been lifted.
+                [void](Set-RegSoft 'HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced' 'TaskbarDa' 1)
+                $detail = 'widgets policy removed - the Web Experience Pack is NOT reinstalled (Store can restore it)'
             }
         }
         'adobeblock' {
@@ -13684,15 +16832,24 @@ function Undo-Tweak($app) {
             if (Test-Path -LiteralPath $hostsFile) {
                 $keep = New-Object System.Collections.ArrayList
                 $inBlock = $false
-                foreach ($line in @(Get-Content -LiteralPath $hostsFile -ErrorAction Stop)) {
-                    if ($line -match 'PC2Go Adobe block list - begin') { $inBlock = $true; $removed++; continue }
-                    if ($line -match 'PC2Go Adobe block list - end')   { $inBlock = $false; $removed++; continue }
+                # both marker generations - the branded one older machines carry, and the current one
+                foreach ($line in @([IO.File]::ReadAllLines($hostsFile))) {
+                    if ($line -match 'Adobe block list - begin') {
+                        # the apply put one blank line above the block - take that back too
+                        if ($keep.Count -and -not ("$($keep[$keep.Count - 1])").Trim()) { $keep.RemoveAt($keep.Count - 1); $removed++ }
+                        $inBlock = $true; $removed++; continue
+                    }
+                    if ($line -match 'Adobe block list - end')   { $inBlock = $false; $removed++; continue }
                     if ($inBlock) { $removed++; continue }
                     [void]$keep.Add($line)
                 }
-                Set-Content -LiteralPath $hostsFile -Value $keep -Encoding ASCII -Force -ErrorAction Stop
+                # Never Set-Content here. On a 25H2 VM it truncated the file and THEN threw "Stream
+                # was not readable" - the undo reported Failed and the hosts file was left EMPTY.
+                # On a client with its own entries that is data loss. Write-HostsFile stages the
+                # new content beside the file and swaps it in only once it is fully written.
+                if ($removed) { Write-HostsFile $hostsFile @($keep) }
             }
-            $detail = "$removed hosts line(s) removed - only the PC2Go block, client entries untouched"
+            $detail = "$removed hosts line(s) removed - only the Adobe block, client entries untouched"
         }
         'backgroundapps' {
             Set-Reg 'HKCU\Software\Microsoft\Windows\CurrentVersion\BackgroundAccessApplications' 'GlobalUserDisabled' 0
@@ -13702,20 +16859,46 @@ function Undo-Tweak($app) {
         }
         'reservedstorage' {
             & "$env:SystemRoot\System32\Dism.exe" /Online /Set-ReservedStorageState /State:Enabled 2>&1 | Out-Null
+            if ($LASTEXITCODE -ne 0) { Write-Status $app.id 'Failed' "DISM refused to re-enable reserved storage (exit $LASTEXITCODE) - usually a Windows update is still pending; restart and retry"; return }
             $detail = 'reserved storage re-enabled'
         }
         'explorerhome' {
+            # The 25H2 mechanism first: the per-user pin override is DELETED so the shell falls
+            # back to the machine-wide (pinned) value under HKLM. The apply wrote it and the
+            # detect reads it, and this undo used to leave it in place - Home and Gallery stayed
+            # unpinned and the row still read "already applied".
             foreach ($clsid in '{f874310e-b6b7-47dc-bc84-b9e6b38f5903}', '{e88865ea-0e1c-4e20-9aa6-edcd0212c87c}') {
-                $p = Resolve-Reg "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\Desktop\NameSpace_36354489\$clsid"
-                if (-not (Test-Path -LiteralPath $p)) { New-Item -Path $p -Force -ErrorAction SilentlyContinue | Out-Null }
+                Remove-RegVal "HKCU\Software\Classes\CLSID\$clsid" 'System.IsPinnedToNameSpaceTree'
+            }
+            # Windows 10 / pre-25H2: the namespace keys are the mechanism, so put them back -
+            # but only where the PARENT exists, on 25H2 it does not and creating the tree from
+            # scratch would plant a key Windows never had.
+            $parent = Resolve-Reg 'HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\Desktop\NameSpace_36354489'
+            if (Test-Path -LiteralPath $parent) {
+                foreach ($clsid in '{f874310e-b6b7-47dc-bc84-b9e6b38f5903}', '{e88865ea-0e1c-4e20-9aa6-edcd0212c87c}') {
+                    $p = Join-Path $parent $clsid
+                    if (-not (Test-Path -LiteralPath $p)) { New-Item -Path $p -Force -ErrorAction SilentlyContinue | Out-Null }
+                }
             }
             Remove-RegVal 'HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced' 'LaunchTo'
             $detail = 'Home and Gallery restored in File Explorer'
         }
         'edgedebloat' {
-            [void](Remove-RegKey 'HKLM\SOFTWARE\Policies\Microsoft\Edge')
-            [void](Remove-RegKey 'HKLM\SOFTWARE\Policies\Google\Chrome')
-            $detail = 'Edge and Chrome policy overrides removed'
+            # Only the values THIS row wrote. It used to delete the whole Policies\Microsoft\Edge
+            # and Policies\Google\Chrome keys, which on a managed client also carries the
+            # business's own browser policy - homepage, extension allow-list, proxy - none of
+            # which this tool put there and none of which an undo has any right to remove.
+            foreach ($v in 'PersonalizationReportingEnabled', 'ShowRecommendationsEnabled', 'HideFirstRunExperience',
+                           'UserFeedbackAllowed', 'ConfigureDoNotTrack', 'AlternateErrorPagesEnabled',
+                           'EdgeCollectionsEnabled', 'EdgeShoppingAssistantEnabled', 'MicrosoftEdgeInsiderPromotionEnabled',
+                           'ShowMicrosoftRewards', 'WebWidgetAllowed', 'DiagnosticData', 'EdgeAssetDeliveryServiceEnabled',
+                           'CryptoWalletEnabled', 'WalletDonationEnabled', 'SpotlightExperiencesAndRecommendationsEnabled',
+                           'StartupBoostEnabled', 'BackgroundModeEnabled') {
+                Remove-RegVal 'HKLM\SOFTWARE\Policies\Microsoft\Edge' $v
+            }
+            Remove-RegVal 'HKLM\SOFTWARE\Policies\Google\Chrome' 'StartupBoostEnabled'
+            Remove-RegVal 'HKLM\SOFTWARE\Policies\Google\Chrome' 'BackgroundModeEnabled'
+            $detail = 'Edge and Chrome policy values written by this row removed - any other browser policy on the machine is untouched'
         }
         'onedriveremove' {
             Remove-RegVal 'HKLM\SOFTWARE\Policies\Microsoft\Windows\OneDrive' 'DisableFileSyncNGSC'
@@ -13750,17 +16933,16 @@ function Undo-Tweak($app) {
             $detail = 'Settings Home page visible again'
         }
         'razerdisable' {
-            # COLLISION with devicecompanion (see that undo): only what is UNIQUE to this
-            # row is cleared here. The shared device-metadata values stay - Prevent Device
-            # Companion Apps may own them, and its own undo clears them once this row's
-            # marker is gone. The residue case (Razer applied alone, then undone) is named
-            # in the detail rather than silently half-reverting the sibling.
+            # Everything this row wrote, the shared device-metadata values included (see the
+            # devicecompanion undo for why neither row may defer to the other any more).
             Remove-RegVal 'HKLM\SOFTWARE\Policies\Microsoft\Windows\DriverSearching' 'DontSearchWindowsUpdate'
+            Remove-RegVal 'HKLM\SOFTWARE\Policies\Microsoft\Windows\Device Metadata' 'PreventDeviceMetadataFromNetwork'
+            Set-Reg 'HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\DriverSearching' 'SearchOrderConfig' 1
             $k = 0
             foreach ($svc in @(Get-Service -ErrorAction SilentlyContinue | Where-Object { $_.Name -like 'Razer*' })) {
                 if (Set-SvcStart $svc.Name 'Automatic') { $k++ }
             }
-            $detail = "$k Razer service(s) re-enabled; the shared device-metadata block was left for the Prevent Device Companion Apps row - undo that row too to clear it fully"
+            $detail = "$k Razer service(s) re-enabled; device companion apps allowed again - re-apply Prevent Device Companion Apps if that one should stay in force"
         }
         'rightclickmenu' {
             [void](Remove-RegKey 'HKCU\Software\Classes\CLSID\{86ca1aa0-34aa-4e8b-a509-50c905bae2a2}')
@@ -13777,6 +16959,9 @@ function Undo-Tweak($app) {
             Set-Reg 'HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced' 'TaskbarAnimations' 1
             Set-Reg 'HKCU\Software\Microsoft\Windows\DWM' 'EnableAeroPeek' 1
             Set-Reg 'HKCU\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize' 'EnableTransparency' 1
+            # 2 is the Windows default. The apply sets this and the undo used to leave it set, so a
+            # machine where ClearType had been turned off deliberately never got it back.
+            Set-Reg 'HKCU\Control Panel\Desktop' 'FontSmoothing' '2' 'String'
             $detail = 'visual effects back to the Windows default (sign out to fully apply)'
         }
         'windowsai' {
@@ -13787,20 +16972,36 @@ function Undo-Tweak($app) {
             # ShowCopilotButton is also owned by taskbarclean - leave it hidden while that
             # row is still applied (same guard as the widgets undo)
             if ("$(Get-WorkerReg 'HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced' 'TaskbarMn')" -ne '0') {
-                Set-Reg 'HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced' 'ShowCopilotButton' 1
+                [void](Set-RegSoft 'HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced' 'ShowCopilotButton' 1)
             }
             $detail = 'AI policy removed - removed Copilot packages are NOT reinstalled'
         }
 
         # ---------------- performance ----------------
         'powerplan' {
-            # restore Balanced and clear the AC-profile overrides - covers both the
-            # desktop path (active scheme) and the laptop path (AC values only)
-            & "$env:SystemRoot\System32\powercfg.exe" /setactive SCHEME_BALANCED 2>&1 | Out-Null
+            # The overrides first, on the scheme that is ACTIVE - which on a laptop is whatever
+            # scheme the apply wrote them onto (often the OEM's "Optimized"), never Balanced.
+            # Switching to Balanced first and cleaning that left the OEM scheme with a 100%
+            # processor floor, on a laptop the apply had never moved off it.
             & "$env:SystemRoot\System32\powercfg.exe" /setacvalueindex SCHEME_CURRENT SUB_PROCESSOR PROCTHROTTLEMIN 5 2>&1 | Out-Null
             & "$env:SystemRoot\System32\powercfg.exe" /setacvalueindex SCHEME_CURRENT SUB_PROCESSOR PROCTHROTTLEMAX 100 2>&1 | Out-Null
-            & "$env:SystemRoot\System32\powercfg.exe" /setactive SCHEME_CURRENT 2>&1 | Out-Null
-            $detail = 'Balanced plan restored, AC processor overrides cleared'
+            $isLaptop = $false
+            try {
+                $types = @((Get-CimInstance Win32_SystemEnclosure -ErrorAction Stop).ChassisTypes)
+                $isLaptop = [bool]@($types | Where-Object { $_ -in 8, 9, 10, 11, 12, 13, 14, 30, 31, 32 }).Count
+            } catch {}
+            if (-not $isLaptop) { try { $isLaptop = [bool]@(Get-CimInstance Win32_Battery -ErrorAction SilentlyContinue).Count } catch {} }
+            if ($isLaptop) {
+                & "$env:SystemRoot\System32\powercfg.exe" /setactive SCHEME_CURRENT 2>&1 | Out-Null
+                $detail = 'laptop: the plugged-in processor overrides are cleared on the current scheme; the scheme itself was never changed'
+            } else {
+                # the desktop apply switched to High Performance; Balanced is the documented default
+                & "$env:SystemRoot\System32\powercfg.exe" /setactive SCHEME_BALANCED 2>&1 | Out-Null
+                & "$env:SystemRoot\System32\powercfg.exe" /setacvalueindex SCHEME_CURRENT SUB_PROCESSOR PROCTHROTTLEMIN 5 2>&1 | Out-Null
+                & "$env:SystemRoot\System32\powercfg.exe" /setacvalueindex SCHEME_CURRENT SUB_PROCESSOR PROCTHROTTLEMAX 100 2>&1 | Out-Null
+                & "$env:SystemRoot\System32\powercfg.exe" /setactive SCHEME_CURRENT 2>&1 | Out-Null
+                $detail = 'Balanced plan restored, AC processor overrides cleared'
+            }
         }
         'gamedvr' {
             Remove-RegVal 'HKCU\System\GameConfigStore' 'GameDVR_Enabled'
@@ -13809,18 +17010,36 @@ function Undo-Tweak($app) {
             $detail = 'Game DVR policy removed - Windows defaults restored'
         }
         'oembloat' {
-            # restores what it can find NOW - services or tasks renamed/removed since the
-            # apply are out of reach, which is why both counts are reported
             $svcN = 0; $taskN = 0
-            foreach ($p in $script:OemBloatPatterns) {
-                foreach ($svc in @(Get-Service -Name $p -ErrorAction SilentlyContinue)) {
-                    if ($svc.StartType -eq 'Manual' -and (Set-SvcStart $svc.Name 'Automatic')) { $svcN++ }
+            # Only what the apply wrote down (see Apply-Tweak). A machine tweaked by an older
+            # build has no record; that one falls back to the pattern sweep and says so - the
+            # sweep also promotes services that SHIPPED Manual and were never touched.
+            $recS = @(); $recT = @()
+            try { $recS = @(Get-WorkerReg 'HKLM\SOFTWARE\PC2Go' 'OemBloatServices') | Where-Object { $_ } } catch { }
+            try { $recT = @(Get-WorkerReg 'HKLM\SOFTWARE\PC2Go' 'OemBloatTasks') | Where-Object { $_ } } catch { }
+            if ($recS.Count -or $recT.Count) {
+                foreach ($name in $recS) {
+                    $svc = Get-Service -Name $name -ErrorAction SilentlyContinue
+                    if ($svc -and $svc.StartType -eq 'Manual' -and (Set-SvcStart $svc.Name 'Automatic')) { $svcN++ }
                 }
-                foreach ($t in @(Get-ScheduledTask -TaskName $p -ErrorAction SilentlyContinue | Where-Object { $_.State -eq 'Disabled' })) {
-                    try { Enable-ScheduledTask -TaskName $t.TaskName -TaskPath $t.TaskPath -ErrorAction Stop | Out-Null; $taskN++ } catch {}
+                foreach ($full in $recT) {
+                    $tp = Split-Path $full -Parent; if (-not $tp.EndsWith('\')) { $tp += '\' }
+                    try { Enable-ScheduledTask -TaskName (Split-Path $full -Leaf) -TaskPath $tp -ErrorAction Stop | Out-Null; $taskN++ } catch {}
                 }
+                Remove-RegVal 'HKLM\SOFTWARE\PC2Go' 'OemBloatServices'
+                Remove-RegVal 'HKLM\SOFTWARE\PC2Go' 'OemBloatTasks'
+                $detail = "$svcN service(s) restored to Automatic, $taskN task(s) re-enabled - exactly the ones the apply changed"
+            } else {
+                foreach ($p in $script:OemBloatPatterns) {
+                    foreach ($svc in @(Get-Service -Name $p -ErrorAction SilentlyContinue)) {
+                        if ($svc.StartType -eq 'Manual' -and (Set-SvcStart $svc.Name 'Automatic')) { $svcN++ }
+                    }
+                    foreach ($t in @(Get-ScheduledTask -TaskName $p -ErrorAction SilentlyContinue | Where-Object { $_.State -eq 'Disabled' })) {
+                        try { Enable-ScheduledTask -TaskName $t.TaskName -TaskPath $t.TaskPath -ErrorAction Stop | Out-Null; $taskN++ } catch {}
+                    }
+                }
+                $detail = "$svcN matching service(s) set to Automatic, $taskN task(s) re-enabled - no record of what the apply changed, so every OEM match was restored, including any that shipped Manual"
             }
-            $detail = "$svcN matching service(s) restored to Automatic, $taskN task(s) re-enabled - restores what it can find now"
         }
         'nettuning' {
             Remove-RegVal 'HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia\SystemProfile' 'NetworkThrottlingIndex'
@@ -13849,12 +17068,14 @@ function Undo-Tweak($app) {
             Set-Reg 'HKCU\Software\Microsoft\Windows\CurrentVersion\Search' 'SearchboxTaskbarMode' 1
             Set-Reg 'HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced' 'ShowTaskViewButton' 1
             Remove-RegVal 'HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced' 'TaskbarMn'
+            # the Resume badge toggle the apply switched off (absent is the default it had)
+            Remove-RegVal 'HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced' 'IsEnabled'
             # TaskbarDa / ShowCopilotButton stay 0 while widgets / windowsai still own them
             if ("$(Get-WorkerReg 'HKLM\SOFTWARE\Policies\Microsoft\Dsh' 'AllowNewsAndInterests')" -ne '0') {
-                Set-Reg 'HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced' 'TaskbarDa' 1
+                [void](Set-RegSoft 'HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced' 'TaskbarDa' 1)
             }
             if ("$(Get-WorkerReg 'HKLM\SOFTWARE\Policies\Microsoft\Windows\WindowsAI' 'DisableAIDataAnalysis')" -ne '1') {
-                Set-Reg 'HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced' 'ShowCopilotButton' 1
+                [void](Set-RegSoft 'HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced' 'ShowCopilotButton' 1)
             }
             $detail = 'Windows default taskbar restored - the previous pins were not captured and cannot be put back'
         }
@@ -13863,12 +17084,26 @@ function Undo-Tweak($app) {
                            'Start_IrisRecommendations', 'Start_AccountNotifications') {
                 Remove-RegVal 'HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced' $v
             }
+            # The 25H2 copies too. The apply writes BOTH generations and the detect on 25H2 reads
+            # THIS one - undoing only the Advanced values left Start exactly as the tweak set it
+            # and Detect Applied still ticking the row afterwards. Deleted, not written: absent
+            # is the out-of-box state for every one of these.
+            foreach ($v in 'ShowRecentList', 'ShowFrequentList', 'AllAppsViewMode') {
+                Remove-RegVal 'HKCU\Software\Microsoft\Windows\CurrentVersion\Start' $v
+            }
+            Remove-RegVal 'HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer' 'ShowRecommendations'
             $detail = 'Start menu back to Windows defaults'
         }
         'explorerprivacy' {
             Set-Reg 'HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced' 'ShowRecent' 1
             Set-Reg 'HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced' 'ShowFrequent' 1
             Set-Reg 'HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced' 'ShowCloudFilesInQuickAccess' 1
+            # Same 25H2 story as startclean: the apply writes the three values one level up as
+            # well, and that is where 25H2 reads them - so those must go too, or the Privacy
+            # checkboxes stay cleared after an undo that reported success.
+            foreach ($v in 'ShowRecent', 'ShowFrequent', 'ShowCloudFilesInQuickAccess') {
+                Remove-RegVal 'HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer' $v
+            }
             $detail = 'recent/frequent tracking back on - the cleared history is gone and cannot be restored'
         }
         'desktopicons' {
@@ -13972,6 +17207,9 @@ function Undo-Tweak($app) {
         }
         'gamebaroff' {
             Remove-RegVal 'HKCU\Software\Microsoft\GameBar' 'UseNexusForGameBarEnabled'
+            # the apply writes TWO values; removing one left the controller chord switched off for
+            # good, and the detector only looks at the other, so nothing would ever mention it again
+            Remove-RegVal 'HKCU\Software\Microsoft\GameBar' 'GamepadNexusChordEnabled'
             $detail = 'Game Bar overlay restored'
         }
         'inputqueue' {
@@ -14037,6 +17275,9 @@ function Undo-Tweak($app) {
 
         default { Write-Status $app.id 'Failed' "unknown tweak id '$id'"; return }
     }
+    if ($script:RegDenied.Count) {
+        $detail = "$detail (this Windows build refused: $((@($script:RegDenied) | Sort-Object -Unique) -join ', '))"
+    }
     Write-Status $app.id 'Reverted' $detail
 }
 
@@ -14087,6 +17328,9 @@ while (-not $finished) {
             # not run on the assumption that it did (a reinstall over the copy it was meant
             # to clear)
             if ($app.id) { $script:FailedIds[[string]$app.id] = $true }
+            # and a CHAIN step that did not run is a chain that stopped: the "copy the data"
+            # step pulled out must not be followed by "disable the old account"
+            if ($app.chain) { $script:ChainFailed = $true }
             continue
         }
         # A CHAIN is an ordered sequence where each step assumes the one before it worked:
@@ -14115,16 +17359,17 @@ while (-not $finished) {
             continue
         }
         $script:StepFailed = $false
+        $script:StepSkipped = $false
         try {
             switch ($app.action) {
                 # both read HKCU targets through Resolve-Reg, which needs the technician's SID
                 # or it resolves to the elevating admin's hive (see the tweak branch below)
-                'uninstall' { if ($app.userSid) { $script:UserSid = [string]$app.userSid }; Uninstall-One $app }
-                'wipe'      { if ($app.userSid) { $script:UserSid = [string]$app.userSid }; Wipe-One $app }
+                'uninstall' { $script:UserSid = (Get-SafeUserSid $app.userSid $app.id); Uninstall-One $app }
+                'wipe'      { $script:UserSid = (Get-SafeUserSid $app.userSid $app.id); Wipe-One $app }
                 'tweak'     {
                     # per-user tweaks must land in the technician's hive, not the
                     # elevating admin's - the GUI ships its SID with every entry
-                    if ($app.userSid) { $script:UserSid = [string]$app.userSid }
+                    $script:UserSid = (Get-SafeUserSid $app.userSid $app.id)
                     # The restore point is the undo button for the whole batch and the
                     # confirm dialog promises it is created FIRST - so if it failed,
                     # nothing after it may run. Only the restore point gates: any other
@@ -14136,14 +17381,21 @@ while (-not $finished) {
                     }
                 }
                 'untweak'   {
-                    if ($app.userSid) { $script:UserSid = [string]$app.userSid }
+                    $script:UserSid = (Get-SafeUserSid $app.userSid $app.id)
                     Undo-Tweak $app
                 }
-                'pref-removed' {
-                    if ($app.userSid) { $script:UserSid = [string]$app.userSid }
-                    
-                }
+                # a startup entry switched off or back on through the same StartupApproved bytes
+                # Task Manager writes - the HKCU ones in the technician's hive, hence the SID
+                'startupoff'    { $script:UserSid = (Get-SafeUserSid $app.userSid $app.id); Set-StartupEntry $app }
+                'startupon'     { $script:UserSid = (Get-SafeUserSid $app.userSid $app.id); Set-StartupEntry $app }
+                # the Disk Management sub-tab: shrink, extend, and extend past a recovery partition
+                'diskshrink'     { Invoke-DiskAction $app }
+                'diskextend'     { Invoke-DiskAction $app }
+                'diskextendmove' { Invoke-DiskAction $app }
                 'fix'           { Invoke-Fix $app }
+                'update'        { Update-One $app }
+                'storeupdate'   { Update-StoreApps $app }
+                'winupdate'     { Install-WindowsUpdate $app }
                 'fwblock'       { Block-AppNetwork $app }
                 'fwunblock'     { Unblock-AppNetwork $app }
                 'fwunblockrules' { Remove-NamedFwRules $app }
@@ -14178,12 +17430,17 @@ while (-not $finished) {
                     # branches set it. Enqueue-Install sends userSid; without this line an
                     # install's HKCU step landed in the elevating admin's hive, or in whichever
                     # user a tweak earlier in the same queue had happened to name.
-                    if ($app.userSid) { $script:UserSid = [string]$app.userSid }
+                    $script:UserSid = (Get-SafeUserSid $app.userSid $app.id)
                     try { Install-One $app } finally { Remove-Unpacked }
                 }
             }
         } catch { Write-Status $app.id 'Failed' $_.Exception.Message }
         if ($app.chain -and $script:StepFailed) { $script:ChainFailed = $true }
+        # A copy that finished with files missing reports Skipped, not Failed - the product
+        # state for "done, with a caveat". In a chain that caveat is the whole question: the
+        # next step disables the account whose data was just found incomplete. Stop there and
+        # let the technician look, rather than lock the client out of the copy that is whole.
+        if ($app.chain -and $app.action -eq 'migrate' -and $script:StepSkipped) { $script:ChainFailed = $true }
         if ($script:StepFailed -and $app.id) { $script:FailedIds[[string]$app.id] = $true }
         # set AFTER the catch, because Checkpoint-Computer failing arrives here as a throw
         if ($app.action -eq 'tweak' -and "$($app.tweak)" -eq 'restorepoint' -and $script:StepFailed) {
@@ -14341,7 +17598,7 @@ try {
 "@
         $enc = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($stub))
         Start-Process -FilePath $psExe -Verb RunAs -WindowStyle Hidden `
-                      -ArgumentList "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -EncodedCommand $enc" | Out-Null
+                      -ArgumentList "-NoProfile -ExecutionPolicy Bypass -EncodedCommand $enc" | Out-Null
         $script:WorkerStarted = $true
         # no prompt at all when the GUI itself already holds the elevated token - saying
         # "one UAC prompt" there would be describing something that did not happen
@@ -14400,7 +17657,7 @@ function Enqueue-Install([object]$Item) {
     }
     # hand a finished download to the elevated worker immediately
     if (-not (Start-Worker)) {
-        Abort-Batch 'elevation declined'
+        Abort-Batch 'the administrator prompt was declined, so nothing was run' 'warn'
         return
     }
     # Fetch any post-install payloads now, while the GUI still owns the download path. They
@@ -14557,17 +17814,25 @@ function Test-CancelRequested {
     return [bool]($script:CancelRequested -or ($script:CancelPath -and (Test-Path -LiteralPath $script:CancelPath)))
 }
 
-function Abort-Batch([string]$Reason) {
+# $Kind: 'fail' for something that genuinely broke, 'warn' for a batch that never started.
+#
+# Declining the administrator prompt was reported as "Failed: elevation declined" on every row,
+# red, counted as "0 completed, 3 failed", with the cache kept and the batch remembered as a
+# failure - for a batch in which nothing was attempted. The log one line away said the truth.
+# This is the same "a refusal reported as a failure" shape the product has already been caught
+# on twice; it must not be the shape of its own abort path.
+function Abort-Batch([string]$Reason, [string]$Kind = 'fail') {
     if ($script:CurJob) { Remove-BitsTransfer -BitsJob $script:CurJob -ErrorAction SilentlyContinue; $script:CurJob = $null }
     # A worker that was started must be told to stop, or it polls a queue for ever - Finish-Batch
     # keeps the queue file when EndQueued is false, precisely so it is not deleted under it.
     if ($script:WorkerStarted -and -not $script:EndQueued) { Complete-Worker }
+    $word = $(if ($Kind -eq 'warn') { "Not run: $Reason" } else { "Failed: $Reason" })
     foreach ($p in $script:Pending) {
         # a row the technician pulled out did not fail - it was never going to run
         if ($p.Status -notlike 'Installed*' -and $p.Status -notlike 'Failed*' -and
-            $p.Status -notlike 'Remov*') { Set-Status $p "Failed: $Reason" 'fail'; Set-Ring $p 'fail' }
+            $p.Status -notlike 'Remov*') { Set-Status $p $word $Kind; Set-Ring $p $Kind }
     }
-    $script:HadFailures = $true
+    if ($Kind -ne 'warn') { $script:HadFailures = $true }
     Finish-Batch
 }
 
@@ -14632,6 +17897,13 @@ function Read-WorkerStatus {
                 }
             }
             if ($null -ne $s.pct) {
+                # Update-Overall places the bar by DlIndex, which only a download batch advances.
+                # For a worker-only batch (updates, copies) the position is the reporting row's
+                # place in the list, or the bar sat on "step 1 of N" for every row.
+                if ($script:BatchTab -ne 'Install') {
+                    $ix = [Array]::IndexOf(@($script:Pending), $item)
+                    if ($ix -ge 0) { $script:DlIndex = $ix }
+                }
                 Update-Overall ([int]$s.pct)
                 # The clock. A copy has a countdown once the rate settles, but the first minute of
                 # a large one - and every account action - has nothing to count down from, and a
@@ -14970,7 +18242,12 @@ function Confirm-AppliedRows {
     }
     if (-not $unconfirmed.Count) { return }
     foreach ($p in $unconfirmed) {
-        Set-Status $p 'Applied - could not confirm on this machine' 'warn'
+        # No dash and no colon: Set-Status cuts a status at the first ':' or ' - ', so this used to
+        # render on the card as the single word "Applied" - and $done counts anything matching
+        # ^Applied, so a tweak the machine could not confirm was reported as completed. That check
+        # exists because 25H2 moved five settings and the writes silently stopped taking; the
+        # truncation and the count between them erased the one signal that says so.
+        Set-Status $p 'Not confirmed by this machine' 'warn'
         Set-Ring $p 'warn'
         Add-Log "$($p.Name) -> applied, but this machine does not report it as applied afterwards."
     }
@@ -15018,8 +18295,17 @@ function Finish-Batch {
             if ($p.IsSelected -and $p.Status -match '^(Uninstalled|Cleaned)') { $p.IsSelected = $false }
         }
     }
+    # same rule for updates: what went through comes off, what failed stays ticked for the retry
+    if ($script:BatchTab -eq 'Update') {
+        foreach ($p in $script:Pending) {
+            if ($p.IsSelected -and $p.Status -match '^(Installed|Skipped|Applied)') { $p.IsSelected = $false }
+        }
+    }
     $BarOverall.Value = 100
     $TxtOverall.Text = ''
+    # The strip folds itself away when the batch ends - the exe does the same, and this half never
+    # did it at all. The header keeps the counts, and clicking it opens the list again.
+    $script:BatchFolded = $true
     # Cancelled and Skipped are counted together above because they drive the same decisions -
     # keep the cache, amber dot, remember the batch was not clean. But they must not be REPORTED
     # as the same thing. "Skipped" is this tool's amber state for "it worked, with a caveat": an
@@ -15031,8 +18317,13 @@ function Finish-Batch {
     # Removed gets its own line for the same reason Skipped does: the technician took these
     # out deliberately, and reporting a choice as a cancellation misdescribes it.
     $wasRemoved   = @($script:Pending | Where-Object { $_.Status -match '^Removed' }).Count
+    # A row the worker did not run because an earlier step failed (the restore point, a chain)
+    # is not "with a warning" - nothing about it worked with a caveat; it did not happen.
+    $notRun = @($script:Pending | Where-Object { $_.Status -match '^Skipped' -and "$($_.StatusDetail)" -like '*was not run*' }).Count
+    $hadWarnings -= $notRun
     $summary = "$done completed, $fail failed"
     if ($hadWarnings -gt 0)  { $summary += ", $hadWarnings with warnings" }
+    if ($notRun -gt 0)       { $summary += ", $notRun not run" }
     if ($wasRemoved -gt 0)   { $summary += ", $wasRemoved removed" }
     if ($wasCancelled -gt 0) { $summary += ", $wasCancelled cancelled" }
     # Firewall batches answer the question the batch file answered: how many rules were
@@ -15041,7 +18332,10 @@ function Finish-Batch {
     if ($script:BatchTab -eq 'Fw') {
         $fwAdd = 0; $fwSkip = 0; $fwDel = 0; $fwNone = 0
         foreach ($p in $script:Pending) {
-            $s = '' + $p.Status
+            # StatusDetail, not Status: Set-Status shortens the card to its first word, and the
+            # numbers this parses live in the sentence it keeps in StatusDetail. Read from Status
+            # the totals were always empty, and every firewall batch summarised as "1 completed".
+            $s = '' + $(if ($p.PSObject.Properties['StatusDetail'] -and $p.StatusDetail) { $p.StatusDetail } else { $p.Status })
             if ($s -match '(\d+) rule\(s\) added')     { $fwAdd  += [int]$Matches[1] }
             if ($s -match '(\d+) switched back on')    { $fwAdd  += [int]$Matches[1] }
             if ($s -match '(\d+) already blocked')     { $fwSkip += [int]$Matches[1] }
@@ -15095,6 +18389,12 @@ function Finish-Batch {
     # The Explorer, Start and theme tweaks write values Windows only re-reads when it is told
     # to. Deliberately NOT gated on a tab or a row list: the broadcast is cheap and idempotent,
     # so it is driven by what was APPLIED, not by where it was clicked.
+    # Only when something was actually written. A declined UAC prompt, a restore point that
+    # failed (every row after it Skipped), or a worker that never started all reach here with
+    # the flags still set - and the desktop blinked out and back for a batch that changed
+    # nothing, with the log claiming the changes were now visible.
+    $anyApplied = [bool]@($script:Pending | Where-Object { "$($_.Status)" -match '^(Applied|Reverted)' }).Count
+    if (-not $anyApplied) { $script:NeedSettingBroadcast = $false; $script:NeedExplorerRestart = $false }
     if ($script:NeedSettingBroadcast) {
         $script:NeedSettingBroadcast = $false
         try {
@@ -15121,6 +18421,10 @@ function Finish-Batch {
         'Un'      { 'Uninstall' }
         'Migrate' { 'Backup' }
         'Share'   { 'Share' }
+        'Fw'      { 'Firewall' }
+        'Tweak'   { 'Optimize' }
+        'Users'   { 'Accounts' }
+        'Update'  { 'Update' }
         default   { 'Install' }
     })
     Remove-Item -LiteralPath $script:CancelPath, $script:SkipPath -ErrorAction SilentlyContinue
@@ -15169,9 +18473,21 @@ function Finish-Batch {
     $BtnRunFix.IsEnabled = $true
     $BtnShareThis.IsEnabled = $true
     $BtnShareStop.IsEnabled = $true
+    $BtnUpdApply.IsEnabled = $true
     # shares were just created or removed: the buttons and the hint under the folder box follow
     if ($script:BatchTab -eq 'Share') { Sync-ShareButtons }
     if ($script:BatchTab -eq 'Fw') { Load-Firewall }
+    # Not rescanned here: winget takes 10-20 s and would sit between the batch and its summary.
+    # The rows keep their verdicts; the next visit or Rescan asks winget again.
+    if ($script:BatchTab -eq 'Update') {
+        $script:UpdDirty = $true
+        $script:UpdStoreDirty = $true
+        $script:UpdWinDirty = $true
+        $needRestart = @($script:Pending | Where-Object { "$($_.StatusDetail)$($_.Status)" -like '*restart is needed*' }).Count
+        $TxtUpdHint.Text = $(if ($needRestart) { "Batch finished - $needRestart update(s) need a RESTART to finish; press Rescan afterwards" }
+                             else { 'Batch finished - press Rescan to see what is still outdated' })
+        if ($needRestart) { Add-Log "Restart needed: $needRestart Windows update(s) finish on the next restart." }
+    }
     # an account may have just been created, or a profile filled - re-read on next visit
     # 'Migrate' too: a migration creates the destination profile folder, so the account list is
     # just as stale afterwards as it is after an account action.
@@ -15179,14 +18495,18 @@ function Finish-Batch {
         # The password box too. It was the one field left holding its value after the batch, so
         # the password just set sat readable in a dialog one click away for the rest of the session.
         $TxtNewUser.Clear(); $TxtNewFull.Clear(); $TxtNewPw.Clear()
+        $TxtActPw.Clear(); $TxtActNewName.Clear()
         Load-Users
     }
     $BtnPause.Visibility = 'Collapsed'
     $BtnCancel.Visibility = 'Collapsed'
     $TxtInstallBtn.Text = 'Install Selected'
-    # machine state changed: both inventories re-scan next time their sub-tab is opened
+    # machine state changed: both inventories re-scan next time their sub-tab is opened, and so
+    # does the Update tab - an install or removal changes what has an update just as much
     $script:UnDirty = $true
     $script:StoreDirty = $true
+    $script:UpdDirty = $true
+    $script:UpdProgCache = $null
     # re-read the toggles so they show what the machine is NOW, not what was requested
     if (@($script:Deferred).Count -gt 0) {
         # apps added after downloads had finished: run them now as a follow-up batch
@@ -15612,10 +18932,18 @@ function Start-Batch([object[]]$Sel) {
     # actually landed, so nothing is removed on the strength of a download that may yet fail.
     # chain=true is the worker's own sequencing flag: if this step fails, every later chain
     # step (the base install) is skipped. Same entry shape Start-Uninstall writes.
+    # userSid travels with it exactly as Start-Uninstall sends it: this is the FIRST entry the
+    # worker reads, so nothing earlier has set its SID, and an HKCU detect key - found in the
+    # technician's hive by the GUI - was checked in the elevating admin's hive instead. There it
+    # is never present, which read as "gone", which reported Uninstalled for an add-on that was
+    # still installed and then reinstalled the new copy on top of it.
+    $depSid = ''
+    try { $depSid = ([Security.Principal.WindowsIdentity]::GetCurrent()).User.Value } catch {}
     foreach ($s in @($Sel | Where-Object { $_.BatchAction -eq 'uninstall' })) {
         $entry = @{ id = $s.Id; action = 'uninstall'; command = $s.UnCommand; args = $s.UnArgs
                     detect = $s.DetectPath; location = @($s.CleanPaths)[0]
-                    silent = [bool]$s.IsSilent; chain = $true } | ConvertTo-Json -Compress
+                    silent = [bool]$s.IsSilent; chain = $true; userSid = $depSid
+                    family = [string]$s.UnFamily } | ConvertTo-Json -Compress
         Add-Content -Path $script:QueuePath -Value $entry -Encoding UTF8
     }
     Show-BatchStrip
@@ -15779,7 +19107,7 @@ function Test-CatalogInstalled([object]$Item) {
     try {
         $d = [string]$Item.DetectPath
         if ($d) {
-            if ($d -match '^HK(LM|CU|CR|EY)') {
+            if ($d -match '^HK(LM|CU|CR|EY|U)') {
                 if (Test-Path -LiteralPath (ConvertTo-PSRegPath $d)) { return $true }
             } elseif (Test-Path -LiteralPath ([Environment]::ExpandEnvironmentVariables($d))) { return $true }
         }
@@ -15913,7 +19241,7 @@ function Test-UnRowGone([object]$Item) {
     $d = [string]$Item.DetectPath
     if (-not $d) { return $false }
     try {
-        if ($d -match '^HK(LM|CU|CR|EY)') { return -not (Test-Path -LiteralPath (ConvertTo-PSRegPath $d)) }
+        if ($d -match '^HK(LM|CU|CR|EY|U)') { return -not (Test-Path -LiteralPath (ConvertTo-PSRegPath $d)) }
         return -not (Test-Path -LiteralPath ([Environment]::ExpandEnvironmentVariables($d)))
     } catch { return $false }
 }
@@ -16654,7 +19982,15 @@ $BtnOverlayOk.Add_Click({
     $Overlay.Visibility = 'Collapsed'
     $act = $script:ConfirmAction
     $script:ConfirmAction = $null
-    if ($act) { & $act }
+    if (-not $act) { return }
+    # The dismissal is painted BEFORE the action runs. The action is usually a batch start -
+    # write the worker, hash it, elevate it - which is a second or more on a slow machine, and
+    # the dialog used to sit on screen for all of it, so the click looked ignored. The wait
+    # cursor covers the rest; the busy guard is held across the pump for the same reason as in
+    # Show-BatchStrip.
+    $script:BatchStarting = $true
+    try { $window.Cursor = [Windows.Input.Cursors]::Wait; Update-UI } catch { } finally { $script:BatchStarting = $false }
+    try { & $act } finally { try { $window.Cursor = $null } catch { } }
 })
 $BtnOverlayCancel.Add_Click({ $Overlay.Visibility = 'Collapsed'; $script:ConfirmAction = $null })
 
@@ -16865,6 +20201,7 @@ $BtnTabUsers.Add_Click({ Select-Tab 'Users' })
 $BtnTabFw.Add_Click({ Select-Tab 'Fw' })
 $BtnTabMigrate.Add_Click({ Select-Tab 'Migrate' })
 $BtnTabTools.Add_Click({ Select-Tab 'Tools' })
+$BtnTabUpdate.Add_Click({ Select-Tab 'Update' })
 
 $BtnAlCancel.Add_Click({ $AutoLogonOverlay.Visibility = 'Collapsed' })
 $TxtAlUser.Add_TextChanged({ $HintAlUser.Visibility = $(if ($TxtAlUser.Text) { 'Collapsed' } else { 'Visible' }) })
@@ -17142,10 +20479,13 @@ $BtnActStandard.Add_Click({
     ) ({ Start-UserBatch 'setadmin' @{ username = [string]$a.UnArgs; admin = $false } }.GetNewClosure())
 })
 
+$TxtActPw.Add_TextChanged({ $HintActPw.Visibility = $(if ($TxtActPw.Text) { 'Collapsed' } else { 'Visible' }) })
+$TxtActNewName.Add_TextChanged({ $HintActNewName.Visibility = $(if ($TxtActNewName.Text) { 'Collapsed' } else { 'Visible' }) })
 $BtnActPw.Add_Click({
     $a = Get-AccountTarget 'set a password for'
     if (-not $a) { return }
-    $pw = ('' + $TxtNewPw.Text)
+    # this dialog's own box - the Add Account dialog's is a different popup and is not on screen
+    $pw = ('' + $TxtActPw.Text)
     $what = $(if ($pw) { "the password typed in the Password box above" } else { 'NO password at all' })
     Show-Confirm 'Set this password?' (
         "`"$($a.Name)`" will be given $what.`n`n" +
@@ -17238,7 +20578,8 @@ $BtnActLocal.Add_Click({
 })
 
 function Invoke-ReplaceWithLocal([object]$Acct) {
-    $name = ('' + $TxtNewUser.Text).Trim()
+    # this dialog's own boxes (see BtnActPw) - the Add Account dialog's are not on screen here
+    $name = ('' + $TxtActNewName.Text).Trim()
     if (-not $name) {
         Show-Overlay 'Name the new account first' (
             "Type the new local account's sign-in name in the box above, then press this again.`n`n" +
@@ -17269,8 +20610,8 @@ function Invoke-ReplaceWithLocal([object]$Acct) {
     $me = ''
     try { $me = [Environment]::UserName } catch {}
     $isSelf = ($Acct.Name -eq $me)
-    $full = ('' + $TxtNewFull.Text).Trim(); if (-not $full) { $full = $name }
-    $pw = ('' + $TxtNewPw.Text)
+    $full = $name
+    $pw = ('' + $TxtActPw.Text)
 
     $steps = @(
         @{ action = 'newuser'; label = "Create local admin `"$name`""
@@ -17320,9 +20661,31 @@ function Invoke-ReplaceWithLocal([object]$Acct) {
 # The /24s this machine is actually on. Loopback and APIPA are skipped, and so is anything with a
 # prefix shorter than /22 - scanning a /16 would be 65,000 probes and the technician would
 # reasonably conclude the tool had hung.
-function Get-LocalSubnets {
+# The adapter and address tables, read once and off the UI thread: the two network modules load
+# cold on first use (MEASURED 0.8 s here, longer on a client) and the Network... dialog's spinner
+# stood still for all of it. Adapters is $null where the NetAdapter module is missing.
+function Get-LocalIPv4 {
+    $r = [pscustomobject]@{ Adapters = $null; Addresses = @() }
+    try {
+        $got = @(Invoke-OffUi {
+            $adapters = $null
+            try {
+                $adapters = @(Get-NetAdapter -ErrorAction Stop | ForEach-Object {
+                    [pscustomobject]@{ Index = [int]$_.InterfaceIndex; Up = ("$($_.Status)" -eq 'Up'); Type = [int]$_.InterfaceType } })
+            } catch { $adapters = $null }
+            $addrs = @(Get-NetIPAddress -AddressFamily IPv4 -ErrorAction Stop | ForEach-Object {
+                [pscustomobject]@{ Ip = [string]$_.IPAddress; Index = [int]$_.InterfaceIndex; Len = [int]$_.PrefixLength } })
+            [pscustomobject]@{ Adapters = $adapters; Addresses = $addrs }
+        } -What 'The network adapter read')
+        if ($got.Count) { $r = $got[0] }
+    } catch { }
+    return $r
+}
+
+function Get-LocalSubnets([object]$Read = $null) {
     $out = @()
     try {
+        if ($null -eq $Read) { $Read = Get-LocalIPv4 }
         # Only adapters that are actually UP, and actually LOCAL.
         #
         # MEASURED on the machine this was written on: it has SIX IPv4 addresses and exactly ONE of
@@ -17332,29 +20695,26 @@ function Get-LocalSubnets {
         # network that by definition holds nobody but this machine. That was HALF the scan, and all
         # of it wasted: "asked 508 addresses" where 254 was the honest number.
         $up = $null
-        try {
+        if ($null -ne $Read.Adapters) {
             $up = @{}
-            foreach ($a in @(Get-NetAdapter -ErrorAction Stop)) {
-                if ($a.Status -ne 'Up') { continue }
+            foreach ($a in @($Read.Adapters)) {
+                if (-not $a.Up) { continue }
                 # 6 = Ethernet, 71 = Wi-Fi. Everything else on that list is a tunnel, a VPN, PPP or
                 # loopback, and none of those has a neighbour you can hand a file to.
-                $ty = [int]$a.InterfaceType
-                if ($ty -ne 6 -and $ty -ne 71) { continue }
-                $up[[int]$a.InterfaceIndex] = $true
+                if ([int]$a.Type -ne 6 -and [int]$a.Type -ne 71) { continue }
+                $up[[int]$a.Index] = $true
             }
-        } catch {
-            # No NetAdapter module: fall back to filtering on the address alone rather than
-            # refusing to scan anything at all. Worse, but not nothing.
-            $up = $null
         }
-        foreach ($a in @(Get-NetIPAddress -AddressFamily IPv4 -ErrorAction Stop)) {
-            $ip = [string]$a.IPAddress
+        # No NetAdapter module (Adapters is $null): filter on the address alone rather than
+        # refusing to scan anything at all. Worse, but not nothing.
+        foreach ($a in @($Read.Addresses)) {
+            $ip = [string]$a.Ip
             if ($ip -like '127.*' -or $ip -like '169.254.*') { continue }
-            if ($null -ne $up -and -not $up.ContainsKey([int]$a.InterfaceIndex)) { continue }
+            if ($null -ne $up -and -not $up.ContainsKey([int]$a.Index)) { continue }
             # /22 is the widest worth sweeping - a /16 is 65,000 probes and reads as a hang. A /31
             # or /32 is a point-to-point link with no room for a neighbour, so it is not a network
             # to scan either; that is the test the Tailscale address slipped straight through.
-            $len = [int]$a.PrefixLength
+            $len = [int]$a.Len
             if ($len -lt 22 -or $len -gt 30) { continue }
             $parts = $ip -split '\.'
             if ($parts.Count -ne 4) { continue }
@@ -17442,10 +20802,11 @@ function Get-HostShares([string]$Machine) {
 # frozen window during it would look exactly like a hang.
 function Find-NetworkHosts([scriptblock]$Tick, [int]$TimeoutMs = 600, [scriptblock]$OnFound) {
     $found = @()
-    $nets = @(Get-LocalSubnets)
+    # one adapter read serves both the subnet list and "which addresses are mine"
+    $net = Get-LocalIPv4
+    $nets = @(Get-LocalSubnets $net)
     if (-not $nets.Count) { return $found }
-    $mine = @()
-    try { $mine = @(Get-NetIPAddress -AddressFamily IPv4 -ErrorAction Stop | ForEach-Object { [string]$_.IPAddress }) } catch { }
+    $mine = @(@($net.Addresses) | ForEach-Object { [string]$_.Ip })
 
     # Probed in PARALLEL, a chunk at a time.
     #
@@ -17707,7 +21068,14 @@ function Connect-Share([string]$Path, [string]$User, [string]$Password) {
     $nr.dwType = 1                                     # RESOURCETYPE_DISK
     $nr.lpRemoteName = $root
     $rc = 0
-    try { $rc = [Native.Share]::WNetAddConnection2([ref]$nr, $Password, $User, 0) }
+    # NULL, never "": to WNetAddConnection2 a NULL user and password mean "the identity this
+    # process runs as", while an EMPTY password means "there is no password" - so a share the
+    # signed-in account could already open (a domain share, a workgroup PC with the same
+    # sign-in) was refused with error 5 whenever no credentials had been typed. Measured
+    # against \\localhost\C$ from an elevated session: "" refused, NULL connected.
+    $u = $(if ([string]::IsNullOrEmpty($User)) { $null } else { $User })
+    $p = $(if ($null -eq $u -or [string]::IsNullOrEmpty($Password)) { $null } else { $Password })
+    try { $rc = [Native.Share]::WNetAddConnection2([ref]$nr, $p, $u, 0) }
     catch { return "could not reach $root - $($_.Exception.Message)" }
     $script:LastShareRc = $rc
     if ($rc -eq 0) { return '' }
@@ -18324,9 +21692,13 @@ $BtnNetUse.Add_Click({
         return
     }
     # A sign-in given for THIS path wins over one captured when a host was picked earlier - that
-    # may well have been a different machine entirely.
-    $user = $(if ($conn.Prompted) { [string]$conn.User } else { [string]$script:NetUser })
-    $pw   = $(if ($conn.Prompted) { [string]$conn.Password } else { [string]$script:NetPassword })
+    # may well have been a different machine entirely. And one captured for a DIFFERENT host is
+    # not reused at all: the worker would offer PC-A's password to PC-B, fail three seconds
+    # after the UAC prompt, and have sent a credential where it was never meant to go.
+    $pathHost = ((Get-ShareRoot $path) -replace '^\\\\([^\\]+)\\.*$', '$1')
+    $sameHost = ($script:NetHost -and $pathHost -and ($pathHost -ieq [string]$script:NetHost))
+    $user = $(if ($conn.Prompted) { [string]$conn.User } elseif ($sameHost) { [string]$script:NetUser } else { '' })
+    $pw   = $(if ($conn.Prompted) { [string]$conn.Password } elseif ($sameHost) { [string]$script:NetPassword } else { '' })
     Set-BackupFolder $path $user $pw
     $NetOverlay.Visibility = 'Collapsed'
 })
@@ -18508,14 +21880,24 @@ function Get-ShareName([string]$Path, [string[]]$Taken) {
 # Every disk share on this PC, {Name, Path, Description}. Unelevated read; `net share` fallback.
 function Get-AllShares {
     $out = @()
-    if (Get-Command Get-SmbShare -ErrorAction SilentlyContinue) {
-        try {
+    # The SMB module loads on first use - MEASURED 0.7 s here, the whole of the first Data
+    # Backup visit's freeze - so the read runs off the UI thread. 'NOMODULE' means the module is
+    # not there at all; a read that failed comes back $null. `net share` answers for both.
+    $rows = $null
+    try {
+        $rows = @(Invoke-OffUi {
+            if (-not (Get-Command Get-SmbShare -ErrorAction SilentlyContinue)) { return 'NOMODULE' }
             foreach ($s in @(Get-SmbShare -ErrorAction Stop)) {
-                if ($s.Name.EndsWith('$') -or "$($s.ShareType)" -ne 'FileSystemDirectory') { continue }
-                $out += [pscustomobject]@{ Name = [string]$s.Name; Path = [string]$s.Path; Description = ('' + $s.Description) }
+                [pscustomobject]@{ Name = [string]$s.Name; Path = [string]$s.Path; Description = ('' + $s.Description); Type = "$($s.ShareType)" }
             }
-            return $out
-        } catch { }
+        } -What 'The share list')
+    } catch { $rows = $null }
+    if ($null -ne $rows -and -not ($rows.Count -eq 1 -and "$($rows[0])" -eq 'NOMODULE')) {
+        foreach ($s in $rows) {
+            if ($s.Name.EndsWith('$') -or $s.Type -ne 'FileSystemDirectory') { continue }
+            $out += [pscustomobject]@{ Name = [string]$s.Name; Path = [string]$s.Path; Description = ('' + $s.Description) }
+        }
+        return $out
     }
     $eap = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
     try {
@@ -18906,7 +22288,7 @@ $BtnMigrate.Add_Click({
     $msg = "$verb $($sel.Count) item(s), $(Format-Size $total), from`n  $fromTxt`nto`n  $toTxt.`n`n" +
            $(if ($mode -eq 'restore') {
                  "The backup is left completely untouched - this copies out of it, it never moves.`n" +
-                 "Files already in the account with the same size and date are left alone.`n" }
+                 "Files already in the account with the same size and date are left alone, and a file the account has changed since the backup is kept rather than rolled back.`n" }
              else {
                  "The source profile is left completely untouched - this copies, it never moves.`n" })
     if ($mode -eq 'folder') { $msg += "Running this again later copies only what has changed; nothing already on the drive is deleted.`n" }
@@ -19011,7 +22393,10 @@ $BtnCancel.Add_Click({
     foreach ($p2 in $script:Pending) {
         # Skipped and Removed are decisions, Already-* rows were never in play, and Removing is
         # a step under way - none of them was cancelled, and the summary said they were
-        if ($p2.Status -notmatch '^(Installed|Uninstalled|Failed|Removed|Removing|Skipped|Cancelled|Already|Installing|Uninstalling|Verifying)') {
+        # Applied, Reverted and Cleaned were missing, so cancelling ten tweaks in flipped every
+        # tweak that had ALREADY been applied to amber "Cancelled" - and the summary then read
+        # "0 completed, 0 failed, 10 cancelled" for a machine with ten tweaks on it.
+        if ($p2.Status -notmatch '^(Installed|Uninstalled|Applied|Reverted|Cleaned|Failed|Removed|Removing|Skipped|Cancelled|Already|Installing|Uninstalling|Verifying)') {
             Set-Status $p2 'Cancelled' 'warn'
             Set-Ring $p2 'warn'
             $p2.ProgressVis = 'Collapsed'
@@ -19073,6 +22458,63 @@ function Get-OptItems {
 $BtnSelAll.Add_Click({  Set-OptSelection $true })
 $BtnSelNone.Add_Click({ Set-OptSelection $false })
 $BtnSubGame.Add_Click({ Select-OptTab 'Game' })
+
+# ---------- update tab ----------
+$BtnSubUpdDesk.Add_Click({  Select-UpdTab 'Desk' })
+$BtnSubUpdStore.Add_Click({ Select-UpdTab 'Store' })
+$BtnSubUpdWin.Add_Click({   Select-UpdTab 'Win' })
+$BtnUpdSelAll.Add_Click({   Set-UpdSelection $true })
+$BtnUpdSelNone.Add_Click({  Set-UpdSelection $false })
+$BtnUpdColName.Add_Click({  Set-UpdSort 'name' })
+$BtnUpdColPub.Add_Click({   Set-UpdSort 'pub' })
+$BtnUpdColInst.Add_Click({  Set-UpdSort 'inst' })
+$BtnUpdColAvail.Add_Click({ Set-UpdSort 'avail' })
+$BtnUpdColSrc.Add_Click({   Set-UpdSort 'src' })
+$BtnUpdRescan.Add_Click({
+    if (Test-UpdateListBusy) { return }
+    if ($script:UpdScanning) { return }      # already doing exactly that; the pump lets the click through
+    if ($script:UpdSubTab -eq 'Win') { $script:UpdWinDirty = $true } else { $script:UpdDirty = $true }
+    Request-UpdScan
+})
+$BtnUpdApply.Add_Click({
+    if (Test-BatchBusy) { return }
+    if ($script:UpdSubTab -eq 'Store') {
+        # one synthetic row stands in for the Store's own updater; it lives only in the batch
+        $row = New-Object AppItem
+        $row.Id = 'storeupdate'
+        $row.Name = 'Update all Store apps'
+        $row.Publisher = 'Microsoft Store updater'
+        $row.UnCommand = 'storeupdate'
+        $row.UnArgs = 'storeupdate'
+        $row.Category = 'Microsoft Store'
+        $row.IconData = $IconMap['default'][0]
+        $row.IconBg = '#FF7A5CFF'
+        Show-Confirm 'Update all Store apps?' ("Windows will be asked to check the Microsoft Store for updates to every installed Store app " +
+            "and install them in the background.`n`nThis is the same as Microsoft Store > Library > Get updates. It needs internet access, " +
+            "and the Store keeps working for several minutes after this batch reports done.") ({ Start-UpdateBatch @($row) }.GetNewClosure())
+        return
+    }
+    if ($script:UpdSubTab -eq 'Win') {
+        $sel = @($script:UpdWin | Where-Object { $_.IsSelected })
+        if ($sel.Count -eq 0) { Show-Overlay 'Nothing selected' 'Tick the Windows updates to install, or press Select All.'; return }
+        $opt = @($sel | Where-Object { -not $_.IsSilent }).Count
+        $reb = @($sel | Where-Object { $_.ColSize -like 'restart*' }).Count
+        $msg = "Windows Update will download and install these $($sel.Count) update(s):`n`n" +
+               (($sel | Select-Object -First 8 | ForEach-Object { "  - $($_.Name)" }) -join "`n")
+        if ($sel.Count -gt 8) { $msg += "`n  - ...and $($sel.Count - 8) more" }
+        if ($opt) { $msg += "`n`n$opt of them are OPTIONAL - Windows would not have installed them on its own (drivers, previews)." }
+        $msg += "`n`n" + $(if ($reb) { "$reb need a restart to finish. The restart is never done for you - the batch says so when it is done." } else { 'None of them needs a restart.' })
+        Show-Confirm 'Install Windows updates?' $msg ({ Start-UpdateBatch $sel }.GetNewClosure())
+        return
+    }
+    $sel = @($script:UpdItems | Where-Object { $_.IsSelected })
+    if ($sel.Count -eq 0) { Show-Overlay 'Nothing selected' 'Tick the programs you want winget to update, or press Select All.'; return }
+    $msg = "winget will update these $($sel.Count) program(s) silently:`n`n" +
+           (($sel | Select-Object -First 8 | ForEach-Object { "  - $($_.Name)   ($($_.Size))" }) -join "`n")
+    if ($sel.Count -gt 8) { $msg += "`n  - ...and $($sel.Count - 8) more" }
+    $msg += "`n`nA running copy of a program may be closed by its installer. Each one is given up to 30 minutes."
+    Show-Confirm 'Update selected programs?' $msg ({ Start-UpdateBatch $sel }.GetNewClosure())
+})
 # On-demand probe - e.g. after the HAGS reboot, or to show a client where the machine
 # stands before anything is touched. Read-only.
 $BtnMeasure.Add_Click({
@@ -19252,7 +22694,7 @@ function Start-Uninstall([object[]]$sel, [bool]$Force) {
     Remove-Item -LiteralPath $script:QueuePath, $script:StatusPath, $script:CancelPath, $script:SkipPath -ErrorAction SilentlyContinue
     Show-BatchStrip
     if (-not (Start-Worker)) {
-        Abort-Batch 'elevation declined'
+        Abort-Batch 'the administrator prompt was declined, so nothing was run' 'warn'
         return
     }
     # Deep clean is not optional: removing every trace is the reason this tool exists
@@ -19319,6 +22761,9 @@ $script:SearchTimer.Add_Tick({
             $script:FwView.View.Refresh()
         $script:FwOpenSrc.View.Refresh()
         $script:FixView.Refresh()
+        $script:UpdView.Refresh()
+        $script:UpdStoreView.Refresh()
+        $script:UpdWinView.Refresh()
     } catch {
         Add-Log "Search failed: $($_.Exception.Message)"
     }
@@ -19444,10 +22889,73 @@ $window.Add_ContentRendered({
     try { Offer-ResumeDownloads } catch { Add-Log "Could not check for interrupted downloads: $($_.Exception.Message)" }
 })
 $timer.Start()
+
+# ---------- crash capture ----------
+# An exception inside a button handler or a timer tick used to end the process, and it ended
+# it silently: launched -WindowStyle Hidden there is no console to print to, and no Windows
+# event is written for a script-level error. A technician saw the window vanish and had
+# nothing to report but "it crashed". Now the exception is written to a file beside the run
+# records, appended to the log, shown on screen - and the window STAYS OPEN, because a failed
+# click is not a reason to lose a batch in progress.
+function Write-CrashFile([string]$Where, $Exception) {
+    try {
+        $dir = $script:CacheDir
+        if (-not $dir -or -not (Test-Path -LiteralPath $dir)) { $dir = $env:TEMP }
+        $file = Join-Path $dir ("crash-" + (Get-Date -Format 'yyyyMMdd-HHmmss') + ".txt")
+        $lines = @()
+        try { $lines += Get-SessionHeader } catch { }
+        $lines += "Where     : $Where"
+        $e = $Exception
+        while ($e) {
+            $lines += "Exception : $($e.GetType().FullName): $($e.Message)"
+            if ($e -is [Management.Automation.RuntimeException] -and $e.ErrorRecord) {
+                $lines += "Script    : $($e.ErrorRecord.InvocationInfo.PositionMessage)"
+                $lines += "Trace     : $($e.ErrorRecord.ScriptStackTrace)"
+            }
+            $lines += "Stack     : $($e.StackTrace)"
+            $e = $e.InnerException
+            if ($e) { $lines += '--- inner ---' }
+        }
+        $lines += ('-' * 60), 'Last log lines:'
+        try { $lines += @((Get-LogText) -split "`r?`n" | Where-Object { $_ } | Select-Object -Last 40) } catch { }
+        [IO.File]::WriteAllLines($file, [string[]]$lines)
+        return $file
+    } catch { return '' }
+}
+# The same fault can fire on every layout pass - a font file that vanished under the running
+# process throws once per line of the log, dozens of times a second. One file and one dialog
+# for the first sighting, a counter after that, and the two font faults WPF is known for are
+# healed on the spot by falling back to a font that ships in Windows\Fonts.
+$script:CrashSeen = @{}
+$window.Dispatcher.add_UnhandledException({
+    param($s, $e)
+    $msg = '' + $e.Exception.Message
+    $n = 1 + [int]$script:CrashSeen[$msg]
+    $script:CrashSeen[$msg] = $n
+    if ($msg -match 'Unable to find the specified file|FontCache|PTS') {
+        # measured on the Home VM: Cascadia Mono lived inside the Windows Terminal package, the
+        # package was updated while the console was open, and every render of the log threw
+        try { $TxtLog.FontFamily = New-Object Windows.Media.FontFamily 'Consolas, Courier New' } catch { }
+        try { $window.FontFamily = New-Object Windows.Media.FontFamily 'Segoe UI' } catch { }
+    }
+    if ($n -le 2) {
+        $file = Write-CrashFile 'window (a button, a list, or the poll timer)' $e.Exception
+        try { Add-Log "ERROR: $msg$(if ($file) { " - details saved to $file" })" } catch { }
+        if ($n -eq 1) {
+            try { Show-Overlay 'Something went wrong' ("$msg`n`n" + $(if ($file) { "The details were saved to:`n$file`n`n" }) + 'The window stays open; the batch in progress, if any, continues.') } catch { }
+        }
+    } elseif (($n % 50) -eq 0) {
+        try { Add-Log "ERROR (repeated $n times): $msg" } catch { }
+    }
+    $e.Handled = $true
+})
+[AppDomain]::CurrentDomain.add_UnhandledException({ param($s, $e) [void](Write-CrashFile 'process (unrecoverable)' $e.ExceptionObject) })
+
 # The last thing measured: from here the window is on screen and the clock stops mattering.
 Add-Mark 'window shown'
 Write-Marks $(if ($script:Elevated) { 'elevated (the window you see)' } else { 'unelevated (no UAC needed)' })
-[void]$window.ShowDialog()
+try { [void]$window.ShowDialog() }
+catch { [void](Write-CrashFile 'ShowDialog (the window itself)' $_.Exception); throw }
 $timer.Stop()
 # stop the icon pump so its runspace never outlives the window
 $script:IconState.Stop = $true

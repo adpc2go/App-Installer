@@ -1,25 +1,25 @@
 {
     "manifestVersion":  1,
-    "updated":  "2026-08-24",
+    "updated":  "2026-09-12",
     "_note":  "silentArgs marked VERIFY have not been confirmed against your actual installer package - test each one before using it on a client machine",
     "apps":  [
                  {
-                     "id":  "autocad",
+                     "id":  "autocad-2027",
                      "iconText":  "A",
                      "category":  "Autodesk",
                      "publisher":  "Autodesk",
-                     "name":  "AutoCAD 2026",
+                     "name":  "AutoCAD 2027",
                      "version":  "2026",
                      "icon":  "cad",
                      "iconColor":  "#FFC7373C",
-                     "iconUrl":  "https://apps.example.com/icons/autocad.png",
-                     "sizeBytes":  4831838208,
-                     "url":  "https://apps.pc2go.ca/files/autocad/Setup.exe",
-                     "sha256":  "REPLACE_WITH_REAL_SHA256",
+                     "iconUrl":  "https://apps.pc2go.ca/icons/autocad-2027.png",
+                     "sizeBytes":  3354842920,
+                     "url":  "https://apps.pc2go.ca/files/autocad-2027/AutoCAD.2027.rar",
+                     "sha256":  "E79F031172BE354AC89AD9EF05C69096FCA28DF3D6E9FC7D2F12B58DD27C4D07",
                      "silentArgs":  "--silent",
                      "_installNote":  "Autodesk ODIS. A deployment image is driven by image\\Installer.exe rather than the top-level Setup.exe.",
                      "verifyPaths":  [
-                                         "%ProgramFiles%\\Autodesk\\AutoCAD 2026\\acad.exe"
+                                         "%ProgramFiles%\\AutoCAD 2027\\AutoCAD2027.exe"
                                      ],
                      "uninstall":  {
                                        "command":  "%ProgramFiles%\\Autodesk\\AdODIS\\V1\\Installer.exe",
@@ -36,7 +36,9 @@
                                                       }
                                                   ],
                                      "tokens":  [
-                                                    "AutoCAD 2026"
+                                                    "AutoCAD 2026",
+                                                    "AutoCAD 202",
+                                                    "AutoCAD 2027"
                                                 ],
                                      "paths":  [
                                                    "%ProgramFiles%\\Autodesk\\AutoCAD 2026",
@@ -53,21 +55,22 @@
                                                    "licensing.autodesk",
                                                    "registeronce.autodesk"
                                                ]
-                                 }
+                                 },
+                     "silentSource":  "typed"
                  },
                  {
-                     "id":  "autocad-electrical",
+                     "id":  "autocad-electrical-2027",
                      "iconText":  "AE",
                      "category":  "Autodesk",
                      "publisher":  "Autodesk",
-                     "name":  "AutoCAD Electrical 2026",
+                     "name":  "AutoCAD Electrical 2027",
                      "requires":  [
-                                      "autocad"
+                                      "autocad-2027"
                                   ],
                      "version":  "2026",
                      "icon":  "cad",
                      "iconColor":  "#FFE5533D",
-                     "iconUrl":  "https://apps.example.com/icons/autocad-electrical.png",
+                     "iconUrl":  "https://apps.pc2go.ca/icons/autocad-electrical-2027.png",
                      "sizeBytes":  6442450944,
                      "url":  "https://apps.pc2go.ca/files/autocad-electrical/Setup.exe",
                      "sha256":  "REPLACE_WITH_REAL_SHA256",
@@ -79,7 +82,9 @@
                      "cleanup":  {
                                      "tokens":  [
                                                     "AutoCAD Electrical",
-                                                    "AutoCAD Electrical 2026"
+                                                    "AutoCAD Electrical 2026",
+                                                    "AutoCAD Electrical 202",
+                                                    "AutoCAD Electrical 2027"
                                                 ],
                                      "paths":  [
                                                    "%AppData%\\Autodesk\\AutoCAD Electrical 2026"
@@ -90,18 +95,19 @@
                                      "hosts":  [
                                                    "autodesk.com"
                                                ]
-                                 }
+                                 },
+                     "silentSource":  "typed"
                  },
                  {
-                     "id":  "revit",
+                     "id":  "revit-2027",
                      "iconText":  "R",
                      "category":  "Autodesk",
                      "publisher":  "Autodesk",
-                     "name":  "Revit 2026",
+                     "name":  "Revit 2027",
                      "version":  "2026",
                      "icon":  "cad",
                      "iconColor":  "#FF2E77BC",
-                     "iconUrl":  "https://apps.example.com/icons/revit.png",
+                     "iconUrl":  "https://apps.pc2go.ca/icons/revit-2027.png",
                      "sizeBytes":  15032385536,
                      "url":  "https://apps.pc2go.ca/files/revit/Setup.exe",
                      "sha256":  "REPLACE_WITH_REAL_SHA256",
@@ -125,7 +131,9 @@
                                                       }
                                                   ],
                                      "tokens":  [
-                                                    "Revit 2026"
+                                                    "Revit 2026",
+                                                    "Revit 202",
+                                                    "Revit 2027"
                                                 ],
                                      "paths":  [
                                                    "%ProgramFiles%\\Autodesk\\Revit 2026",
@@ -140,18 +148,19 @@
                                      "hosts":  [
                                                    "autodesk.com"
                                                ]
-                                 }
+                                 },
+                     "silentSource":  "typed"
                  },
                  {
-                     "id":  "civil3d",
+                     "id":  "civil-3d-2027",
                      "iconText":  "C3",
                      "category":  "Autodesk",
                      "publisher":  "Autodesk",
-                     "name":  "Civil 3D 2026",
+                     "name":  "Civil 3D 2027",
                      "version":  "2026",
                      "icon":  "cad",
                      "iconColor":  "#FF0696D7",
-                     "iconUrl":  "https://apps.example.com/icons/civil3d.png",
+                     "iconUrl":  "https://apps.pc2go.ca/icons/civil-3d-2027.png",
                      "sizeBytes":  9663676416,
                      "url":  "https://apps.pc2go.ca/files/civil3d/Setup.exe",
                      "sha256":  "REPLACE_WITH_REAL_SHA256",
@@ -163,7 +172,9 @@
                      "cleanup":  {
                                      "tokens":  [
                                                     "Civil 3D",
-                                                    "Civil 3D 2026"
+                                                    "Civil 3D 2026",
+                                                    "Civil 3D 202",
+                                                    "Civil 3D 2027"
                                                 ],
                                      "paths":  [
                                                    "%AppData%\\Autodesk\\C3D 2026",
@@ -175,18 +186,19 @@
                                      "hosts":  [
                                                    "autodesk.com"
                                                ]
-                                 }
+                                 },
+                     "silentSource":  "typed"
                  },
                  {
-                     "id":  "3dsmax",
+                     "id":  "3ds-max-2027",
                      "iconText":  "3",
                      "category":  "Autodesk",
                      "publisher":  "Autodesk",
-                     "name":  "3ds Max 2026",
+                     "name":  "3ds Max 2027",
                      "version":  "2026",
                      "icon":  "design",
                      "iconColor":  "#FF37A5CC",
-                     "iconUrl":  "https://apps.example.com/icons/3dsmax.png",
+                     "iconUrl":  "https://apps.pc2go.ca/icons/3ds-max-2027.png",
                      "sizeBytes":  7516192768,
                      "url":  "https://apps.pc2go.ca/files/3dsmax/Setup.exe",
                      "sha256":  "REPLACE_WITH_REAL_SHA256",
@@ -210,7 +222,9 @@
                                                       }
                                                   ],
                                      "tokens":  [
-                                                    "3ds Max 2026"
+                                                    "3ds Max 2026",
+                                                    "3ds Max 202",
+                                                    "3ds Max 2027"
                                                 ],
                                      "paths":  [
                                                    "%ProgramFiles%\\Autodesk\\3ds Max 2026",
@@ -223,18 +237,19 @@
                                      "hosts":  [
                                                    "autodesk.com"
                                                ]
-                                 }
+                                 },
+                     "silentSource":  "typed"
                  },
                  {
-                     "id":  "navisworks",
+                     "id":  "navisworks-manage-2027",
                      "iconText":  "N",
                      "category":  "Autodesk",
                      "publisher":  "Autodesk",
-                     "name":  "Navisworks Manage 2026",
+                     "name":  "Navisworks Manage 2027",
                      "version":  "2026",
                      "icon":  "cad",
                      "iconColor":  "#FF41A439",
-                     "iconUrl":  "https://apps.example.com/icons/navisworks.png",
+                     "iconUrl":  "https://apps.pc2go.ca/icons/navisworks-manage-2027.png",
                      "sizeBytes":  2684354560,
                      "url":  "https://apps.pc2go.ca/files/navisworks/Setup.exe",
                      "sha256":  "REPLACE_WITH_REAL_SHA256",
@@ -245,7 +260,10 @@
                                      ],
                      "cleanup":  {
                                      "tokens":  [
-                                                    "Navisworks"
+                                                    "Navisworks",
+                                                    "Navisworks Manage 2026",
+                                                    "Navisworks Manage 202",
+                                                    "Navisworks Manage 2027"
                                                 ],
                                      "paths":  [
                                                    "%ProgramFiles%\\Autodesk\\Navisworks Manage 2026",
@@ -257,18 +275,19 @@
                                      "hosts":  [
                                                    "autodesk.com"
                                                ]
-                                 }
+                                 },
+                     "silentSource":  "typed"
                  },
                  {
-                     "id":  "designreview",
+                     "id":  "design-review",
                      "iconText":  "DR",
                      "category":  "Autodesk",
                      "publisher":  "Autodesk",
-                     "name":  "Design Review 2013",
+                     "name":  "Design Review",
                      "version":  "2013",
                      "icon":  "cad",
                      "iconColor":  "#FF6E7B8B",
-                     "iconUrl":  "https://apps.example.com/icons/designreview.png",
+                     "iconUrl":  "https://apps.pc2go.ca/icons/design-review.png",
                      "sizeBytes":  178257920,
                      "url":  "https://apps.pc2go.ca/files/designreview/SetupDesignReview.exe",
                      "sha256":  "REPLACE_WITH_REAL_SHA256",
@@ -279,26 +298,31 @@
                                      ],
                      "cleanup":  {
                                      "tokens":  [
-                                                    "Design Review"
+                                                    "Design Review",
+                                                    "Design Review 2013"
                                                 ],
                                      "paths":  [
                                                    "%ProgramFiles(x86)%\\Autodesk\\Autodesk Design Review 2013"
                                                ],
                                      "registry":  [
 
-                                                  ]
-                                 }
+                                                  ],
+                                     "hosts":  [
+
+                                               ]
+                                 },
+                     "silentSource":  "typed"
                  },
                  {
-                     "id":  "acrobat",
+                     "id":  "adobe-acrobat-pro-2026",
                      "iconText":  "Ac",
                      "category":  "Adobe",
                      "publisher":  "Adobe",
-                     "name":  "Adobe Acrobat 2026",
+                     "name":  "Adobe Acrobat Pro 2026",
                      "version":  "DC",
                      "icon":  "office",
                      "iconColor":  "#FFDC2626",
-                     "iconUrl":  "https://apps.example.com/icons/acrobat.png",
+                     "iconUrl":  "https://apps.pc2go.ca/icons/adobe-acrobat-pro-2026.png",
                      "sizeBytes":  0,
                      "url":  "https://apps.pc2go.ca/files/acrobat/Adobe.Acrobat.2026.u6.x64.Multilingual.iso",
                      "sha256":  "REPLACE_WITH_REAL_SHA256",
@@ -309,7 +333,11 @@
                      "cleanup":  {
                                      "tokens":  [
                                                     "Acrobat",
-                                                    "Adobe Acrobat 2026"
+                                                    "Adobe Acrobat 2026",
+                                                    "Adobe Acrobat P2026",
+                                                    "Adobe Acrobat Pr2026",
+                                                    "Adobe Acrobat Pro2026",
+                                                    "Adobe Acrobat Pro 2026"
                                                 ],
                                      "paths":  [
                                                    "%ProgramFiles%\\Adobe\\Acrobat DC",
@@ -337,15 +365,15 @@
                      "_installNote":  "NEEDS ATTENTION. entry is autoplay.exe, which is the disc menu shell, not an installer. Repoint entry at the real setup inside the image."
                  },
                  {
-                     "id":  "photoshop",
+                     "id":  "photoshop-2026",
                      "iconText":  "Ps",
                      "category":  "Adobe",
                      "publisher":  "Adobe",
-                     "name":  "Photoshop",
+                     "name":  "Photoshop 2026",
                      "version":  "2026",
                      "icon":  "photo",
                      "iconColor":  "#FF31A8FF",
-                     "iconUrl":  "https://apps.example.com/icons/photoshop.png",
+                     "iconUrl":  "https://apps.pc2go.ca/icons/photoshop-2026.png",
                      "sizeBytes":  4294967296,
                      "url":  "https://apps.pc2go.ca/files/photoshop/setup.exe",
                      "sha256":  "REPLACE_WITH_REAL_SHA256",
@@ -356,7 +384,11 @@
                                      ],
                      "cleanup":  {
                                      "tokens":  [
-                                                    "Photoshop"
+                                                    "Photoshop",
+                                                    "Photoshop 2",
+                                                    "Photoshop 20",
+                                                    "Photoshop 202",
+                                                    "Photoshop 2026"
                                                 ],
                                      "paths":  [
                                                    "%ProgramFiles%\\Adobe\\Adobe Photoshop 2026",
@@ -372,18 +404,19 @@
                                                    "lm.licenses.adobe",
                                                    "genuine.adobe"
                                                ]
-                                 }
+                                 },
+                     "silentSource":  "typed"
                  },
                  {
-                     "id":  "illustrator",
+                     "id":  "illustrator-2026",
                      "iconText":  "Ai",
                      "category":  "Adobe",
                      "publisher":  "Adobe",
-                     "name":  "Illustrator",
+                     "name":  "Illustrator 2026",
                      "version":  "2026",
                      "icon":  "design",
                      "iconColor":  "#FFFF9A00",
-                     "iconUrl":  "https://apps.example.com/icons/illustrator.png",
+                     "iconUrl":  "https://apps.pc2go.ca/icons/illustrator-2026.png",
                      "sizeBytes":  3758096384,
                      "url":  "https://apps.pc2go.ca/files/illustrator/setup.exe",
                      "sha256":  "REPLACE_WITH_REAL_SHA256",
@@ -394,7 +427,11 @@
                                      ],
                      "cleanup":  {
                                      "tokens":  [
-                                                    "Illustrator"
+                                                    "Illustrator",
+                                                    "Illustrator 2",
+                                                    "Illustrator 20",
+                                                    "Illustrator 202",
+                                                    "Illustrator 2026"
                                                 ],
                                      "paths":  [
                                                    "%ProgramFiles%\\Adobe\\Adobe Illustrator 2026",
@@ -408,18 +445,19 @@
                                                    "practivate.adobe",
                                                    "lm.licenses.adobe"
                                                ]
-                                 }
+                                 },
+                     "silentSource":  "typed"
                  },
                  {
-                     "id":  "indesign",
+                     "id":  "indesign-2026",
                      "iconText":  "Id",
                      "category":  "Adobe",
                      "publisher":  "Adobe",
-                     "name":  "InDesign",
+                     "name":  "InDesign 2026",
                      "version":  "2026",
                      "icon":  "design",
                      "iconColor":  "#FFFF3366",
-                     "iconUrl":  "https://apps.example.com/icons/indesign.png",
+                     "iconUrl":  "https://apps.pc2go.ca/icons/indesign-2026.png",
                      "sizeBytes":  3221225472,
                      "url":  "https://apps.pc2go.ca/files/indesign/setup.exe",
                      "sha256":  "REPLACE_WITH_REAL_SHA256",
@@ -430,7 +468,13 @@
                                      ],
                      "cleanup":  {
                                      "tokens":  [
-                                                    "InDesign"
+                                                    "InDesign",
+                                                    "InDesign 2",
+                                                    "InDesign 22",
+                                                    "InDesign 226",
+                                                    "InDesign 20",
+                                                    "InDesign 202",
+                                                    "InDesign 2026"
                                                 ],
                                      "paths":  [
                                                    "%ProgramFiles%\\Adobe\\Adobe InDesign 2026",
@@ -444,10 +488,11 @@
                                                    "practivate.adobe",
                                                    "lm.licenses.adobe"
                                                ]
-                                 }
+                                 },
+                     "silentSource":  "typed"
                  },
                  {
-                     "id":  "rhino",
+                     "id":  "rhino-8",
                      "iconText":  "Rh",
                      "category":  "3D and Visualization",
                      "publisher":  "Robert McNeel and Associates",
@@ -455,7 +500,7 @@
                      "version":  "8",
                      "icon":  "design",
                      "iconColor":  "#FF7A8B99",
-                     "iconUrl":  "https://apps.example.com/icons/rhino.png",
+                     "iconUrl":  "https://apps.pc2go.ca/icons/rhino-8.png",
                      "sizeBytes":  1073741824,
                      "url":  "https://apps.pc2go.ca/files/rhino/rhino8_setup.exe",
                      "sha256":  "REPLACE_WITH_REAL_SHA256",
@@ -476,11 +521,15 @@
                                                ],
                                      "registry":  [
                                                       "HKCU\\Software\\McNeel"
-                                                  ]
-                                 }
+                                                  ],
+                                     "hosts":  [
+
+                                               ]
+                                 },
+                     "silentSource":  "typed"
                  },
                  {
-                     "id":  "dialux",
+                     "id":  "dialux-evo",
                      "iconText":  "Dx",
                      "category":  "3D and Visualization",
                      "publisher":  "DIAL GmbH",
@@ -488,7 +537,7 @@
                      "version":  "13",
                      "icon":  "design",
                      "iconColor":  "#FFF5B301",
-                     "iconUrl":  "https://apps.example.com/icons/dialux.png",
+                     "iconUrl":  "https://apps.pc2go.ca/icons/dialux-evo.png",
                      "sizeBytes":  1610612736,
                      "url":  "https://apps.pc2go.ca/files/dialux/DIALux-evo-setup.exe",
                      "sha256":  "REPLACE_WITH_REAL_SHA256",
@@ -498,7 +547,8 @@
                                      ],
                      "cleanup":  {
                                      "tokens":  [
-                                                    "DIALux"
+                                                    "DIALux",
+                                                    "DIALux evo"
                                                 ],
                                      "paths":  [
                                                    "%ProgramFiles%\\DIALux",
@@ -507,22 +557,26 @@
                                                ],
                                      "registry":  [
                                                       "HKCU\\Software\\DIAL"
-                                                  ]
-                                 }
+                                                  ],
+                                     "hosts":  [
+
+                                               ]
+                                 },
+                     "silentSource":  "typed"
                  },
                  {
-                     "id":  "corona",
+                     "id":  "chaos-corona-14",
                      "iconText":  "Co",
                      "category":  "3ds Max Plugins",
                      "publisher":  "Chaos",
                      "name":  "Chaos Corona 14",
                      "requires":  [
-                                      "3dsmax"
+                                      "3ds-max-2027"
                                   ],
                      "version":  "14",
                      "icon":  "design",
                      "iconColor":  "#FF1E7ACB",
-                     "iconUrl":  "https://apps.example.com/icons/corona.png",
+                     "iconUrl":  "https://apps.pc2go.ca/icons/chaos-corona-14.png",
                      "sizeBytes":  1073741824,
                      "url":  "https://apps.pc2go.ca/files/corona/Corona_14_3dsmax.exe",
                      "sha256":  "REPLACE_WITH_REAL_SHA256",
@@ -533,7 +587,8 @@
                                      ],
                      "cleanup":  {
                                      "tokens":  [
-                                                    "Corona"
+                                                    "Corona",
+                                                    "Chaos Corona 14"
                                                 ],
                                      "paths":  [
                                                    "%ProgramData%\\Corona",
@@ -542,8 +597,12 @@
                                                ],
                                      "registry":  [
                                                       "HKCU\\Software\\Chaos Czech"
-                                                  ]
-                                 }
+                                                  ],
+                                     "hosts":  [
+
+                                               ]
+                                 },
+                     "silentSource":  "typed"
                  },
                  {
                      "id":  "floorgenerator",
@@ -552,12 +611,12 @@
                      "publisher":  "CG-Source",
                      "name":  "FloorGenerator",
                      "requires":  [
-                                      "3dsmax"
+                                      "3ds-max-2027"
                                   ],
                      "version":  "2.1",
                      "icon":  "design",
                      "iconColor":  "#FF8B5CF6",
-                     "iconUrl":  "https://apps.example.com/icons/floorgenerator.png",
+                     "iconUrl":  "https://apps.pc2go.ca/icons/floorgenerator.png",
                      "sizeBytes":  5242880,
                      "url":  "https://apps.pc2go.ca/files/floorgenerator/FloorGenerator.exe",
                      "sha256":  "REPLACE_WITH_REAL_SHA256",
@@ -575,7 +634,10 @@
                                                ],
                                      "registry":  [
 
-                                                  ]
+                                                  ],
+                                     "hosts":  [
+
+                                               ]
                                  }
                  },
                  {
@@ -624,10 +686,11 @@
                                              "name":  "Copy rarreg.key",
                                              "dest":  "C:\\Program Files\\WinRAR\\"
                                          }
-                                     ]
+                                     ],
+                     "silentSource":  "typed"
                  },
                  {
-                     "id":  "sketchup-pro-2026",
+                     "id":  "sketchup-pro",
                      "name":  "SketchUp Pro",
                      "version":  "2026.26.1.256",
                      "publisher":  "",
@@ -663,10 +726,11 @@
                                              "name":  "Copy Read me.txt",
                                              "dest":  "%ProgramFiles%\\SketchUp\\SketchUp 2026\\SketchUp\\"
                                          }
-                                     ]
+                                     ],
+                     "iconUrl":  "https://apps.pc2go.ca/icons/sketchup-pro.png"
                  },
                  {
-                     "id":  "office365",
+                     "id":  "officesetup",
                      "name":  "OfficeSetup",
                      "version":  "",
                      "publisher":  "",
@@ -704,7 +768,8 @@
                                        "command":  "%ProgramFiles%\\Common Files\\Microsoft Shared\\ClickToRun\\OfficeClickToRun.exe",
                                        "args":  "scenario=install scenariosubtype=uninstall productstoremove=O365ProPlusRetail.16_en-us_x-none culture=en-us DisplayLevel=False",
                                        "detect":  "%ProgramFiles%\\Microsoft Office\\root\\Office16\\WINWORD.EXE"
-                                   }
+                                   },
+                     "iconUrl":  "https://apps.pc2go.ca/icons/officesetup.png"
                  },
                  {
                      "id":  "avast-free",
@@ -712,7 +777,7 @@
                      "publisher":  "Avast",
                      "category":  "Utilities",
                      "uninstallOnly":  true,
-                     "_uninstallNote":  "Uninstall-only entry: we never install Avast, but clients arrive with it. The row upgrade gives the Uninstall tab Avast's own silent Instup path, and the leftover scan offers avastclear - Avast's dedicated deep remover - as a run-this row. Host avastclear.exe under files/removers/ in R2 and pin its real SHA-256 before publishing; the edge must not drop uninstallOnly entries for a missing install hash.",
+                     "_uninstallNote":  "Uninstall-only entry: we never install Avast, but clients arrive with it. The row upgrade gives the Uninstall tab Avast\u0027s own silent Instup path, and the leftover scan offers avastclear - Avast\u0027s dedicated deep remover - as a run-this row. Host avastclear.exe under files/removers/ in R2 and pin its real SHA-256 before publishing; the edge must not drop uninstallOnly entries for a missing install hash.",
                      "uninstall":  {
                                        "command":  "%ProgramFiles%\\Avast Software\\Avast\\setup\\Instup.exe",
                                        "args":  "/instop:uninstall /silent",
@@ -763,6 +828,44 @@
                                                 ],
                                      "paths":  [
                                                    "%ProgramFiles(x86)%\\Advik Software"
+                                               ],
+                                     "registry":  [
+
+                                                  ],
+                                     "hosts":  [
+
+                                               ]
+                                 },
+                     "iconUrl":  "https://apps.pc2go.ca/icons/email-migration.png"
+                 },
+                 {
+                     "id":  "mcafee",
+                     "name":  "Mcafee",
+                     "version":  "",
+                     "publisher":  "",
+                     "category":  "Utilities",
+                     "sizeBytes":  0,
+                     "url":  "",
+                     "sha256":  "",
+                     "silentArgs":  "",
+                     "verifyPaths":  [
+
+                                     ],
+                     "cleanup":  {
+                                     "tokens":  [
+                                                    "f",
+                                                    "fg",
+                                                    "fgf",
+                                                    "fgfg",
+                                                    "M",
+                                                    "Mc",
+                                                    "Mca",
+                                                    "Mcaf",
+                                                    "Mcafe",
+                                                    "Mcafee"
+                                                ],
+                                     "paths":  [
+
                                                ],
                                      "registry":  [
 
