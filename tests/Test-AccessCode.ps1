@@ -211,7 +211,8 @@ try {
                 ($firstClear -ge 0 -and $firstUse -gt $firstClear)
     # and it does not linger in the technician's own shell after the tool has been launched
     $lastClear  = $goText.LastIndexOf('$env:PC2GO_CODE = ''''')
-    $lastLaunch = $goText.LastIndexOf('Start-Process -FilePath $winPS')
+    # $launchExe: powershell.exe for the script, PC2Go.Deploy.exe for the compiled client
+    $lastLaunch = $goText.LastIndexOf('Start-Process -FilePath $launchExe')
     Assert-True 'and again after the launch, so it does not linger in the console' `
                 ($lastLaunch -ge 0 -and $lastClear -gt $lastLaunch)
 
@@ -240,6 +241,101 @@ try {
     # sixteen lines redrawn per wrong keystroke would bury the one line that matters
     Assert-True 'the banner is drawn once, not per attempt' `
                 ($goText -match '\$tries -eq 0\s*\)\s*\{\s*Show-AccessBanner')
+
+    # ---------------------------------------------------------------- 8. the fetch
+    Write-Section '8. The fetch: no progress bar, gzip asked for, the 403 still reaches the prompt'
+
+    # Reported from the field as "the blue strip on top, downloading, before the passcode".
+    # Invoke-WebRequest in Windows PowerShell 5.1 redraws that bar per chunk (MEASURED: 746 ms
+    # against 86 ms for the same 1 MB) and never asks the edge to compress (1,014 KB on the wire,
+    # 251 KB gzipped). Get-EdgeFile replaces it. Proven here against a loopback edge that
+    # behaves like the real one: 403 + x-pc2go-auth without the code, gzip with it.
+    Assert-True 'go.ps1 no longer fetches through Invoke-WebRequest' ($goText -notmatch '(?m)^[^#
+]*Invoke-WebRequest')   # code lines; the comment may name it
+    Assert-True 'both fetches go through Get-EdgeFile'               (@([regex]::Matches($goText, 'Get-EdgeFile -Uri')).Count -eq 2)
+    # the splash is hidden for the UAC prompt only; hidden on every launch it blinked (reported)
+    Assert-True 'the splash is put away only on the path that prompts for elevation' `
+                ($goText -match '\$script:SplashTimer\.Stop\(\)\s*if \(\$elevate\) \{\s*Hide-Splash')
+    . ([scriptblock]::Create((Get-Fn $goPath 'Get-EdgeFile')))
+    . ([scriptblock]::Create((Get-Fn $goPath 'Invoke-WithAccess')))
+    . ([scriptblock]::Create((Get-Fn $goPath 'Get-AccessHeader')))
+    # the prompt loop's surroundings, stubbed: the code is "typed", the banner and splash are noted
+    $script:Prompts = 0; $script:Banners = 0
+    function Read-AccessCode([int]$Remaining, [int]$Max) { $script:Prompts++; return 'sesame' }
+    function Show-AccessBanner { $script:Banners++ }
+    function Hide-Splash { }
+    function Show-Splash { }
+    $script:SplashTimer = [pscustomobject]@{ } | Add-Member -MemberType ScriptMethod -Name Stop -Value { } -PassThru
+    $env:PC2GO_CODE = ''
+    $body = "# the tool`r`n" + ('x' * 200000)
+    $bodyBytes = [Text.Encoding]::UTF8.GetBytes($body)
+    $port = Get-Random -Minimum 41000 -Maximum 49000
+    $seen = [hashtable]::Synchronized(@{ Hits = [Collections.ArrayList]::Synchronized((New-Object Collections.ArrayList)) })
+    $edge = [powershell]::Create()
+    [void]$edge.AddScript({
+        param($Port, $Body, $Seen)
+        $l = New-Object Net.HttpListener
+        $l.Prefixes.Add("http://127.0.0.1:$Port/")
+        $l.Start()
+        try {
+            for ($i = 0; $i -lt 8; $i++) {       # 2 + 1 + 4 requests below, then the goodbye
+                $ctx = $l.GetContext()
+                $rq = $ctx.Request; $rs = $ctx.Response
+                $ae = '' + $rq.Headers['Accept-Encoding']
+                [void]$Seen.Hits.Add(@{ Method = $rq.HttpMethod; Path = $rq.Url.AbsolutePath; Code = ('' + $rq.Headers['x-pc2go-code']); Gzip = ($ae -match 'gzip') })
+                if (('' + $rq.Headers['x-pc2go-code']) -ne 'sesame') {
+                    $rs.StatusCode = 403
+                    $rs.Headers['x-pc2go-auth'] = 'required'
+                    $b = [Text.Encoding]::ASCII.GetBytes('Access code required')
+                    $rs.OutputStream.Write($b, 0, $b.Length); $rs.Close(); continue
+                }
+                if ($rq.HttpMethod -eq 'HEAD') { $rs.StatusCode = 200; $rs.Close(); continue }
+                $rs.StatusCode = 200
+                $rs.ContentType = 'text/plain'
+                if ($ae -match 'gzip') {
+                    $ms = New-Object IO.MemoryStream
+                    $gz = New-Object IO.Compression.GZipStream($ms, [IO.Compression.CompressionMode]::Compress, $true)
+                    $gz.Write($Body, 0, $Body.Length); $gz.Dispose()
+                    $rs.Headers['Content-Encoding'] = 'gzip'
+                    $out = $ms.ToArray()
+                } else { $out = $Body }
+                $rs.OutputStream.Write($out, 0, $out.Length); $rs.Close()
+            }
+        } finally { $l.Stop() }
+    }).AddArgument($port).AddArgument($bodyBytes).AddArgument($seen)
+    $edgeHandle = $edge.BeginInvoke()
+    Start-Sleep -Milliseconds 400
+    $got = Join-Path $sandbox 'fetched.ps1'
+    $sw = [Diagnostics.Stopwatch]::StartNew()
+    $ok = Invoke-WithAccess { Get-EdgeFile -Uri "http://127.0.0.1:$port/AppDeploy.ps1" -OutFile $got -Headers (Get-AccessHeader) }
+    $sw.Stop()
+    Assert-True  'the fetch succeeded once the code was typed'          $ok
+    Assert-Equal 'the 403 reached the prompt: asked once, banner once'   '1|1' "$($script:Prompts)|$($script:Banners)"
+    Assert-Equal 'two requests: without the code, then with it'         2 $seen.Hits.Count
+    Assert-Equal 'the first carried no code, the second the typed one'  '|sesame' "$($seen.Hits[0].Code)|$($seen.Hits[1].Code)"
+    Assert-True  'both asked the edge for gzip'                         ($seen.Hits[0].Gzip -and $seen.Hits[1].Gzip)
+    Assert-Equal 'and the file on disk is the decompressed tool, byte for byte' `
+                 ([BitConverter]::ToString([Security.Cryptography.SHA256]::Create().ComputeHash($bodyBytes))) `
+                 ([BitConverter]::ToString([Security.Cryptography.SHA256]::Create().ComputeHash([IO.File]::ReadAllBytes($got))))
+    Assert-True  'with no progress bar in the way, 200 KB over loopback is well under a second' ($sw.ElapsedMilliseconds -lt 1000)
+    # the cached-tool path: a HEAD proves the code without a body
+    $script:Prompts = 0
+    $ok = Invoke-WithAccess { Get-EdgeFile -Uri "http://127.0.0.1:$port/apps.json" -Head -TimeoutSec 15 -Headers (Get-AccessHeader) }
+    Assert-True  'the HEAD probe passes with the code already typed'     ($ok -and $script:Prompts -eq 0)
+    Assert-Equal 'and was a HEAD'                                       'HEAD' $seen.Hits[2].Method
+    # a wrong code three times is refused, not looped for ever
+    $env:PC2GO_CODE = ''
+    function Read-AccessCode([int]$Remaining, [int]$Max) { $script:Prompts++; return 'wrong' }
+    $why = ''
+    try { [void](Invoke-WithAccess { Get-EdgeFile -Uri "http://127.0.0.1:$port/AppDeploy.ps1" -OutFile $got -Headers (Get-AccessHeader) }) } catch { $why = $_.Exception.Message }
+    Assert-True  'three wrong codes end in ACCESS DENIED, not a fourth prompt' ($why -like 'Access code not accepted*' -and $script:Prompts -eq 3)
+    $env:PC2GO_CODE = ''
+    # GetContext is a blocking native call that PowerShell.Stop() cannot interrupt - the first
+    # run of this section hung right here. One last plain request lets the listener's loop end
+    # on its own, and only then is the runspace torn down.
+    try { (New-Object Net.WebClient).DownloadString("http://127.0.0.1:$port/bye") | Out-Null } catch { }
+    try { [void]$edge.EndInvoke($edgeHandle) } catch { }
+    try { $edge.Dispose() } catch { }
 
     Write-Host ''
     Write-Host ("{0}/{1} passed" -f $script:Pass, ($script:Pass + $script:Fail)) `

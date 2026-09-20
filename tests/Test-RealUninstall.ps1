@@ -333,6 +333,13 @@ public class Locker {
     $uq = Parse-UninstallString 'C:\Tools\setup.exe -uninstall -quiet'
     Assert-Equal 'an unquoted path splits at .exe' 'C:\Tools\setup.exe' $uq.exe
     Assert-Equal 'keeping the rest as arguments'   '-uninstall -quiet' $uq.args
+    # the old InstallShield shape: a bare program name whose ARGUMENTS contain the first .exe
+    # on the line - splitting at that .exe handed the worker a path that does not exist
+    $rd = Parse-UninstallString 'RunDll32 C:\PROGRA~1\COMMON~1\INSTAL~1\PROFES~1\RunTime\10\01\Intel32\Ctor.dll,LaunchSetup "C:\Program Files (x86)\InstallShield Installation Information\{GUID}\setup.exe" -l0x9 -removeonly'
+    Assert-Equal 'a bare program name is the command, not the first .exe on the line' 'RunDll32' $rd.exe
+    Assert-True  'and everything after it is the argument string' ($rd.args.StartsWith('C:\PROGRA~1\') -and $rd.args.EndsWith('-removeonly'))
+    $sp2 = Parse-UninstallString 'C:\Program Files\Foo Bar\uninstall.exe /S'
+    Assert-Equal 'an unquoted path WITH spaces still splits at .exe' 'C:\Program Files\Foo Bar\uninstall.exe' $sp2.exe
 
     # ================================================================== remove A and B
     Write-Section 'Removing A (light) and B (locked file) with the real worker'

@@ -99,7 +99,8 @@ try {
     $setup = $script:Pending[0]; $row = $script:Pending[1]
     Assert-True 'turning sharing on reports Applied' ($setup.Status -like 'Applied*')
     Assert-True 'the share row reports Applied'      ($row.Status -like 'Applied*')
-    Assert-True 'the closing dialog tells the other PC what to do' ($TxtOverlayMsg.Text -like "*Find a PC*$env:COMPUTERNAME*")
+    # the button on the other PC's Backup tab is 'Network...' (it was 'Find a PC...' once)
+    Assert-True 'the closing dialog tells the other PC what to do' ($TxtOverlayMsg.Text -like "*Network...*$env:COMPUTERNAME*")
     Dismiss
     $s = @(Get-SmbShare | Where-Object { $_.Path.TrimEnd('\') -eq $folder })[0]
     Assert-True  'WINDOWS has the share (Get-SmbShare)' ($null -ne $s)

@@ -42,6 +42,39 @@ try {
         Assert-True  "$fam decided in under 2 s"           ($r.Elapsed -lt 2)
     }
 
+    Write-Section '1b. The second pass: families that name themselves in the loader'
+    # The stub's own identity string, exactly where a real one carries it: in the image (or, for
+    # IExpress, in the UTF-16 version resource). Read only when nothing structural matched, and
+    # the read stays bounded - the whole of a 50 KB stub here, never more than the head, the
+    # resource section, the overlay probe and the tail on a large one.
+    $expect2 = @{ squirrel = '--silent'; velopack = '--silent'; advinst = '/exenoui /qn'; wise = '/s'; setupfactory = '/S'
+                  installaware = '/s'; qtifw = '--accept-licenses --default-answer --confirm-command install'; install4j = '-q'
+                  iexpress = '/Q'; bitrock = '--mode unattended'; clickteam = '/S' }
+    foreach ($fam in @($expect2.Keys)) {
+        $p = Join-Path $root "fx-$fam.exe"
+        [void](New-InstallerFamilyFixture -Family $fam -Path $p)
+        $r = Get-InstallerFamily -Path $p
+        Assert-Equal "$fam fixture is named"               $fam $r.Family
+        Assert-Equal "$fam confidence is a signature"      'signature' $r.Confidence
+        Assert-Equal "$fam carries the documented switch"  $expect2[$fam] $r.InstallArgs
+        Assert-True  "$fam names the marker it found"      (($r.Evidence -join ';') -match "marker '")
+        Assert-True  "$fam read under 512 KB"              ($r.BytesRead -le 524288)
+        Assert-True  "$fam decided in under 2 s"           ($r.Elapsed -lt 2)
+        Assert-True  "$fam has a label"                    ((Get-InstallerFamilyLabel $fam) -and (Get-InstallerFamilyLabel $fam) -ne 'unknown')
+    }
+    # a Velopack stub still carries Squirrel strings; the fork is asked first and wins
+    $both = Join-Path $root 'fx-both.exe'
+    $stub = [IO.File]::ReadAllBytes("$env:SystemRoot\System32\where.exe")
+    $ms = New-Object IO.MemoryStream; $ms.Write($stub, 0, $stub.Length)
+    $mk = [Text.Encoding]::GetEncoding(28591).GetBytes(([string][char]0) * 16 + 'SquirrelSetup' + ([string][char]0) * 8 + 'Velopack' + ([string][char]0) * 8)
+    $ms.Write($mk, 0, $mk.Length); [IO.File]::WriteAllBytes($both, $ms.ToArray())
+    Assert-Equal 'a stub with both markers is Velopack, the fork' 'velopack' (Get-InstallerFamily -Path $both).Family
+    # and the structural families still win over an identity string sitting in the payload
+    $wrap = Join-Path $root 'fx-nsis-with-marker.exe'
+    [void](New-InstallerFamilyFixture -Family nsis -Path $wrap)
+    [IO.File]::AppendAllText($wrap, ('' + [char]0) * 8 + 'Advanced Installer')
+    Assert-Equal 'an NSIS loader with an identity string in its payload is still NSIS' 'nsis' (Get-InstallerFamily -Path $wrap).Family
+
     Write-Section '2. A real MSI is recognised by its OLE header and yields its ProductCode'
     $msi = Join-Path $root 'fx.msi'
     $madeMsi = $false
@@ -89,7 +122,8 @@ try {
         Assert-Equal "$($neg.N) has no family"                '' $r.Family
         Assert-Equal "$($neg.N) is not a signature match"      'none' $r.Confidence
         Assert-Equal "$($neg.N) gets no switch"               '' $r.InstallArgs
-        Assert-True  "$($neg.N) read under 128 KB"            ($r.BytesRead -le 131072)
+        # the second pass reads the head (128 KB) and up to 256 KB of resources before saying no
+        Assert-True  "$($neg.N) read under 512 KB"            ($r.BytesRead -le 524288)
         Assert-True  "$($neg.N) decided in under 2 s"         ($r.Elapsed -lt 2)
     }
     Add-Type -AssemblyName System.IO.Compression.FileSystem
@@ -131,6 +165,28 @@ try {
         $norm = { param($s) (($s -replace "`r`n", "`n").TrimEnd()) }
         Assert-Equal 'and it is byte-for-byte this file (run tools\Sync-InstallerFamily.ps1 after editing the detector)' (& $norm $src) (& $norm $mm.Groups[1].Value)
         Assert-True 'Start-Worker substitutes the detector into the worker' ($ad -match "Replace\('#__INSTALLERFAMILY__', \(Get-InstallerFamilySource\)\)")
+        # The RENDERED text is what the worker runs, and it is not the region: it is rebuilt from
+        # the loaded functions plus the tables the renderer chooses to emit. It emitted the labels
+        # and forgot the identity-marker table, so a client recognised none of the second-pass
+        # families while the editor recognised all of them. Render it here from the same
+        # functions, run it in a fresh runspace, and ask it about a Velopack stub.
+        $adAst = [System.Management.Automation.Language.Parser]::ParseInput($ad, [ref]$null, [ref]$null)
+        $renderFn = $adAst.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Get-InstallerFamilySource' }, $true) | Select-Object -First 1
+        $listLine = [regex]::Match($ad, '(?m)^\$script:InstallerFamilyFunctions = @\(.*$').Value
+        Assert-True 'AppDeploy.ps1 defines the renderer and the function list' ($null -ne $renderFn -and $listLine)
+        if ($renderFn -and $listLine) {
+            . ([scriptblock]::Create($listLine))
+            . ([scriptblock]::Create($renderFn.Extent.Text))
+            $rendered = Get-InstallerFamilySource
+            Assert-True 'the rendered detector carries the identity-marker table' ($rendered -match '(?m)^\$script:InstallerIdentityMarkers = @\(')
+            $vp = Join-Path $root 'fx-velopack-rendered.exe'
+            [void](New-InstallerFamilyFixture -Family velopack -Path $vp)
+            $rps = [powershell]::Create()
+            [void]$rps.AddScript($rendered + "`n" + '$r = Get-InstallerFamily -Path $args[0]; "$($r.Family)|$($r.InstallArgs)"').AddArgument($vp)
+            $verdict = [string]($rps.Invoke() | Select-Object -Last 1)
+            $rps.Dispose()
+            Assert-Equal 'and, run on its own, it names a Velopack stub with its switch' 'velopack|--silent' $verdict
+        }
         Assert-True 'and the worker carries the placeholder'               ($ad -match '(?m)^#__INSTALLERFAMILY__\s*$')
     }
 
@@ -154,6 +210,57 @@ try {
     $u = Get-UninstallFamily -Exe 'C:\Tools\setup.exe' -Arguments '-uninstall -quiet'
     Assert-Equal 'an unknown uninstaller keeps its args untouched' '-uninstall -quiet' $u.Args
     Assert-Equal 'and is not silent'                              $false $u.Silent
+    # InstallShield Suite/Advanced UI - the SketchUp 2026 shape: "-remove -runfromtemp" is the
+    # Suite uninstall, not InstallScript's "-removeonly", and /silent is its documented switch
+    $u = Get-UninstallFamily -Exe 'C:\Program Files (x86)\InstallShield Installation Information\{bf48c79b}\SketchUp-2026-1-256-82.exe' -Arguments '-remove -runfromtemp'
+    Assert-Equal 'a Suite uninstall (-remove -runfromtemp) is InstallShield' 'installshield' $u.Family
+    Assert-True  'named as the Suite shape, not InstallScript'    ($u.Evidence -like '*Suite*')
+    Assert-Equal 'and gets -silent appended, so it IS silent'     '-remove -runfromtemp -silent|True' "$($u.Args)|$($u.Silent)"
+    $u = Get-UninstallFamily -Exe 'C:\Tools\SketchUp-2026-1-256-82.exe' -Arguments '-remove -runfromtemp -silent'
+    Assert-Equal 'an entry that already has -silent is left alone' '-remove -runfromtemp -silent' $u.Args
+    $u = Get-UninstallFamily -Exe 'C:\Tools\setup.exe' -Arguments '-runfromtemp -removeonly'
+    Assert-True  'InstallScript -removeonly still needs its response file' (($u.Family -eq 'installshield') -and -not $u.Silent -and ($u.Notes -join ';') -like '*response file*')
+    Assert-Equal 'the Suite install switch is /silent'            '/silent' (Get-FamilySwitches 'installshield' 'suite').Install
+    Assert-Equal 'and its uninstall shape is -remove -silent'     '-remove -silent' (Get-FamilySwitches 'installshield' 'suite').UninstallArgs
+
+    Write-Section '7b. The registry side, second pass: the uninstaller says what built it'
+    $u = Get-UninstallFamily -Exe 'C:\Apps\W\UNWISE.EXE' -Arguments '"C:\Apps\W\INSTALL.LOG"'
+    Assert-Equal 'UNWISE.EXE is Wise by name alone'               'wise' $u.Family
+    Assert-Equal 'and takes /S in front of the log'               '/S "C:\Apps\W\INSTALL.LOG"' $u.Args
+    $cases = @(
+        @{ Fam = 'install4j';    Leaf = 'uninstall.exe';       In = '';                              Out = '-q' }
+        @{ Fam = 'bitrock';      Leaf = 'uninstall.exe';       In = '';                              Out = '--mode unattended' }
+        @{ Fam = 'setupfactory'; Leaf = 'unins.exe';           In = '';                              Out = '/S' }
+        @{ Fam = 'clickteam';    Leaf = 'Uninstal.exe';        In = '';                              Out = '/S' }
+        @{ Fam = 'qtifw';        Leaf = 'maintenancetool.exe'; In = '';                              Out = '--confirm-command purge' }
+        @{ Fam = 'qtifw';        Leaf = 'maintenancetool.exe'; In = 'purge';                         Out = 'purge --confirm-command' }
+        @{ Fam = 'advinst';      Leaf = 'Setup.exe';           In = '/x {12345678-1234-1234-1234-123456789ABC}'; Out = '/x {12345678-1234-1234-1234-123456789ABC} /exenoui /qn' }
+        @{ Fam = 'installaware'; Leaf = 'setup.exe';           In = '/u';                            Out = '/u /s MODIFY=FALSE REMOVE=TRUE UNINSTALL=YES' }
+        @{ Fam = 'squirrel';     Leaf = 'Update.exe';          In = '--uninstall';                   Out = '--uninstall' }
+        @{ Fam = 'velopack';     Leaf = 'Update.exe';          In = '--uninstall';                   Out = '--uninstall' }
+        @{ Fam = 'wise';         Leaf = 'setup.exe';           In = '"C:\x\INSTALL.LOG"';            Out = '/S "C:\x\INSTALL.LOG"' }
+    )
+    foreach ($c in $cases) {
+        $d = Join-Path $root ("un-" + $c.Fam + '-' + [IO.Path]::GetFileNameWithoutExtension($c.Leaf)); New-Item -ItemType Directory -Force -Path $d | Out-Null
+        $exe = Join-Path $d $c.Leaf
+        [void](New-InstallerFamilyFixture -Family $c.Fam -Path $exe)
+        $u = Get-UninstallFamily -Exe $exe -Arguments $c.In
+        Assert-Equal "$($c.Leaf) built by $($c.Fam): family"      $c.Fam $u.Family
+        Assert-Equal "$($c.Leaf) built by $($c.Fam): silent"      $true $u.Silent
+        Assert-Equal "$($c.Leaf) built by $($c.Fam): arguments"   $c.Out $u.Args
+    }
+    # already quiet: nothing is appended twice
+    $d = Join-Path $root 'un-install4j-uninstall'
+    $u = Get-UninstallFamily -Exe (Join-Path $d 'uninstall.exe') -Arguments '-q'
+    Assert-Equal 'an install4j uninstaller already carrying -q is left alone' '-q' $u.Args
+    # an uninstaller that is not on disk gets nothing from this pass
+    $u = Get-UninstallFamily -Exe 'C:\Gone\uninstall.exe' -Arguments ''
+    Assert-Equal 'a missing uninstaller is not assumed to be anything' '' $u.Family
+    # an IExpress package has no uninstaller shape and is never called silent
+    $ie = Join-Path $root 'un-iexpress'; New-Item -ItemType Directory -Force -Path $ie | Out-Null
+    [void](New-InstallerFamilyFixture -Family iexpress -Path (Join-Path $ie 'pkg.exe'))
+    $u = Get-UninstallFamily -Exe (Join-Path $ie 'pkg.exe') -Arguments ''
+    Assert-Equal 'an IExpress package is not made silent on the registry side' $false $u.Silent
 
     if ($Big) {
         Write-Section '8. Size does not matter: a sparse 15 GB file with a PE head'

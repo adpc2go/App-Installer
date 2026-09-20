@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Fault-injection harness for the dirty-install -> deep-clean path.
 
@@ -138,8 +138,11 @@ try {
            Why = 'installs properly'                 ; State = 'Installed'; Dirty = $false }
         @{ Id = 'fatal';  Code = 1603; Verify = $false; Debris = $true
            Why = 'fatal error mid-install'           ; State = 'Failed'   ; Dirty = $true  }
+        # Cancelled, not Failed: 1223 is somebody clicking No on the installer's own UAC prompt.
+        # That is a decision a human made, and this tool reporting a decision as a failure - red
+        # row, counted in "N failed", cache kept - is a shape it has been caught on repeatedly.
         @{ Id = 'uac';    Code = 1223; Verify = $false; Debris = $false
-           Why = 'UAC declined - nothing ever ran'   ; State = 'Failed'   ; Dirty = $false }
+           Why = 'UAC declined - nothing ever ran'   ; State = 'Cancelled'; Dirty = $false }
         @{ Id = 'liar';   Code = 0;    Verify = $false; Debris = $true
            Why = 'exits 0 but installs nothing'      ; State = 'Failed'   ; Dirty = $true  }
         @{ Id = 'killed'; Code = -1;   Verify = $false; Debris = $true
@@ -388,7 +391,9 @@ try {
 
     Write-Section '1. The dirty verdict on the wire'
     foreach ($c in $cases) {
-        $final = @($reported | Where-Object { $_.id -eq $c.Id -and $_.state -in 'Installed', 'Failed' }) |
+        # Cancelled counts as a verdict: exit 1223 means somebody clicked No on the installer's own
+        # UAC prompt, which is a decision, not a failure, and the worker now says so.
+        $final = @($reported | Where-Object { $_.id -eq $c.Id -and $_.state -in 'Installed', 'Failed', 'Cancelled' }) |
                  Select-Object -First 1
         if (-not $final) {
             $script:Fail++
@@ -566,6 +571,21 @@ try {
     $tok.Id = 'tok'; $tok.Name = 'AB'
     $tok.CleanPaths = @(); $tok.CleanReg = @(); $tok.CleanHosts = @(); $tok.CleanTokens = @('AB')
     Assert-Equal 'a token under 4 characters is ignored'      0 @(Scan-Leftovers $tok $true).Count
+
+    # a product name is not a wildcard pattern: "[Beta] Foo" is an unclosed character class to
+    # -like, and the throw used to end the whole scan for that product with nothing listed
+    $brk = New-Object AppItem
+    $brk.Id = 'brk'; $brk.Name = '[Beta] Bracket Tool'
+    $brk.CleanPaths = @(); $brk.CleanReg = @(); $brk.CleanHosts = @(); $brk.CleanTokens = @('[Beta] Bracket Tool')
+    $brkDir = Join-Path $env:TEMP 'PC2Go-[Beta] Bracket Tool-leftover'
+    New-Item -ItemType Directory -Force -Path $brkDir | Out-Null
+    $brkThrew = $false; $brkHits = @()
+    try { $brkHits = @(Scan-Leftovers $brk $true) } catch { $brkThrew = $true }
+    Assert-Equal 'a token with brackets does not throw'         $false $brkThrew
+    # matched on the leaf: $env:TEMP is the 8.3 short form on this account (see 3a above) and
+    # the scan reports the long profile path, so a full-path compare would miss its own folder
+    Assert-Equal 'and a folder carrying that name is still found' $true (@($brkHits | Where-Object { (Split-Path $_.Path -Leaf) -eq 'PC2Go-[Beta] Bracket Tool-leftover' }).Count -ge 1)
+    Remove-Item -LiteralPath $brkDir -Recurse -Force -ErrorAction SilentlyContinue
 
     Write-Section '5. PreExisting decides that, and is read before anything runs'
     # mirrors Enqueue-Install: verifyPaths tested from the GUI, before the installer starts

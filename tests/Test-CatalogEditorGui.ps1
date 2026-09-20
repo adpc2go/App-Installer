@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     The catalog editor's MAIN window, the publish gate, and a BOM'd catalog.
 
@@ -14,16 +14,20 @@
          after-install list: a `run` step taking its file FROM the package needs no sha256,
          because the package's own hash already covers those bytes
       4. a byte-order mark on the catalog, read by the deployment tool
+      5. the one-action toolbar and the overlay bodies, pinned on the source
+      2c. what the deep review found and fixed: click-away shutting the drawer (the window is
+         shown off-screen for this - the visual tree does not exist before that), Remove and a
+         category removal taking the drawer down with the entry, the verify paths beyond the
+         first surviving an emptied box, an uninstall-only entry not asked for a URL, a bulk
+         hash failure said on the card, a chosen setup file surviving a re-fetch of the same
+         package, and the live check getting through the access gate with a session-only code
 
-    Show-AppDialog is stubbed here, and only here: it ends in ShowDialog(), which blocks, and the
-    dialog itself already has 130 assertions of its own. What is under test is the main window's
-    wiring around it.
+    The drawer is the real Show-AppDialog throughout; what is under test is the main window's
+    wiring around it, and the drawer's own behaviour where the review found it wrong.
 
-    NOT covered, and it is a design problem rather than a gap: Delete and the "save anyway?"
-    warning both use [Windows.MessageBox]::Show, which is modal and cannot be driven or timed
-    out by an unattended run. AppDeploy solves the same problem with a non-blocking overlay.
-
-    Runs unelevated, writes only to a temp sandbox, and never touches server\apps.json.
+    Runs unelevated, writes only to a temp sandbox, and never touches server\apps.json. The
+    loopback server gates /apps.json exactly as cloudflare\worker.js does - 403 without the
+    x-pc2go-code header - so the live check is proved against the gate, not around it.
 
 .EXAMPLE
     powershell -NoProfile -ExecutionPolicy Bypass -File tests\Test-CatalogEditorGui.ps1
@@ -85,11 +89,21 @@ $httpWorker = {
             $line = $reader.ReadLine()
             if (-not $line) { $client.Close(); continue }
             $path = (($line -split ' ')[1] -replace '^/', '')
-            while ($true) { $h = $reader.ReadLine(); if ([string]::IsNullOrEmpty($h)) { break } }
+            $code = ''
+            while ($true) {
+                $h = $reader.ReadLine(); if ([string]::IsNullOrEmpty($h)) { break }
+                if ($h -match '^(?i)x-pc2go-code:\s*(.*)$') { $code = $Matches[1].Trim() }
+            }
             $w = New-Object IO.BinaryWriter($stream)
             if ($path -eq '__stop') {
                 $w.Write([Text.Encoding]::ASCII.GetBytes("HTTP/1.1 200 OK`r`nContent-Length: 0`r`nConnection: close`r`n`r`n"))
                 $w.Flush(); try { $client.Close() } catch {}; try { $listener.Stop() } catch {}; return
+            }
+            # The edge's access gate, as cloudflare\worker.js applies it to /apps.json: 403 without
+            # the x-pc2go-code header. The editor's live check has to get through this.
+            if ($path -eq 'apps.json' -and $code -ne 'sesame') {
+                $w.Write([Text.Encoding]::ASCII.GetBytes("HTTP/1.1 403 Forbidden`r`nContent-Length: 21`r`nConnection: close`r`n`r`nAccess code required`n"))
+                $w.Flush(); $client.Close(); continue
             }
             $file = Join-Path $Root $path
             if (-not (Test-Path -LiteralPath $file)) {
@@ -117,9 +131,12 @@ try {
     $www = Join-Path $sandbox 'www'
     New-Item -ItemType Directory -Force -Path $www | Out-Null
     $pkgSrc = Join-Path $sandbox 'src\inner'
-    New-Item -ItemType Directory -Force -Path "$pkgSrc\Tools" | Out-Null
+    New-Item -ItemType Directory -Force -Path "$pkgSrc\Tools", "$pkgSrc\image" | Out-Null
     Set-Content -LiteralPath "$pkgSrc\setup.exe"    -Value 'MZ fake installer' -Encoding ASCII
     Set-Content -LiteralPath "$pkgSrc\Tools\go.cmd" -Value '@echo off'         -Encoding ASCII
+    # a second, deeper installer - the Autodesk shape, where the curated entry is NOT the one
+    # the ranking would pick (section 2c)
+    Set-Content -LiteralPath "$pkgSrc\image\Installer.exe" -Value 'MZ inner installer' -Encoding ASCII
     $zip = Join-Path $www 'package.zip'
     [IO.Compression.ZipFile]::CreateFromDirectory((Split-Path $pkgSrc -Parent), $zip)
     $zipSha  = (Get-FileHash -LiteralPath $zip -Algorithm SHA256).Hash
@@ -357,7 +374,14 @@ try {
         Assert-Equal ("{0}: real size recorded" -f $a.name)         $zipSize ([long]$a.sizeBytes)
         Assert-Equal ("{0}: the installer inside was found" -f $a.name) 'inner\setup.exe' ([string]$a.entry)
     }
-    Assert-Equal 'all three are now publishable' '' ((Test-App $queued[0]) -join ', ')
+    # A folder import cannot know where the product installs to, so the one thing left to fill in
+    # by hand is the verify path - and Test-App now says so rather than calling the entry ready.
+    # Deriving one from the name was tried and is worse: "OfficeSetup" derives
+    # %ProgramFiles%\OfficeSetup\OfficeSetup.exe while Office installs into Microsoft Office, and
+    # a WRONG verify path fails a good install.
+    Assert-Equal 'all three are hashed, with only the verify path left to fill in' `
+                 'no verify path - an install can never be proven, so every result reads as success' `
+                 ((Test-App $queued[0]) -join ', ')
 
     # the local path is scaffolding for the machine that built the catalog - it must not be
     # published, and it must not leak somebody's folder layout into a client-facing file
@@ -438,6 +462,284 @@ try {
     Assert-True  'a missing switch table does not fail the fetch' (-not $rn.error)
     Assert-Equal 'the package is still hashed without it'         $zipSha $rn.sha256
     Assert-Equal 'and the installer inside is still found'        'inner\setup.exe' (@($rn.entries)[0])
+
+    # ================================================================== 2c. the review
+    #
+    # BEFORE section 4 on purpose: that section dot-sources the deployment tool's head, which
+    # defines its own $window and $ListApps over the editor's - after it, nothing here is the
+    # editor any more.
+    Write-Section '2c. What the deep review found: the drawer, the verify paths, bulk failures, the gate'
+
+    # Sections 1-5 never show the window. From here on it has to be: click-away walks the
+    # VISUAL tree, and a window that was never shown has none. Off-screen and transparent.
+    function Wait-Dispatcher([int]$Milliseconds) {
+        $frame = New-Object Windows.Threading.DispatcherFrame
+        $t = New-Object Windows.Threading.DispatcherTimer
+        $t.Interval = [TimeSpan]::FromMilliseconds($Milliseconds)
+        $t.Add_Tick({ $frame.Continue = $false; $t.Stop() }.GetNewClosure())
+        $t.Start()
+        [Windows.Threading.Dispatcher]::PushFrame($frame)
+    }
+    function Invoke-PreviewDown($El) {
+        # Mouse.PreviewMouseDown is the TUNNELING event; PreviewMouseLeftButtonDown is a direct
+        # one WPF re-raises per element along that route, so raising it on the target alone
+        # never reaches the window's handler
+        $a = New-Object Windows.Input.MouseButtonEventArgs([Windows.Input.Mouse]::PrimaryDevice, 0, [Windows.Input.MouseButton]::Left)
+        $a.RoutedEvent = [Windows.Input.Mouse]::PreviewMouseDownEvent
+        $El.RaiseEvent($a)
+    }
+    $window.Opacity = 0; $window.ShowActivated = $false; $window.Left = -4000; $window.Top = -4000
+    $window.Show(); $script:EditorWindow = $window
+    Wait-Dispatcher 500
+
+    # ---- 6a. click-away really shuts the drawer
+    #
+    # It never did. The handler exempted any click with a ContentControl ancestor, and a Window
+    # IS a ContentControl - so every click in the window found one, and only the category rail
+    # ever closed the drawer. Measured on HEAD before the fix: the window's handler ran and the
+    # drawer stayed open.
+    $ListApps.SelectedIndex = 0; Update-Inspector; Open-Drawer
+    Wait-Dispatcher 200
+    Assert-True  'the drawer is open on an app'                       $script:DrawerOpen
+    Invoke-PreviewDown $TxtGroupTitle
+    Assert-True  'a click on the page heading shuts it'               (-not $script:DrawerOpen)
+    Assert-Equal 'and the layer is hidden'                            'Collapsed' "$($DrawerLayer.Visibility)"
+    $ListApps.SelectedIndex = 0; Update-Inspector; Open-Drawer
+    Invoke-PreviewDown $BtnAdd
+    Assert-True  'a click on a toolbar button shuts it too'           (-not $script:DrawerOpen)
+    $ListApps.SelectedIndex = 0; Update-Inspector; Open-Drawer
+    $inDrawer = $DrawerHost.Content.FindName('DlgName')
+    Invoke-PreviewDown $inDrawer
+    Assert-True  'but a click inside the drawer does not'             $script:DrawerOpen
+    Invoke-PreviewDown $BtnDelete
+    Assert-True  'nor one on the drawer''s own Remove button'         $script:DrawerOpen
+    Show-Confirm 'A question' 'about the app in the drawer' 'Yes' { }
+    Invoke-PreviewDown $TxtOverlayBody
+    Assert-True  'nor answering an overlay that sits over it'         $script:DrawerOpen
+    Invoke-Click $BtnOverlayCancel
+    Invoke-PreviewDown $TitleBar
+    Assert-True  'and the title bar is for moving, not dismissing'    $script:DrawerOpen
+
+    # ---- 6b. Remove takes the drawer down with the entry
+    #
+    # The list rebuild after a removal deselects for an instant, Update-Inspector deliberately
+    # ignores that instant (it is what kept the drawer up while picking an icon), and nothing
+    # else closed it - so the drawer stayed open on an application no longer in the catalog and
+    # every keystroke went into a detached object.
+    $victim = [pscustomobject]@{ id = 'victim'; name = 'Victim'; category = 'Apps'
+        url = 'https://example.invalid/v.exe'; sha256 = ('D' * 64); sizeBytes = 5; silentArgs = '/S'; verifyPaths = @('C:\X\v.exe') }
+    $script:Catalog.apps = @(@($script:Catalog.apps) + $victim)
+    Update-List
+    $ListApps.SelectedItem = @($ListApps.Items | Where-Object { $_.App -eq $victim })[0]
+    Update-Inspector; Open-Drawer
+    Assert-True  'the drawer shows the app about to go'               ($script:InspApp -eq $victim -and $script:DrawerOpen)
+    Invoke-Click $BtnDelete; Invoke-Click $BtnOverlayOk
+    Assert-Equal 'the app is gone from the catalog'                   0 @($script:Catalog.apps | Where-Object { $_ -eq $victim }).Count
+    Assert-True  'and the drawer shut with it'                        (-not $script:DrawerOpen)
+    Assert-True  'its panel is released'                              ($null -eq $DrawerHost.Content)
+    Assert-True  'and nothing is "inspected" any more'                ($null -eq $script:InspApp)
+    Assert-Equal 'the status line says so, with one full stop'       'Removed Victim.' $TxtStatus.Text
+    # the same through a category removal that deletes its applications
+    [void](Add-Category 'Doomed')
+    $victim2 = [pscustomobject]@{ id = 'victim-2'; name = 'Victim 2'; category = 'Doomed'
+        url = 'https://example.invalid/v2.exe'; sha256 = ('D' * 64); sizeBytes = 5; silentArgs = '/S'; verifyPaths = @('C:\X\v2.exe') }
+    $script:Catalog.apps = @(@($script:Catalog.apps) + $victim2)
+    Update-Categories; Update-List
+    $ListApps.SelectedItem = @($ListApps.Items | Where-Object { $_.App -eq $victim2 })[0]
+    Update-Inspector; Open-Drawer
+    [void](Remove-Category 'Doomed' -DeleteApps); Set-SelectedCategory ''; Complete-CategoryChange 'Removed Doomed'
+    Assert-True  'removing a category with its apps shuts a drawer on one of them' (-not $script:DrawerOpen -and $null -eq $script:InspApp)
+
+    # ---- 6c. the verify paths beyond the first are kept, whatever the box does
+    #
+    # The merge re-read "the rest" from the entry on every apply. Clear the box, and the next
+    # keystroke anywhere promoted the second path to first; the one after dropped it. One
+    # curated path lost per apply until none were left.
+    $multi = [pscustomobject]@{ id = 'multi'; name = 'Multi'; category = 'Apps'
+        url = 'https://example.invalid/m.exe'; sha256 = ('E' * 64); sizeBytes = 5; silentArgs = '/S'
+        verifyPaths = @('C:\X\first.exe', 'C:\X\second.exe', 'C:\X\third.exe') }
+    $script:Catalog.apps = @(@($script:Catalog.apps) + $multi)
+    Update-List
+    $ListApps.SelectedItem = @($ListApps.Items | Where-Object { $_.App -eq $multi })[0]
+    Update-Inspector; Open-Drawer; Wait-Dispatcher 300
+    $mp = $DrawerHost.Content
+    Assert-True  'the hint says two more paths are kept'              ($mp.FindName('DlgVerifyHint').Text -like '+ 2 more*')
+    $mp.FindName('DlgVerify').Text = ''
+    $mp.FindName('DlgName').Text = 'Multi a'
+    $mp.FindName('DlgName').Text = 'Multi ab'
+    $mp.FindName('DlgName').Text = 'Multi abc'
+    Assert-Equal 'clearing the box drops only the first path'        'C:\X\second.exe, C:\X\third.exe' (@($multi.verifyPaths) -join ', ')
+    $mp.FindName('DlgVerify').Text = 'C:\X\new.exe'
+    $mp.FindName('DlgName').Text = 'Multi abcd'
+    Assert-Equal 'a new first path sits in front of the kept ones'   'C:\X\new.exe, C:\X\second.exe, C:\X\third.exe' (@($multi.verifyPaths) -join ', ')
+    $mp.FindName('DlgVerify').Text = 'C:\X\third.exe'
+    Assert-Equal 'and a path typed that is already kept is not doubled' 'C:\X\third.exe, C:\X\second.exe' (@($multi.verifyPaths) -join ', ')
+
+    # ---- 6d. an uninstall-only entry is not told it needs a URL
+    $unOnly = [pscustomobject]@{ id = 'un-only'; name = 'Un Only'; category = 'Apps'; uninstallOnly = $true }
+    $script:Catalog.apps = @(@($script:Catalog.apps) + $unOnly)
+    Update-List
+    $ListApps.SelectedItem = @($ListApps.Items | Where-Object { $_.App -eq $unOnly })[0]
+    Update-Inspector; Open-Drawer; Wait-Dispatcher 200
+    $DrawerHost.Content.FindName('DlgName').Text = 'Un Only 2'
+    Assert-Equal 'the drawer has nothing to complain about'           '' $DrawerHost.Content.FindName('DlgStatus').Text
+    Assert-True  'and never wrote an empty url onto it'               (-not $unOnly.PSObject.Properties['url'])
+    Assert-True  'nor a size'                                         (-not $unOnly.PSObject.Properties['sizeBytes'])
+    Assert-Equal 'while Test-App still calls it ready'                0 @(Test-App $unOnly).Count
+    Close-Drawer
+
+    # ---- 6e. a bulk hash that fails is said on the card, not folded into "not hashed yet"
+    $broken = Join-Path $sandbox 'installers\Broken-Thing.zip'
+    [IO.File]::WriteAllBytes($broken, [byte[]]((1..300) | ForEach-Object { $_ % 251 }))
+    $bapp = [pscustomobject]@{ id = 'broken-thing'; name = 'Broken Thing'; category = 'Apps'
+        sizeBytes = 0; url = "http://127.0.0.1:$port/files/broken-thing/Broken-Thing.zip"; sha256 = ''; silentArgs = ''; verifyPaths = @() }
+    Set-Field $bapp '_localFile' $broken
+    $script:Catalog.apps = @(@($script:Catalog.apps) + $bapp)
+    [void]$script:BulkQueue.Add($bapp); $script:BulkDone = 0; $script:BulkTotal = 1
+    Start-BulkNext
+    $spins = 0
+    while (($script:BulkJob -or $script:BulkQueue.Count) -and $spins -lt 600) {
+        if ($script:BulkJob -and $script:BulkHandle.IsCompleted) { Complete-BulkOne }
+        Start-Sleep -Milliseconds 100; $spins++
+    }
+    Update-List
+    $brow = @($ListApps.ItemsSource | Where-Object { $_.App -eq $bapp })[0]
+    Assert-True  'the card says the hash failed, and why'             ($brow.Live -like 'hash failed - *damaged*')
+    Assert-Equal 'in red'                                             '#FFF87171' $brow.LiveColour
+    Assert-True  'and the status line counts it'                      ($TxtStatus.Text -like '*1 could not be hashed*')
+    Assert-True  'without claiming a save button exists'              ($TxtStatus.Text -notlike '*then save*')
+    # the same app hashed again from a good file clears the verdict
+    Set-Field $bapp '_localFile' $zip
+    Set-LocalFileFor $bapp $zip
+    [void]$script:BulkQueue.Add($bapp); $script:BulkDone = 0; $script:BulkTotal = 1
+    Start-BulkNext
+    $spins = 0
+    while (($script:BulkJob -or $script:BulkQueue.Count) -and $spins -lt 600) {
+        if ($script:BulkJob -and $script:BulkHandle.IsCompleted) { Complete-BulkOne }
+        Start-Sleep -Milliseconds 100; $spins++
+    }
+    Update-List
+    $brow = @($ListApps.ItemsSource | Where-Object { $_.App -eq $bapp })[0]
+    Assert-Equal 'a later good hash lands'                            $zipSha ([string]$bapp.sha256)
+    Assert-True  'and the failure is forgotten'                       ($brow.Live -notlike 'hash failed*')
+    $script:Catalog.apps = @(@($script:Catalog.apps) | Where-Object { $_ -ne $bapp })
+
+    # ---- 6f. re-fetching the same package keeps a setup file somebody chose
+    #
+    # The seed for "what the dialog proposed" is whatever the catalog held, so a chosen entry
+    # read as a proposal and every re-fetch put the ranked guess back. Autodesk's own
+    # _installNote says image\Installer.exe, not the top-level Setup.exe; measured before the
+    # fix, one Fetch turned it back into inner\setup.exe.
+    $curated = [pscustomobject]@{ id = 'curated'; name = 'Curated'; category = 'Apps'
+        url = "http://127.0.0.1:$port/package.zip"; sha256 = $zipSha; sizeBytes = $zipSize; silentArgs = '/S'
+        entry = 'inner\image\Installer.exe'; verifyPaths = @('C:\X\curated.exe') }
+    Set-Field $curated '_localFile' $zip
+    $script:Catalog.apps = @(@($script:Catalog.apps) + $curated)
+    Update-List
+    function Invoke-DrawerFetch($Panel, [string]$Source) {
+        $Panel.FindName('DlgUrl').Text = $Source
+        Invoke-Click $Panel.FindName('DlgFetch')
+        $n = 0
+        while ($Panel.Tag.State.job -and $n -lt 300) { Wait-Dispatcher 200; $n++ }
+        Wait-Dispatcher 400
+    }
+    $ListApps.SelectedItem = @($ListApps.Items | Where-Object { $_.App -eq $curated })[0]
+    Update-Inspector; Open-Drawer; Wait-Dispatcher 1200
+    $cp = $DrawerHost.Content
+    Invoke-DrawerFetch $cp $zip
+    Assert-Equal 'the same package again: the chosen setup file stays' 'inner\image\Installer.exe' ([string]$curated.entry)
+    Assert-Equal 'and the box agrees'                                  'inner\image\Installer.exe' ([string]$cp.FindName('DlgEntry').Text)
+    Assert-Equal 'while the hash is the real one'                      $zipSha ([string]$curated.sha256)
+    # a chosen file the package does not hold follows the listing
+    Set-Field $curated 'entry' 'inner\gone\Installer.exe'
+    Invoke-DrawerFetch $cp $zip
+    Assert-Equal 'a chosen file not in the package follows the ranked guess' 'inner\setup.exe' ([string]$curated.entry)
+    # and a different product - the name changed - takes the ranking, as before
+    Set-Field $curated 'entry' 'inner\image\Installer.exe'
+    $cp.FindName('DlgEntry').Text = 'inner\image\Installer.exe'
+    $cp.FindName('DlgName').Text = 'Something Else'
+    Invoke-DrawerFetch $cp $zip
+    Assert-Equal 'a different product takes the ranked installer'      'inner\setup.exe' ([string]$curated.entry)
+    Close-Drawer
+
+    # ---- 6g. the live check gets through the access gate
+    #
+    # /apps.json is behind the gate (cloudflare\worker.js), and the live check sent no code:
+    # once a code was set, every card lost its live chip for good, the summary said "live copy
+    # unreadable" for ever, and - the real cost - the id of a published app stopped freezing,
+    # so a rename silently orphaned its files/<id>/ key.
+    [void](Complete-Save -Force)
+    Copy-Item -LiteralPath $catPath -Destination (Join-Path $www 'apps.json') -Force
+    # the check the editor started on load ran against the gate with no code
+    if ($script:LiveJob) {
+        $n = 0; while (-not $script:LiveHandle.IsCompleted -and $n -lt 100) { Start-Sleep -Milliseconds 100; $n++ }
+        Complete-LiveCheck
+    }
+    Assert-True  'without a code the edge refuses the live read'      ($null -eq $script:LiveApps)
+    Assert-True  'and the reason names the access code, not a status' ($script:LiveError -like '*access code*' -and $script:LiveError -notlike '*403*')
+    Assert-True  'the summary says the live copy is unreadable'       ($TxtSummary.Text -like '*live copy unreadable*')
+    Assert-True  'with that reason on its tooltip'                    ("$($TxtSummary.ToolTip)" -like '*Settings*')
+    # the runspace itself, both ways
+    $lw = [powershell]::Create()
+    [void]$lw.AddScript($script:LiveWork).AddArgument("http://127.0.0.1:$port/apps.json").AddArgument('')
+    $r0 = $lw.Invoke() | Select-Object -Last 1; $lw.Dispose()
+    Assert-True  'the live worker reports the 403'                    (-not $r0.ok -and "$($r0.error)" -match '403')
+    $lw = [powershell]::Create()
+    [void]$lw.AddScript($script:LiveWork).AddArgument("http://127.0.0.1:$port/apps.json").AddArgument('sesame')
+    $r1 = $lw.Invoke() | Select-Object -Last 1; $lw.Dispose()
+    Assert-True  'and reads the catalog with the code in the header'  ($r1.ok -and $r1.apps.ContainsKey('seed-two'))
+    # Settings takes the code for the session and asks again
+    Show-Settings
+    Assert-True  'Settings offers a box for the session code'         ("$($PwdSessionCode.Visibility)" -eq 'Visible' -and "$($OverlaySettings.Visibility)" -eq 'Visible')
+    Assert-True  'and says none is held yet'                          ($TxtSessionCodeState.Text -like '*never stored*')
+    $PwdSessionCode.Password = 'sesame'
+    Invoke-Click $BtnOverlayOk
+    Assert-Equal 'Done keeps the code for the session'                'sesame' $script:AccessCode
+    Assert-Equal 'and clears the box'                                 '' $PwdSessionCode.Password
+    Assert-True  'a fresh live check started at once'                 ($null -ne $script:LiveJob)
+    $n = 0; while ($script:LiveJob -and -not $script:LiveHandle.IsCompleted -and $n -lt 100) { Start-Sleep -Milliseconds 100; $n++ }
+    Complete-LiveCheck
+    Assert-True  'and this time the edge answered'                    ($null -ne $script:LiveApps)
+    Assert-Equal 'with no error left standing'                        '' $script:LiveError
+    Assert-True  'the finished apps read as live'                     (Test-CatalogIsLive)
+    Assert-Equal 'seed-two carries the live chip'                     'live' ((Get-LiveState $script:Catalog.apps[0]).Text)
+    Show-Settings
+    Assert-True  'Settings now says a code is held'                   ($TxtSessionCodeState.Text -like '*held for this session*')
+    Invoke-Click $BtnOverlayOk
+    Assert-Equal 'Done with an empty box keeps the code'              'sesame' $script:AccessCode
+    # the consequence that matters: a LIVE app keeps its id when renamed
+    $liveApp = @($script:Catalog.apps | Where-Object { (Get-LiveState $_).Text -eq 'live' })[0]
+    $liveId  = [string]$liveApp.id
+    Update-List
+    $ListApps.SelectedItem = @($ListApps.Items | Where-Object { $_.App -eq $liveApp })[0]
+    Update-Inspector; Open-Drawer; Wait-Dispatcher 200
+    $DrawerHost.Content.FindName('DlgName').Text = 'Renamed Live App'
+    Assert-Equal 'renaming a live app leaves its id frozen'           $liveId ([string]$liveApp.id)
+    Assert-Equal 'while the name changed'                             'Renamed Live App' ([string]$liveApp.name)
+    Close-Drawer
+    # the code is never written anywhere
+    [void](Complete-Save -Force)
+    Assert-True  'the code is not in the catalog'                     ((Get-Content -LiteralPath $catPath -Raw) -notmatch 'sesame')
+    Assert-True  'nor in the sidecar'                                 (-not (Test-Path -LiteralPath (Join-Path $sandbox '.push-state.json')) -or
+                                                                       ((Get-Content -LiteralPath (Join-Path $sandbox '.push-state.json') -Raw) -notmatch 'sesame'))
+    # a wrong code is told apart from no code
+    Set-SessionAccessCode 'wrong'
+    Reset-LiveState; Start-LiveCheck
+    $n = 0; while ($script:LiveJob -and -not $script:LiveHandle.IsCompleted -and $n -lt 100) { Start-Sleep -Milliseconds 100; $n++ }
+    Complete-LiveCheck
+    Assert-True  'a wrong code says the code was refused'             ($script:LiveError -like '*refused the access code*')
+    Set-SessionAccessCode 'sesame'
+
+    # ---- 6h. pins on the source for what cannot be driven here
+    $ed = Get-Content -LiteralPath $EditorPath -Raw
+    Assert-True 'setting a new code hands it to the session on success only' `
+                ($ed -match "Invoke-Wrangler @\('secret', 'put', 'ACCESS_CODE'\) \`$code \([\s\S]{0,200}\) \(\{[\s\S]{0,120}Set-SessionAccessCode \`$code")
+    Assert-True 'and the wrangler poller runs that callback on ok'    ($ed -match "'ok' \{[\s\S]{0,200}WranglerOnOk[\s\S]{0,120}& \`$onOk")
+    Assert-True 'a pending icon rename lands before a push is planned' ($ed -match 'Complete-IconMoves \} catch \{ \}\s*\r?\n\s*\$plan = New-PushPlan')
+    Assert-True 'the click-away handler no longer exempts every ContentControl' `
+                ($ed -notmatch 'Get-AncestorOfType \$e\.OriginalSource \(\[Windows\.Controls\.ContentControl\]\)')
+    Assert-True 'the live worker sends the header'                    ($ed -match "x-pc2go-code'\] = \[string\]\`$Code")
+
 
     # ================================================================== 3. the publish gate
     Write-Section '3. Publish-Release.ps1 validation'
@@ -603,6 +905,10 @@ try {
                -ForegroundColor $(if ($script:Fail) { 'Red' } else { 'Green' })
     if ($script:Fail) { exit 1 }
 } finally {
+    if ($script:EditorWindow) {
+        # the editor's own window - by section 4, $window is the deployment tool's
+        try { $script:ForceClose = $true; $script:EditorWindow.Close() } catch { }
+    }
     if ($script:Http) {
         try { [void](Invoke-WebRequest -Uri "http://127.0.0.1:$port/__stop" -UseBasicParsing -TimeoutSec 3) } catch {}
         try { $script:Http.Dispose() } catch {}

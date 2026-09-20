@@ -179,8 +179,10 @@ try {
     Select-Tab 'Users'
     $item1 = @($script:AccountItems | Where-Object { $_.Name -eq $p1 })[0]
     Assert-True "the Accounts tab lists '$p1'" ($null -ne $item1)
-    $TxtNewUser.Text = $p2; $TxtNewFull.Text = ''; $TxtNewPw.Text = $pw
+    # the account dialog's OWN boxes, filled after it opens (opening clears them): the Add
+    # Account dialog's boxes are a different popup and are not what Replace reads any more
     Show-AcctDialog $item1
+    $TxtActNewName.Text = $p2; $TxtActPw.Text = $pw
     Invoke-Click $BtnActLocal
     # not a Microsoft account, so the tool asks first
     Assert-Equal 'it says the account is already local' 'That is already a local account' ('' + $TxtOverlayTitle.Text)

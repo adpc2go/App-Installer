@@ -70,7 +70,7 @@ try {
         }
         $pinv = @($gAst.FindAll({ param($n) $n -is [System.Management.Automation.Language.IfStatementAst] -and $n.Extent.Text -like '*Native.Share*WNetAddConnection2*' }, $true))
         . ([scriptblock]::Create($pinv[0].Extent.Text))
-        foreach ($n in 'Get-ShareRoot', 'Connect-Share', 'Disconnect-Share', 'Get-LocalSubnets', 'Resolve-HostLabel', 'Get-HostShares', 'Find-NetworkHosts', 'Resolve-ShareUser') {
+        foreach ($n in 'Get-ShareRoot', 'Connect-Share', 'Disconnect-Share', 'Invoke-OffUi', 'Get-LocalIPv4', 'Get-LocalSubnets', 'Resolve-HostLabel', 'Get-HostShares', 'Find-NetworkHosts', 'Resolve-ShareUser') {
             . ([scriptblock]::Create((Get-GFn $n)))
         }
         $unc = "\\$tName\$share"

@@ -570,7 +570,7 @@ try {
         $n.Extent.Text -like '*Native.Share*WNetAddConnection2*' }, $true))
     Assert-Equal 'the GUI half declares the share P/Invoke exactly once' 1 $pinv.Count
     . ([scriptblock]::Create($pinv[0].Extent.Text))
-    foreach ($n in 'Get-ShareRoot', 'Connect-Share', 'Get-LocalSubnets',
+    foreach ($n in 'Get-ShareRoot', 'Connect-Share', 'Invoke-OffUi', 'Get-LocalIPv4', 'Get-LocalSubnets',
                    'Resolve-HostLabel', 'Get-HostShares', 'Find-NetworkHosts') {
         . ([scriptblock]::Create((Get-GFn $n)))
     }

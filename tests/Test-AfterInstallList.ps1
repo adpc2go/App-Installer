@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Contract harness for the catalog editor's after-install LIST.
 
@@ -349,6 +349,9 @@ try {
     $withPkg = [pscustomobject]@{
         id = 'with-package'; name = 'With Package'; url = 'https://example.invalid/app.zip'
         sha256 = ('A' * 64); sizeBytes = 1000; entry = 'Build\setup.exe'
+        # a ready app has a verify path: without one the worker's verification loop has nothing
+        # to iterate and reports Installed whatever happened, so Test-App now says so
+        verifyPaths = @('C:\B\x.dat')
         postInstall = @([pscustomobject]@{ type = 'copy'; name = 'Copy x'; from = 'p\x.dat'; dest = 'C:\B\' })
     }
     Assert-Equal 'the same app with a package is ready' '' ((Test-App $withPkg) -join ', ')

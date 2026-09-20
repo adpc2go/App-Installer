@@ -855,8 +855,17 @@ class R {
     $ranGood = Join-Path (Join-Path $script:CacheDir 'removers') 'marlin-remover.exe.ran.txt'
     $ranBad  = Join-Path (Join-Path $script:CacheDir 'removers') 'marlin-remover2.exe.ran.txt'
     $staged  = @(Get-ChildItem -LiteralPath (Join-Path $env:SystemRoot 'Temp') -Filter 'PC2GoDeploy-*.ran.txt' -ErrorAction SilentlyContinue)
-    Assert-True 'the hash-verified remover actually RAN'          ((Test-Path -LiteralPath $ranGood) -or $staged.Count -ge 1)
-    Assert-True 'the tampered remover was refused and never ran'  (-not (Test-Path -LiteralPath $ranBad) -and $staged.Count -le 1)
+    # An UNELEVATED harness cannot list Windows\Temp at all (Users may create there, not read),
+    # so the marker is invisible to it even when it was written. The worker's own activity
+    # record says the same thing in words - "finished (exit 0)" after the hash passed, and
+    # "failed its integrity check" for the tampered copy - and is readable either way.
+    $activity = ''
+    try { $activity = Get-Content -LiteralPath (Join-Path $script:CacheDir 'activity.jsonl') -Raw -ErrorAction Stop } catch { }
+    $goodRan = ($activity -match 'Marlin vendor deep remover finished \(exit 0\)')
+    $badRan  = ($activity -match 'Tampered remover - must be refused finished')
+    $badRefused = ($activity -match 'Tampered remover - must be refused[^"]*failed its integrity check')
+    Assert-True 'the hash-verified remover actually RAN'          ((Test-Path -LiteralPath $ranGood) -or $staged.Count -ge 1 -or $goodRan)
+    Assert-True 'the tampered remover was refused and never ran'  (-not (Test-Path -LiteralPath $ranBad) -and $staged.Count -le 1 -and -not $badRan -and $badRefused)
     foreach ($m in $staged) { Remove-Item -LiteralPath $m.FullName -Force -ErrorAction SilentlyContinue }
     Assert-True 'the program folder is gone once the wipe is approved' (-not (Test-Path -LiteralPath $dirU))
 
@@ -1038,6 +1047,173 @@ class R {
     Assert-True 'and really was not installed'     (-not (Test-Path -LiteralPath "$appDir\app.exe"))
     Assert-True 'the reinstall never ran either'   ($dep.Status -match '^(Skipped|Removed)')
     Assert-True 'and the old copy is untouched'    (Test-Path -LiteralPath $depExe)
+
+    # ---- the base's DOWNLOAD fails: the pre-queued removal must not run on the strength of a
+    # download that never landed, and the reinstall behind it has nothing to reinstall onto.
+    # Nothing on the machine may change, and no worker may even start.
+    Set-Content -LiteralPath $depUn -Encoding ASCII -Value (@(
+        '@echo off',
+        "echo ran > `"$depUnRan`"",
+        "rd /s /q `"$depDir`"",
+        "exit ${sl}b 0") -join "`r`n")
+    Remove-Item -LiteralPath $depUnRan -Force -ErrorAction SilentlyContinue
+    New-Item -ItemType Directory -Force -Path $depDir | Out-Null
+    Set-Content -LiteralPath $depExe -Value 'dep' -Encoding ASCII
+    if (Test-Path -LiteralPath $appDir) { Remove-Item -LiteralPath $appDir -Recurse -Force }
+    foreach ($i in $script:Items) { $i.IsSelected = $false }
+    # no cached copy for the base, and a link that cannot be fetched
+    $baseCache = Join-Path (Join-Path $script:CacheDir 'files') 'gui-a'
+    if (Test-Path -LiteralPath $baseCache) { Remove-Item -LiteralPath $baseCache -Recurse -Force }
+    New-Item -ItemType Directory -Force -Path $depCache | Out-Null
+    Copy-Item -LiteralPath $depZip -Destination (Join-Path $depCache 'package.zip') -Force
+    $saveUrl = $base.Url
+    $base.Url = 'file:///' + (($sandbox -replace '\\', '/') + '/does-not-exist/package.zip')
+    $base.IsSelected = $true
+    Invoke-Click $BtnInstall
+    Assert-Equal 'the sequence is offered for the failing-download run' 3 @(Get-PfCommitItems).Count
+    Invoke-Click $BtnPfGo
+    Assert-True 'the batch settled'                   (Wait-For { $script:Phase -in 'Done', 'Idle' } 240000)
+    Write-DepStall 'after-failing-download'
+    $base.Url = $saveUrl
+    $unRow3 = @($script:Pending | Where-Object { $_.Id -eq 'gui-dep~un' })[0]
+    Assert-True 'the base download failed'            ($base.Status -like 'Failed*')
+    Assert-True 'the removal was skipped, saying the base was not installed' ($unRow3 -and $unRow3.Status -like 'Skipped*' -and $unRow3.StatusDetail -like '*was not installed*')
+    Assert-True 'and its uninstaller never ran'       (-not (Test-Path -LiteralPath $depUnRan))
+    Assert-True 'the reinstall was skipped too'       ($dep.Status -like 'Skipped*')
+    Assert-True 'the installed add-on is untouched'   (Test-Path -LiteralPath $depExe)
+    Assert-True 'no elevated worker was ever started' (-not $script:WorkerStarted)
+
+    # ---- the base INSTALL fails after the removal succeeded: the reinstall must still run,
+    # because restoring the add-on is what returns the machine closest to how it was found.
+    # The base package is swapped for one whose installer dies with 1603 - a real MSI-style
+    # fatal exit, which is also dirty, so the leftover preview appears and is skipped.
+    $failSrc = Join-Path $sandbox 'fail-src\inner'
+    New-Item -ItemType Directory -Force -Path $failSrc | Out-Null
+    Set-Content -LiteralPath "$failSrc\setup.cmd" -Encoding ASCII -Value (@('@echo off', "exit ${sl}b 1603") -join "`r`n")
+    $failZip = Join-Path $sandbox 'fail-package.zip'
+    [IO.Compression.ZipFile]::CreateFromDirectory((Split-Path $failSrc -Parent), $failZip)
+    $saveSha = $base.Sha256; $saveSize = $base.SizeBytes
+    $base.Sha256 = (Get-FileHash -LiteralPath $failZip -Algorithm SHA256).Hash
+    $base.SizeBytes = (Get-Item -LiteralPath $failZip).Length
+    New-Item -ItemType Directory -Force -Path $baseCache | Out-Null
+    Copy-Item -LiteralPath $failZip -Destination (Join-Path $baseCache 'package.zip') -Force
+    New-Item -ItemType Directory -Force -Path $depCache | Out-Null
+    Copy-Item -LiteralPath $depZip -Destination (Join-Path $depCache 'package.zip') -Force
+    Remove-Item -LiteralPath $depUnRan -Force -ErrorAction SilentlyContinue
+    New-Item -ItemType Directory -Force -Path $depDir | Out-Null
+    Set-Content -LiteralPath $depExe -Value 'dep' -Encoding ASCII
+    foreach ($i in $script:Items) { $i.IsSelected = $false }
+    $base.IsSelected = $true
+    Invoke-Click $BtnInstall
+    Invoke-Click $BtnPfGo
+    Assert-True 'the batch reached its verdict or its leftover preview' `
+                (Wait-For { "$($WipeOverlay.Visibility)" -eq 'Visible' -or $script:Phase -in 'Done', 'Idle' } 240000)
+    if ("$($WipeOverlay.Visibility)" -eq 'Visible') {
+        Assert-True 'the failed base install opened the leftover preview' $true
+        Invoke-Click $BtnWipeSkip
+    }
+    Assert-True 'the batch finished'                  (Wait-For { $script:Phase -in 'Done', 'Idle' } 240000)
+    Write-DepStall 'after-failing-base-install'
+    $base.Sha256 = $saveSha; $base.SizeBytes = $saveSize
+    $unRow4 = @($script:Pending | Where-Object { $_.Id -eq 'gui-dep~un' })[0]
+    Assert-True 'the removal ran and succeeded'       ($unRow4 -and $unRow4.Status -like 'Uninstalled*' -and (Test-Path -LiteralPath $depUnRan))
+    Assert-True 'the base install failed'             ($base.Status -like 'Failed*')
+    Assert-True 'naming the fatal exit'               ($base.StatusDetail -like '*fatal error*')
+    Assert-True 'the reinstall still ran'             ($dep.Status -like 'Installed*')
+    Assert-True 'and the add-on is back on disk'      (Test-Path -LiteralPath $depExe)
+
+    # ================================================================== 5. the click is seen
+    Write-Section '5. Every click paints before the work: the strip, the dialog, the first Data Backup visit'
+
+    # Reported from the field: 3-5 seconds with nothing on screen after Continue, on a slow
+    # machine. Measured here: the batch strip was set visible and the worker was written, hashed
+    # and elevated all inside one handler, so WPF drew nothing until the launch had finished.
+    # Show-BatchStrip now pumps one render pass, with the busy guard held across it.
+    $script:Pumps = 0
+    $realUpdateUi = ${function:Update-UI}
+    function Update-UI { $script:Pumps++; & $realUpdateUi }
+    $script:Pending = @($script:Items | Select-Object -First 1)
+    $script:Pumps = 0
+    Show-BatchStrip
+    Assert-True  'Show-BatchStrip pumps the dispatcher once'            ($script:Pumps -ge 1)
+    Assert-Equal 'and says the worker is starting'                       'Starting the elevated worker...' $TxtNow.Text
+    Assert-Equal 'with the row visible'                                  'Visible' "$($RowNow.Visibility)"
+    Assert-True  'the guard is released once the pump is over'           (-not $script:BatchStarting)
+    # a click landing inside that pump is refused, silently, rather than starting a second batch
+    $script:BatchStarting = $true
+    $ovBefore = "$($Overlay.Visibility)"
+    Assert-True  'Test-BatchBusy refuses while a batch is starting'      (Test-BatchBusy)
+    Assert-Equal 'without raising an overlay'                            $ovBefore "$($Overlay.Visibility)"
+    $script:BatchStarting = $false
+
+    # The confirm dialog: Continue used to hide the overlay and run the action in the same
+    # handler, so the dialog sat on screen for the whole batch start. It is painted away first.
+    $script:Seen = @{}
+    Show-Confirm 'A question' 'about to start' ({
+        $script:Seen.Overlay = "$($Overlay.Visibility)"
+        $script:Seen.Pumps   = $script:Pumps
+        $script:Seen.Cursor  = "$($window.Cursor)"
+    }.GetNewClosure())
+    $script:Pumps = 0
+    $BtnOverlayOk.RaiseEvent((New-Object Windows.RoutedEventArgs([Windows.Controls.Primitives.ButtonBase]::ClickEvent)))
+    Assert-Equal 'the overlay is hidden before the action runs'          'Collapsed' $script:Seen.Overlay
+    Assert-True  'and a render pass happened first'                      ($script:Seen.Pumps -ge 1)
+    Assert-Equal 'the wait cursor covers the action'                     'Wait' $script:Seen.Cursor
+    Assert-True  'and is released afterwards'                            ($null -eq $window.Cursor)
+    Assert-True  'Cancel still just closes'                              ($null -eq $script:ConfirmAction)
+    ${function:Update-UI} = $realUpdateUi
+
+    # The first Data Backup visit: the share check loads the SMB module (a second here, more
+    # on a client) and ran after the busy pill had gone, so the tab sat unpainted. The whole
+    # first visit is under one pill now.
+    Assert-True 'the first Data Backup visit is covered by one busy pill' `
+                ($src -match "if \(\`$firstVisit\) \{ Show-Busy 'Reading the accounts and shares on this PC\.\.\.' \}[\s\S]{0,900}finally \{ if \(\`$firstVisit\) \{ Hide-Busy \} \}")
+
+    # The reads themselves. Every wait indicator is a storyboard spinner, and a storyboard only
+    # turns while the UI thread is free. MEASURED: the firewall rule read, the SMB module load,
+    # the Store package list and the network adapter read each stood their spinner still for
+    # 0.5-1.2 s here, three to five times that on a client. They run on a background runspace
+    # now, through Invoke-OffUi, and the window pumps while they do.
+    $script:Pumps = 0
+    function Update-UI { $script:Pumps++; & $realUpdateUi }
+    $got = @(Invoke-OffUi { param($a, $b) Start-Sleep -Milliseconds 350; "$a+$b" } -Arguments @('x', 'y'))
+    Assert-True  'Invoke-OffUi runs the script with its arguments and hands back the output, one object per row' ($got.Count -eq 1 -and $got[0] -is [string] -and $got[0] -eq 'x+y')
+    Assert-Equal 'a script that emits nothing hands back nothing - not one blank row'     0 @(Invoke-OffUi { }).Count
+    Assert-Equal 'and three rows come back as three'                                       3 @(Invoke-OffUi { 1; 2; 3 }).Count
+    Assert-True  'and pumps the dispatcher while it waits'                              ($script:Pumps -ge 3)
+    [void](Invoke-OffUi { $global:PC2GoOffUiMark = 41 })
+    Assert-Equal 'the runspace is kept: what one read loaded, the next still has'       41 "$(@(Invoke-OffUi { $global:PC2GoOffUiMark })[0])"
+    $why = ''
+    try { [void](Invoke-OffUi { throw 'the read said no' }) } catch { $why = $_.Exception.Message }
+    Assert-True  'a script that throws reaches the caller as its own message'           ($why -like '*the read said no*')
+    $why = ''
+    try { [void](Invoke-OffUi { Start-Sleep -Seconds 5 } -TimeoutSec 1 -What 'A slow read') } catch { $why = $_.Exception.Message }
+    Assert-Equal 'a read past its time limit is stopped and named'                      'A slow read did not finish within 1 seconds' $why
+    Assert-Equal 'and the shared runspace is still good afterwards'                     41 "$(@(Invoke-OffUi { $global:PC2GoOffUiMark })[0])"
+    # a click the pump dispatched that reads something too must not collide with the read in flight
+    # (the flag is raised BEFORE the nested call: the nested read pumps too, and a pump that
+    # re-entered here on "not yet answered" recursed until the call depth ran out)
+    $script:Nested = $null; $script:NestedTried = $false
+    function Update-UI { if ($script:OffUiBusy -and -not $script:NestedTried) { $script:NestedTried = $true; $script:Nested = "$(@(Invoke-OffUi { 'inner:' + $global:PC2GoOffUiMark })[0])" }; & $realUpdateUi }
+    [void](Invoke-OffUi { Start-Sleep -Milliseconds 300 })
+    Assert-Equal 'a nested read runs on a runspace of its own'                          'inner:' $script:Nested
+    ${function:Update-UI} = $realUpdateUi
+    Assert-True  'and the busy flag is released'                                         (-not $script:OffUiBusy)
+    $gAst = [System.Management.Automation.Language.Parser]::ParseInput($src, [ref]$null, [ref]$null)
+    foreach ($fn in 'Get-FirewallBlockMap', 'Get-AllShares', 'Get-StoreApps', 'Get-LocalIPv4') {
+        $body = $gAst.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq $fn }, $true) | Select-Object -First 1
+        Assert-True "$fn reads off the UI thread"                                       ($body -and $body.Extent.Text -match 'Invoke-OffUi')
+    }
+    foreach ($fn in 'Get-LocalSubnets', 'Find-NetworkHosts') {
+        $body = $gAst.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq $fn }, $true) | Select-Object -First 1
+        Assert-True "$fn asks no network cmdlet on the UI thread itself"                ($body -and $body.Extent.Text -notmatch 'Get-Net(Adapter|IPAddress)')
+    }
+    Assert-True  'Load-Firewall refuses to run twice at once'                            ($src -match "if \(\`$script:FwScanning\) \{ return \}")
+    # and the real reads, through the real helper, on this machine
+    $ipv4 = Get-LocalIPv4
+    Assert-True  'the adapter read answers with this PC''s addresses'                    (@($ipv4.Addresses).Count -ge 1 -and "$($ipv4.Addresses[0].Ip)" -match '^\d+\.\d+\.\d+\.\d+$')
+    $shares = @(Get-AllShares)
+    Assert-Equal 'the share read answers, every row with a name and a path'             0 @($shares | Where-Object { -not $_.Name -or -not $_.Path }).Count
 
     Write-Host ''
     Write-Host ("{0}/{1} passed" -f $script:Pass, ($script:Pass + $script:Fail)) `

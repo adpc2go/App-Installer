@@ -82,6 +82,10 @@ try {
     function Update-List { }
     function Update-Categories { }
     function Set-StatusText([string]$text, [string]$colour = '') { $script:LastStatus = $text }
+    # Remove-Category -DeleteApps sets each deleted app's icon aside; there is no icons folder
+    # here, so what is recorded is that it was asked to.
+    $script:HiddenIcons = @()
+    function Hide-AppIcon([string]$Id) { $script:HiddenIcons += $Id }
     $script:SelectedCategory = ''
     $script:Dirty = $false
 
@@ -197,6 +201,14 @@ try {
     Assert-True  'renaming onto an existing name is allowed'  (Rename-Category 'Left' 'Right')
     Assert-Equal 'the two become one row, not one row twice'  'Right' ((Get-CategoryNames) -join '|')
     Assert-Equal 'and both apps are in it'                    2 (@(Get-AppsInCategory 'Right')).Count
+
+    # fixing the CASE of a name is a rename too - the client groups by the exact string, so
+    # "apps" and "Apps" are two groups there even though the rail shows one. This used to be
+    # refused as "the same name".
+    Set-Catalog @((New-App 'a' 'apps'), (New-App 'b' 'apps')) @('apps')
+    Assert-True  'a case-only rename is accepted'             (Rename-Category 'apps' 'Apps')
+    Assert-Equal 'the list holds the new spelling, once'      'Apps' (-join (Get-CategoryNames))
+    Assert-Equal 'and every app was rewritten to it'          'Apps|Apps' ((@($script:Catalog.apps | ForEach-Object { [string]$_.category })) -join '|')
 
     # ------------------------------------------------------------------ 5. order
     Write-Section '5. Category order moves, and install order does not'
@@ -435,7 +447,9 @@ try {
     $x2 = $dm[0].Groups[1].Value
     Assert-True 'the name is an editable box'   ($x2 -match '<TextBox x:Name="DlgName"')
     Assert-True 'styled so it reads as a field' ($x2 -match 'Style="\{StaticResource TitleBox\}"')
-    Assert-True 'with a rule under it at rest'  ($x2 -match '(?s)TitleBox.*?BorderThickness" Value="0,0,0,1"')
+    # A whole border at rest, not the single rule underneath it once had: styled flat as a
+    # heading it read as neither a title nor an input, so it became a field that looks like one.
+    Assert-True 'with a border at rest'         ($x2 -match '(?s)TitleBox.*?BorderThickness" Value="1"')
     Assert-True 'and a focused state'           ($x2 -match '(?s)TitleBox.*?IsFocused" Value="True"')
 
     # The id is a FIELD now. It used to be grey text under the name: not a heading, not editable,
@@ -540,6 +554,7 @@ try {
     # BitmapImage. SVG has no decoder in WPF at all, and WebP needs an optional Store codec that
     # may be present here and absent on a client - the worst kind of difference.
     . ([scriptblock]::Create((Get-FunctionText $editorAst 'Test-ImageHasAlpha' 'Catalog-Editor.ps1')))
+    . ([scriptblock]::Create((Get-FunctionText $editorAst 'Get-ImageOpaqueBox' 'Catalog-Editor.ps1')))
     . ([scriptblock]::Create((Get-FunctionText $editorAst 'Convert-ImageToIcon' 'Catalog-Editor.ps1')))
     $imgDir = Join-Path $root 'img'
     New-Item -ItemType Directory -Force -Path $imgDir | Out-Null
@@ -559,15 +574,19 @@ try {
     & $mkImg 1200 300 (Join-Path $imgDir 'wide.jpg') 'Windows.Media.Imaging.JpegBitmapEncoder'
     & $mkImg 32 32   (Join-Path $imgDir 'tiny.bmp') 'Windows.Media.Imaging.BmpBitmapEncoder'
 
-    foreach ($case in @(@('wide.jpg', 'a 1200x300 JPEG'), @('tiny.bmp', 'a 32x32 bitmap'))) {
+    # A large source is brought down to 256; a small one is NEVER blown up - a 32-pixel icon
+    # enlarged to 256 bakes its blur into the file, and the client's tile then shrinks the blur.
+    foreach ($case in @(@('wide.jpg', 'a 1200x300 JPEG', 256), @('tiny.bmp', 'a 32x32 bitmap', 32))) {
         $out = Join-Path $imgDir "out-$($case[0]).png"
         $err = Convert-ImageToIcon (Join-Path $imgDir $case[0]) $out
         Assert-Equal "$($case[1]) converts without complaint" '' ([string]$err)
         $fr = [Windows.Media.Imaging.BitmapFrame]::Create([Uri]$out)
-        Assert-Equal "$($case[1]) comes out 256 wide"  256 $fr.PixelWidth
-        Assert-Equal "and 256 tall"                    256 $fr.PixelHeight
+        Assert-Equal "$($case[1]) comes out $($case[2]) wide"  $case[2] $fr.PixelWidth
+        Assert-Equal "and $($case[2]) tall"                    $case[2] $fr.PixelHeight
         Assert-True  'with an alpha channel, so a dark tile shows through' ($fr.Format.ToString() -like '*a32*')
     }
+    Assert-True 'the one downscale uses the high-quality filter' `
+        ($editorSrc -match "SetBitmapScalingMode\(\`$visual, \[Windows\.Media\.BitmapScalingMode\]::HighQuality\)")
     Assert-Equal 'something that is not an image is refused, in words' 'That file contains no image.' `
         $(try { Convert-ImageToIcon (Join-Path $imgDir 'nope.txt') (Join-Path $imgDir 'x.png') } catch { 'threw' }).Replace(
             'That file could not be read as an image', 'That file contains no image.').Split('-')[0].Trim()
@@ -607,6 +626,24 @@ try {
     $bannerOut = Join-Path $imgDir 'out-banner.png'
     $null = Convert-ImageToIcon (Join-Path $imgDir 'banner.png') $bannerOut
     Assert-True 'a wide logo is padded, never cropped' ((& $emptyPct $bannerOut) -gt 40)
+    # Transparent margins are trimmed: a logo drawn in the middle of an empty canvas fills the
+    # tile like one drawn edge to edge. Measured on InDesign's icon: 62% of the canvas against
+    # Illustrator's 100%, and it looked "so tiny" beside the others on a client.
+    $pv = New-Object Windows.Media.DrawingVisual
+    $pc = $pv.RenderOpen()
+    $pc.DrawRectangle((New-Object Windows.Media.SolidColorBrush ([Windows.Media.Colors]::Teal)),
+                      $null, (New-Object Windows.Rect(64, 64, 128, 128)))
+    $pc.Close()
+    $pr = New-Object Windows.Media.Imaging.RenderTargetBitmap(256, 256, 96, 96, [Windows.Media.PixelFormats]::Pbgra32)
+    $pr.Render($pv)
+    $pe = New-Object Windows.Media.Imaging.PngBitmapEncoder
+    $pe.Frames.Add([Windows.Media.Imaging.BitmapFrame]::Create($pr))
+    $pf = [IO.File]::Create((Join-Path $imgDir 'padded.png')); $pe.Save($pf); $pf.Close()
+    $paddedOut = Join-Path $imgDir 'out-padded.png'
+    $null = Convert-ImageToIcon (Join-Path $imgDir 'padded.png') $paddedOut
+    $pfr = [Windows.Media.Imaging.BitmapFrame]::Create([Uri]$paddedOut)
+    Assert-Equal 'a logo centred in an empty canvas comes out at its own size' 128 $pfr.PixelWidth
+    Assert-Equal 'with no empty margin left'                                  0 (& $emptyPct $paddedOut)
     # and if something else has the file, say so rather than throwing a stack trace
     $held = Join-Path $imgDir 'held.png'
     $null = Convert-ImageToIcon (Join-Path $imgDir 'tiny.bmp') $held

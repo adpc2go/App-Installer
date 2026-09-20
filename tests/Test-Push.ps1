@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     The R2 upload transport, proved against a fake S3 endpoint that breaks on purpose.
 
@@ -920,7 +920,8 @@ try {
     Assert-Equal 'sized from the real file on disk'    ([long]$blob.Length) ([long]$plan.Bytes)
 
     $orphan = [pscustomobject]@{ id = 'orphan'; name = 'Orphan App'; sha256 = ('a' * 64)
-                                 sizeBytes = 10; url = 'https://apps.pc2go.ca/files/orphan/x.exe' }
+                                 sizeBytes = 10; url = 'https://apps.pc2go.ca/files/orphan/x.exe'
+                                 verifyPaths = @('C:\Program Files\Fixture\app.exe') }
     $script:Catalog.apps = @(@($script:Catalog.apps) + $orphan)
     $plan2 = New-PushPlan
     Assert-True 'an app with no local file and nothing in R2 is refused by name' `
@@ -932,7 +933,7 @@ try {
     # its life. This is the case actually hit in use: one ready app, sixteen not.
     $halfDone = [pscustomobject]@{ id = 'half-done'; name = 'Half Done'; category = 'Apps'
                                    sizeBytes = 0; url = ''; sha256 = 'REPLACE_WITH_REAL_SHA256'
-                                   silentArgs = ''; verifyPaths = @() }
+                                   silentArgs = ''; verifyPaths = @('C:\Program Files\Fixture\app.exe') }
     $script:Catalog.apps = @(@($script:Catalog.apps) + $halfDone)
     $plan3 = New-PushPlan
     Assert-Equal 'an incomplete app does NOT block the one that is ready' 1 @($plan3.Items).Count
@@ -957,7 +958,7 @@ try {
     $servableBefore = Get-ServableCount
     Assert-True 'at least one app is servable' ($servableBefore -ge 1)
     $incomplete = [pscustomobject]@{ id = 'not-done'; name = 'Not Done'; category = 'Apps'
-                                     sizeBytes = 0; url = ''; sha256 = ''; silentArgs = ''; verifyPaths = @() }
+                                     sizeBytes = 0; url = ''; sha256 = ''; silentArgs = ''; verifyPaths = @('C:\Program Files\Fixture\app.exe') }
     $script:Catalog.apps = @(@($script:Catalog.apps) + $incomplete)
     Assert-Equal 'adding an incomplete app does not change what the edge would serve' `
         $servableBefore (Get-ServableCount)
@@ -973,7 +974,7 @@ try {
     # three later assertions that depend on it, which is its own small lesson.
     $doneApp = [pscustomobject]@{ id = 'done-app'; name = 'Done App'; category = 'Apps'
                                   sizeBytes = 4096; url = 'https://apps.pc2go.ca/files/done-app/d.exe'
-                                  sha256 = ('c' * 64); silentArgs = ''; verifyPaths = @() }
+                                  sha256 = ('c' * 64); silentArgs = ''; verifyPaths = @('C:\Program Files\Fixture\app.exe') }
     $script:Catalog.apps = @(@($script:Catalog.apps) + $doneApp)
     $de = Get-PushStateFor $doneApp
     $de.localPath = ''
@@ -1339,7 +1340,7 @@ function Invoke-R2Upload {
         $rarApp = [pscustomobject]@{ id = 'rar-app'; name = 'Rar App'; category = 'Apps'
                                      sizeBytes = [long]$rr.size; sha256 = [string]$rr.sha256
                                      url = 'https://apps.pc2go.ca/files/rar-app/package.rar'
-                                     entry = 'setup.exe'; silentArgs = ''; verifyPaths = @() }
+                                     entry = 'setup.exe'; silentArgs = ''; verifyPaths = @('C:\Program Files\Fixture\app.exe') }
         Assert-Equal 'a .rar with a setup file chosen validates clean' 0 @(Test-App $rarApp).Count
         Set-Field $rarApp 'entry' ''
         Assert-True  'a .rar with no setup file chosen is refused' `
@@ -1370,7 +1371,7 @@ function Invoke-R2Upload {
     $isoApp = [pscustomobject]@{ id = 'iso-app'; name = 'Iso App'; category = 'Apps'
                                  sizeBytes = 100; sha256 = ('d' * 64)
                                  url = 'https://apps.pc2go.ca/files/iso-app/disc.iso'
-                                 entry = 'Setup\install.exe'; silentArgs = ''; verifyPaths = @() }
+                                 entry = 'Setup\install.exe'; silentArgs = ''; verifyPaths = @('C:\Program Files\Fixture\app.exe') }
     Assert-Equal 'an .iso with a setup file chosen validates clean' 0 @(Test-App $isoApp).Count
     Set-Field $isoApp 'entry' ''
     Assert-True  'an .iso with no setup file chosen is refused' `
@@ -1537,10 +1538,12 @@ function Invoke-R2Upload {
     Set-Content -LiteralPath $goFile -Value '# pretend tool' -Encoding ASCII
     $goodHash = (Get-FileHash -LiteralPath $goFile -Algorithm SHA256).Hash
 
+    # $tool/$want/$toolPinned: the decision is the same for the script and for the compiled
+    # client - go.ps1 picks which file, which pin, and whether there IS a pin, above this block
     function Test-NeedFetch([string]$Path, [string]$Pin) {
-        $ps1 = $Path
-        $PinnedHash = $Pin
-        $pinned = ($PinnedHash -ne 'PINNED_SHA256_GOES_HERE')
+        $tool = $Path
+        $want = $Pin
+        $toolPinned = ($want -ne 'PINNED_SHA256_GOES_HERE')
         . ([scriptblock]::Create($decide))
         return $needFetch
     }
@@ -1559,7 +1562,16 @@ function Invoke-R2Upload {
     Assert-True 'a freshly downloaded copy is still verified against the pin' `
         ($goSrc -match 'if \(\$needFetch\) \{[\s\S]{0,400}failed integrity check')
     Assert-True 'and a failed check still deletes the file rather than running it' `
-        ($goSrc -match 'Remove-Item \$ps1 -Force[\s\S]{0,120}failed integrity check')
+        ($goSrc -match 'Remove-Item \$tool -Force[\s\S]{0,120}failed integrity check')
+    # the compiled client rides the same decision: one pin, one cache rule, one integrity check
+    Assert-True 'the exe is chosen only when the edge says so AND a real pin was injected' `
+        ($goSrc -match '\$useExe = \(\$Client -eq ''exe'' -and \$ExeHash -match ''\^\[0-9A-Fa-f\]\{64\}\$''\)')
+    Assert-True 'an unpinned exe falls back to the script, never to an unverified exe' `
+        ($goSrc -match '(?m)^\$tool = \$ps1; \$want = \$PinnedHash; \$key = ''AppDeploy\.ps1''; \$toolPinned = \$pinned')
+    Assert-True 'the exe path is pinned unconditionally' `
+        ($goSrc -match 'if \(\$useExe\) \{ \$tool = \$exe; \$want = \$ExeHash; \$key = ''PC2Go\.Deploy\.exe''; \$toolPinned = \$true \}')
+    Assert-True 'a broken signature on the exe is refused even when the hash matches' `
+        ($goSrc -match '(?s)Get-AuthenticodeSignature -LiteralPath \$exe.*?-ne ''Valid'' -and .*?-ne ''NotSigned''.*?Remove-Item \$exe -Force')
 
     # ============================================================== 11f. one load, not two
     Write-Section '11f. The tool is loaded once per launch, not twice'
@@ -1575,9 +1587,14 @@ function Invoke-R2Upload {
     Assert-True 'and tells the tool not to decide again'   ($goTxt -match '\-NoSelfElevate')
     Assert-True 'it elevates with RunAs on the fast path'  ($goTxt -match 'Verb RunAs')
     # The entire point: the bootstrap must stay trivial to scan. If it ever grows towards the
-    # size of the tool, this optimisation has quietly undone itself.
-    Assert-True ('go.ps1 is still small (' + [int]((Get-Item $goPath).Length / 1KB) + ' KB, under 32)') `
-        ((Get-Item $goPath).Length -lt 32KB)
+    # size of the tool, this optimisation has quietly undone itself. Measured on the bytes that
+    # SHIP: AMSI scans what `irm | iex` hands it, and Publish strips the comments first - the
+    # source grew past 32 KB the day the compiled client's path was added, and none of that
+    # growth travels. 16 KB shipped is the line; today it is under 14.
+    . (Join-Path $repo 'tools\Compress-Script.ps1')
+    $goShippedLen = (ConvertTo-ShippableScript -Source $goTxt).Length
+    Assert-True ('go.ps1 is still small as shipped (' + [int]($goShippedLen / 1KB) + ' KB, under 16)') `
+        ($goShippedLen -lt 16KB)
 
     # The fallback is what makes it safe for the fast path to be wrong.
     $depTxt = Get-Content -LiteralPath (Join-Path $repo 'server\AppDeploy.ps1') -Raw
@@ -1588,7 +1605,7 @@ function Invoke-R2Upload {
     # existing switches - reporting a missing fallback that had never gone anywhere. A test that
     # fails on a reordering it does not care about trains people to ignore it.
     $plainLaunch = @($goTxt -split "`r?`n" | Where-Object {
-        $_ -match 'Start-Process' -and $_ -match '\$winPS' -and $_ -match '\$launch' -and $_ -notmatch 'RunAs' })
+        $_ -match 'Start-Process' -and $_ -match '\$launchExe' -and $_ -match '\$launch' -and $_ -notmatch 'RunAs' })
     Assert-True 'go.ps1 still has a plain launch to fall through to' ($plainLaunch.Count -ge 1)
 
     # Both implementations must reach the same verdict on this machine. They are separate code
@@ -1693,6 +1710,16 @@ function Invoke-R2Upload {
                                               Dirty = [bool]$Dirty; Created = @($Created) } }
     function Write-Activity { param($a, $b, $c, $d) }
     function Remove-Unpacked { }
+    # The failure paths in this block now run the created list through the attribution filter
+    # before offering it, so the filter is LIFTED rather than stubbed: a concurrent installer's
+    # folders reaching the leftover scan is the accident this whole section is about.
+    foreach ($fnName in 'Select-OwnCreated', 'Get-OfferableCreated') {
+        $fdv = ([System.Management.Automation.Language.Parser]::ParseInput($workerBody, [ref]$null, [ref]$null)).FindAll(
+                   { param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq $fnName }, $true) |
+               Select-Object -First 1
+        Assert-True "the worker defines $fnName" ($null -ne $fdv)
+        if ($fdv) { . ([scriptblock]::Create($fdv.Extent.Text)) }
+    }
 
     # Case 1: the installer ran, created folders, but no verifyPath matched. A real install with
     # bad catalog data - it must NOT be offered for deletion.
@@ -1785,6 +1812,7 @@ function Invoke-R2Upload {
     function Resolve-WatchRoots { param($Sid) }
     function Get-DirSnapshot { return @{} }
     function Get-CreatedDirs { param($Before) return @() }
+
     function Invoke-PostInstall { param($App) return @() }
     function Remove-Unpacked { }
     function Start-InstallerWatched { param($FilePath, $ArgumentList, $Extra, $TimeoutSec, $UiGraceSec, [switch]$AllowUi) $script:Launched += ,@($ArgumentList); return [pscustomobject]@{ ExitCode = 0; ShowedUi = $false; TimedOut = $false } }
@@ -1819,6 +1847,67 @@ function Invoke-R2Upload {
         ($depAll -match 'hadWarnings -gt 0.*with warnings')
     Assert-True 'only a genuinely Cancelled item is called cancelled' `
         ($depAll -match "wasCancelled = .*'\^Cancelled'")
+
+    # ============================================================== 11k. icons ship
+    Write-Section '11k. Icons ship: with an installer push, and on their own'
+
+    # Measured on the live edge on 2026-09-02: every /icons/<id>.png answered 404 while eight
+    # PNGs sat in icons\. Icons were carried ONLY by the installer upload, and a catalog whose
+    # installers were already in the bucket took the publish-only path - so they never went
+    # up, and the one log line that would have said so was never shown.
+    $icDir = Join-Path $sandbox 'pushicons'
+    New-Item -ItemType Directory -Force -Path $icDir | Out-Null
+    foreach ($n in 'a', 'b', 'bad') { [IO.File]::WriteAllBytes((Join-Path $icDir "$n.png"), [byte[]](1..64)) }
+    $icStub = Join-Path $icDir 'stub-r2.ps1'
+    Set-Content -LiteralPath $icStub -Encoding ASCII -Value @"
+function Get-R2ObjectInfo {
+    param(`$Credential, [string]`$Key)
+    # icons/b.png is already in the bucket at the right size; nothing else is
+    if (`$Key -eq 'icons/b.png') { return [pscustomobject]@{ Exists = `$true; Size = 64; ETag = ''; StatusCode = 200 } }
+    return [pscustomobject]@{ Exists = `$false; Size = 0; ETag = ''; StatusCode = 404 }
+}
+function Invoke-R2Upload {
+    param(`$Credential, `$Key, `$LocalPath, `$State, `$Progress, `$PartSizeBytes, `$MaxAttempts, `$SignPayload, `$OnStateChanged, `$BackoffBaseSeconds)
+    Add-Content -LiteralPath `$env:PC2GO_TEST_UPLOG -Value `$Key
+    if (`$Key -like '*bad*') { return @{ Ok = `$false; Cancelled = `$false; Message = 'SignatureDoesNotMatch' } }
+    return @{ Ok = `$true; Cancelled = `$false; Message = '' }
+}
+"@
+    $env:PC2GO_TEST_UPLOG = Join-Path $icDir 'uploads.log'
+    $icProgress = New-CvProgress
+    $icProgress['Icons'] = [Collections.ArrayList]::Synchronized((New-Object Collections.ArrayList))
+    $icList = @(
+        [pscustomobject]@{ id = 'a';   key = 'icons/a.png';   path = (Join-Path $icDir 'a.png') }
+        [pscustomobject]@{ id = 'b';   key = 'icons/b.png';   path = (Join-Path $icDir 'b.png') }
+        [pscustomobject]@{ id = 'bad'; key = 'icons/bad.png'; path = (Join-Path $icDir 'bad.png') }
+    )
+    # an EMPTY installer plan: the icons-only push the editor now takes
+    & $pushWork $icStub @() $null $icProgress (Join-Path $icDir 'state.json') ([long]0) $converter $icList | Out-Null
+    $up = @(Get-Content -LiteralPath $env:PC2GO_TEST_UPLOG -ErrorAction SilentlyContinue)
+    Assert-Equal 'the push finished with no installer to send'      'done' ([string]$icProgress.Phase)
+    Assert-True  'the icon that was not in the bucket went up'      ($up -contains 'icons/a.png')
+    Assert-True  'the one already there at the same size was not sent again' ($up -notcontains 'icons/b.png')
+    $recorded = @($icProgress.Icons | ForEach-Object { [string]$_.id })
+    Assert-True  'but it is still recorded as up, so the catalog gets its iconUrl' ($recorded -contains 'b')
+    Assert-True  'as is the one just uploaded'                      ($recorded -contains 'a')
+    Assert-True  'the skipped one says so'                          ([bool](@($icProgress.Icons | Where-Object { $_.id -eq 'b' })[0].skipped))
+    Assert-True  'a failed icon is NOT recorded as up'              ($recorded -notcontains 'bad')
+    Assert-True  'and its failure is in the log with its reason'    (@($icProgress.Log | Where-Object { "$_" -like 'icon bad: SignatureDoesNotMatch*' }).Count -eq 1)
+    Remove-Item Env:\PC2GO_TEST_UPLOG -ErrorAction SilentlyContinue
+
+    # the editor's side of it, pinned on the source
+    Assert-True 'icons alone are a reason to push, not to publish-only' `
+                ($edSrc -match "if \(-not \`$plan\.Items\.Count -and -not \`$icons\.Count\)")
+    Assert-True 'and an icons-only push goes through Start-Push with an empty plan' `
+                ($edSrc -match "Show-Confirm 'Icons to upload'[\s\S]{0,400}'Update' \{ Start-Push \}")
+    Assert-True 'a failed icon is said on the status line, not only logged' `
+                ($edSrc -match "Show-Warn \`"\`$\(\`$icFail\.Count\) icon\(s\) did not upload")
+    Assert-True 'iconUrl is written only for icons recorded as up' `
+                ($edSrc -match "foreach \(\`$ic in @\(\`$script:PushProgress\.Icons\)\)[\s\S]{0,300}Set-Field \`$a\[0\] 'iconUrl'")
+    # and the client: a remembered miss expires, or a client that launched before the icons
+    # were published would never ask for them again
+    Assert-True 'the client retries a remembered icon miss after a day' `
+                ($depAll -match "\.miss[\s\S]{0,600}TotalHours -ge 24\) \{ Remove-Item -LiteralPath \`$miss")
 
     # ============================================================== 12. the Worker
     Write-Section '12. The Worker''s catalog filter (node)'

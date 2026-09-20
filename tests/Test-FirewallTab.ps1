@@ -74,7 +74,7 @@ $endIdx = ($lines | Select-String -Pattern "^'@$" | Where-Object { $_.LineNumber
 $workerBody = ($lines[$startIdx..($endIdx - 2)] -join "`r`n")
 
 $ast = [System.Management.Automation.Language.Parser]::ParseInput($src, [ref]$null, [ref]$null)
-foreach ($name in 'Get-FirewallBlockMap', 'Get-RulesUnder', 'Get-VendorFolder', 'Test-FwRootAllowed', 'Get-ForeignRuleCount') {
+foreach ($name in 'Invoke-OffUi', 'Get-FirewallBlockMap', 'Get-RulesUnder', 'Get-VendorFolder', 'Test-FwRootAllowed', 'Get-ForeignRuleCount') {
     $fn = $ast.FindAll({ param($n)
         $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq $name }, $true) |
         Select-Object -First 1
