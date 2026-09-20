@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Catalog editor for apps.json - a list, and one dialog to add or edit an application.
 
@@ -188,6 +188,9 @@ function Get-VerifyCandidates([string]$name) {
     # the first real word is enough of a handle: "Revit 2026" should still find "Autodesk Revit"
     $needle = ($name -split '\s+' | Where-Object { $_.Length -ge 4 } | Select-Object -First 1)
     if (-not $needle) { $needle = $name }
+    # -like reads [ ] as a character class: a name such as "Adobe [64-bit]" threw "wildcard
+    # pattern is not valid" out of the fetch tick, and the drawer reported "Fetch failed"
+    $needle = [WildcardPattern]::Escape($needle)
     foreach ($r in $roots) {
         if (-not (Test-Path -LiteralPath $r)) { continue }
         foreach ($k in @(Get-ChildItem -LiteralPath $r -ErrorAction SilentlyContinue)) {
@@ -501,7 +504,8 @@ $script:PushWork = {
     function Read-Doc {
         if (Test-Path -LiteralPath $StatePath) {
             try {
-                $j = ((Get-Content -LiteralPath $StatePath -Raw).TrimStart([char]0xFEFF)) | ConvertFrom-Json
+                # UTF-8 to match the write side, for the reason spelled out in Import-Catalog
+                $j = (([IO.File]::ReadAllText($StatePath, (New-Object Text.UTF8Encoding $false))).TrimStart([char]0xFEFF)) | ConvertFrom-Json
                 $apps = @{}
                 if ($j.apps) {
                     foreach ($p in $j.apps.PSObject.Properties) {
@@ -648,10 +652,20 @@ $script:PushWork = {
     foreach ($ic in @($Icons)) {
         if ($Progress.Cancel) { break }
         try {
+            # Already there at the same size: not sent again, but still RECORDED as up, so the
+            # catalog gets its iconUrl. A publish with nothing else to upload used to skip this
+            # loop entirely, which is why no icon ever reached a client.
+            $have = $null
+            try { $have = Get-R2ObjectInfo -Credential $Cred -Key ([string]$ic.key) } catch { $have = $null }
+            $size = [long](Get-Item -LiteralPath ([string]$ic.path)).Length
+            if ($have -and $have.Exists -and [long]$have.Size -eq $size) {
+                [void]$Progress.Icons.Add(@{ id = [string]$ic.id; key = [string]$ic.key; skipped = $true })
+                continue
+            }
             $st = @{ key = [string]$ic.key; upload = $null; remote = $null }
             $r = Invoke-R2Upload -Credential $Cred -Key ([string]$ic.key) `
                                  -LocalPath ([string]$ic.path) -State $st
-            if ($r.Ok) { [void]$Progress.Icons.Add(@{ id = [string]$ic.id; key = [string]$ic.key }) }
+            if ($r.Ok) { [void]$Progress.Icons.Add(@{ id = [string]$ic.id; key = [string]$ic.key; skipped = $false }) }
             else { [void]$Progress.Log.Add("icon $($ic.id): $($r.Message)") }
         } catch {
             [void]$Progress.Log.Add("icon $($ic.id): $($_.Exception.Message)")
@@ -678,8 +692,22 @@ function Test-App($a) {
     $unOnly = [bool](Get-Field $a 'uninstallOnly')
     if (-not $unOnly) {
         if (-not (Get-Field $a 'url'))  { $out += 'no download URL' }
+        # A scheme, not just a non-empty string. Both clients refuse a url that is not
+        # http(s):// or file:// and SKIP THE ROW - no error, no red badge, just an application
+        # that is not on the list, with one line in a log nobody reads. The publish gate has no
+        # scheme rule either, so this is the only place it can be caught.
+        elseif (([string](Get-Field $a 'url')) -notmatch '^(?i)(https?|file)://') {
+            $out += 'the URL has no http(s):// or file:// - clients skip the row entirely'
+        }
         if (-not (Test-RealHash ([string](Get-Field $a 'sha256')))) { $out += 'not hashed yet' }
-        if ([long](Get-Field $a 'sizeBytes') -le 0) { $out += 'size unknown' }
+        # guarded cast: [long]'1.2 GB' THROWS, and Test-App runs inside the save and inside every
+        # list refresh - so one hand-edited sizeBytes made the catalog unwriteable AND kept the
+        # list from rebuilding, which meant the entry could not be opened to be corrected.
+        # Publish-Release.ps1 has always guarded this; here it was bare.
+        $szOk = $true; $szVal = [long]0
+        try { $szVal = [long](Get-Field $a 'sizeBytes') } catch { $szOk = $false }
+        if (-not $szOk) { $out += 'sizeBytes is not a number' }
+        elseif ($szVal -le 0) { $out += 'size unknown' }
     }
     # requires: every id must exist in this catalog. Warning-grade wording on purpose - the
     # client fails open on an unknown id, so the catalog should merely say so, not block.
@@ -717,6 +745,14 @@ function Test-App($a) {
     # the worker refuses `from` on a single installer, and it would refuse it on a client
     if (@(@(Get-Field $a 'postInstall') | Where-Object { $_ -and (Get-Field $_ 'from') }).Count -and
         -not (Get-Field $a 'entry')) { $out += 'after-install steps need a package (.zip) with a setup file' }
+    # Verification is a foreach over verifyPaths that clears a flag on a miss - so an EMPTY array
+    # never enters the loop and the flag stays set. An app with no verify path therefore reports
+    # a green "Installed" whatever the installer did: exit 1603, install nothing, be blocked by
+    # policy. Nothing downstream objects - not the publish gate, not the edge. Clearing the box
+    # is one Ctrl+A away and it applies as you type, so this is the only warning there is.
+    if (-not $unOnly -and -not @(@(Get-Field $a 'verifyPaths') | Where-Object { $_ }).Count) {
+        $out += 'no verify path - an install can never be proven, so every result reads as success'
+    }
     return $out
 }
 
@@ -852,7 +888,9 @@ function Add-Category([string]$Name) {
 
 function Rename-Category([string]$Old, [string]$New) {
     $o = ([string]$Old).Trim(); $n = ([string]$New).Trim()
-    if (-not $o -or -not $n -or $o -eq $n) { return $false }
+    # -ceq: fixing the case of a name ("apps" to "Apps") is a rename too. The client groups by
+    # the exact string, so two spellings are two groups there even though the rail shows one.
+    if (-not $o -or -not $n -or $o -ceq $n) { return $false }
     $names = @(Get-CategoryNames)
     if ($names -notcontains $o) { return $false }
     # Renaming ONTO an existing name is allowed - it is how two groups become one - so the list
@@ -914,8 +952,25 @@ function Remove-Category([string]$Name, [string]$MoveTo = '', [switch]$DeleteApp
 }
 
 function Import-Catalog {
-    if (-not (Test-Path -LiteralPath $CatalogPath)) { throw "No catalog at $CatalogPath" }
-    $raw = Get-Content -LiteralPath $CatalogPath -Raw
+    # Read as UTF-8, explicitly, because that is what this file WRITES (see Export-Catalog, which
+    # uses UTF8Encoding($false) on purpose - a BOM stops Invoke-RestMethod parsing the catalog).
+    # Get-Content with no -Encoding decodes a BOM-less file as ANSI on PowerShell 5.1, so the two
+    # halves disagreed: a publisher of "Dassault Systemes" with an accent loaded as mojibake and
+    # was then SAVED that way, and doubled again on the next session. It compounded, it hit every
+    # non-ASCII string in the whole catalog rather than the edited one, and an en-dash pasted from
+    # a vendor page was enough to start it.
+    #
+    # .tmp first if the real file is missing: Export-Catalog writes tmp-then-rename, so a crash
+    # between the two leaves the newest catalog under that name. Get-PushState already does this.
+    $readPath = $CatalogPath
+    if (-not (Test-Path -LiteralPath $readPath) -and (Test-Path -LiteralPath "$CatalogPath.tmp")) {
+        # only if it actually parses - the whole reason apps.json can be missing is a write that
+        # died, and the same failure is what leaves a half-written .tmp
+        try { [void](([IO.File]::ReadAllText("$CatalogPath.tmp", (New-Object Text.UTF8Encoding $false))).TrimStart([char]0xFEFF) | ConvertFrom-Json)
+              $readPath = "$CatalogPath.tmp" } catch { }
+    }
+    if (-not (Test-Path -LiteralPath $readPath)) { throw "No catalog at $CatalogPath" }
+    $raw = [IO.File]::ReadAllText($readPath, (New-Object Text.UTF8Encoding $false))
     $script:Catalog = $raw.TrimStart([char]0xFEFF) | ConvertFrom-Json
     # property EXISTENCE, not truthiness: deleting the last application writes "apps": [] -
     # a legal, reopenable catalog - and -not @() is $true, so the editor refused to reopen
@@ -993,8 +1048,14 @@ function Export-Catalog {
     # catalog as it was when I opened the editor" - which is the undo a person actually reaches
     # for. Still a courtesy and never a reason a session's work cannot be saved.
     if (-not $script:SessionBackupDone -and (Test-Path -LiteralPath $CatalogPath)) {
-        try { Copy-Item -LiteralPath $CatalogPath -Destination "$CatalogPath.bak" -Force } catch { }
-        $script:SessionBackupDone = $true
+        # the flag goes INSIDE the try. Set outside it, a .bak that was read-only, locked by a
+        # sync client or on a full disk threw, was swallowed, and marked the backup done - so no
+        # backup was taken again for the rest of the session, silently, which is the one moment
+        # the whole session's undo is needed.
+        try {
+            Copy-Item -LiteralPath $CatalogPath -Destination "$CatalogPath.bak" -Force
+            $script:SessionBackupDone = $true
+        } catch { }
     }
     # The longer-range undo the .bak deliberately is not - see Save-CatalogHistory.
     Save-CatalogHistory
@@ -1007,9 +1068,33 @@ function Export-Catalog {
     $clone = ($script:Catalog | ConvertTo-Json -Depth 10) | ConvertFrom-Json
     foreach ($a in @($clone.apps)) { Remove-Field $a '_localFile' }
     # WriteAllText with UTF8Encoding($false), never Set-Content -Encoding UTF8, which adds a
-    # BOM that stops Invoke-RestMethod parsing the catalog as JSON at all
-    [IO.File]::WriteAllText($CatalogPath, ($clone | ConvertTo-Json -Depth 10),
-                            (New-Object Text.UTF8Encoding $false))
+    # BOM that stops Invoke-RestMethod parsing the catalog as JSON at all.
+    #
+    # Written to .tmp and swapped, never in place. WriteAllText opens FileMode.Create, which
+    # TRUNCATES TO ZERO before a byte is written - and this runs on a 1.2 second debounce, so a
+    # power loss, a full disk or a crash inside the write left server\apps.json at 0 bytes and
+    # the editor refusing to open.
+    #
+    # File::Replace, not Move-Item -Force: the PowerShell provider DELETES the destination and
+    # then moves, so there is a real window with no apps.json at all - which is the failure this
+    # is here to remove, not a smaller version of it. Replace is the Win32 ReplaceFile call and
+    # swaps in one step. It needs the destination to exist, so a first-ever save falls back.
+    #
+    # try/finally, because a .tmp left behind by a failed write is not inert: the load path
+    # below prefers it when apps.json is missing, which is exactly when a truncated one would
+    # be read as the rescue copy.
+    $tmpPath = "$CatalogPath.tmp"
+    try {
+        [IO.File]::WriteAllText($tmpPath, ($clone | ConvertTo-Json -Depth 10),
+                                (New-Object Text.UTF8Encoding $false))
+        # [NullString]::Value, not $null: PowerShell binds a bare $null to a [string] parameter as
+        # "", and File.Replace rejects an empty backup path with "The path is not of a legal form",
+        # which came straight back out of every save.
+        if (Test-Path -LiteralPath $CatalogPath) { [IO.File]::Replace($tmpPath, $CatalogPath, [NullString]::Value) }
+        else { Move-Item -LiteralPath $tmpPath -Destination $CatalogPath -Force }
+    } finally {
+        if (Test-Path -LiteralPath $tmpPath) { Remove-Item -LiteralPath $tmpPath -Force -ErrorAction SilentlyContinue }
+    }
     $script:Dirty = $false
     # SILENT on purpose. This runs on a 1.2s debounce now, and an amber "N are not ready to
     # publish" every second and a half would be a permanent nag about a fact that is not an
@@ -1051,7 +1136,7 @@ function Get-PushState {
     }
     if (Test-Path -LiteralPath $readPath) {
         try {
-            $raw = (Get-Content -LiteralPath $readPath -Raw).TrimStart([char]0xFEFF)
+            $raw = ([IO.File]::ReadAllText($readPath, (New-Object Text.UTF8Encoding $false))).TrimStart([char]0xFEFF)
             $j = $raw | ConvertFrom-Json
             $apps = ConvertTo-HashtableDeep $j.apps
             if ($apps) { $script:PushState.apps = $apps }
@@ -1249,6 +1334,18 @@ function Complete-BulkOne {
     $app = $script:BulkCurrent
     $script:BulkCurrent = $null
     $script:BulkDone++
+    # A file that could not be hashed used to vanish into "Added N application(s)" with its row
+    # reading "not hashed yet" - the same words as a file nobody has got to. The reason is kept
+    # per app (by identity, like the refresh memo) and the card says it, in red, until a later
+    # hash of that app succeeds.
+    if ($null -eq $script:BulkErrors) { $script:BulkErrors = @{} }
+    if ($app) {
+        $bk = [System.Runtime.CompilerServices.RuntimeHelpers]::GetHashCode($app)
+        if (-not $r -or $r.error) {
+            $script:BulkErrors[$bk] = $(if ($r -and $r.error) { [string]$r.error } else { 'the hashing job returned nothing' })
+            Show-Warn "$([string](Get-Field $app 'name')): could not be hashed - $($script:BulkErrors[$bk])"
+        } elseif ($script:BulkErrors.ContainsKey($bk)) { $script:BulkErrors.Remove($bk) }
+    }
     if ($app -and $r -and -not $r.error) {
         Set-Field $app 'sha256' ([string]$r.sha256)
         Set-Field $app 'sizeBytes' ([long]$r.size)
@@ -1282,9 +1379,15 @@ function Complete-BulkOne {
     if ($script:BulkQueue.Count -or $script:BulkJob) {
         Set-StatusText "Hashing $($script:BulkDone + 1) of $($script:BulkTotal)..." '#FF4C8DFF'
     } else {
+        # how many of THIS pass failed - counted off the apps still carrying a reason
+        $nFail = @(@($script:Catalog.apps) | Where-Object {
+            $script:BulkErrors.ContainsKey([System.Runtime.CompilerServices.RuntimeHelpers]::GetHashCode($_)) -and
+            -not (Test-RealHash ([string](Get-Field $_ 'sha256'))) }).Count
+        $tone = $(if ($nFail) { '#FFF87171' } elseif ([int]$script:BulkSkipped) { '#FFFBBF24' } else { '#FF34D399' })
         Set-StatusText ("Added $($script:BulkTotal) application(s) from the folder." +
+            $(if ($nFail) { " $nFail could not be hashed - the card says why." } else { '' }) +
             $(if ([int]$script:BulkSkipped) { " $($script:BulkSkipped) file(s) skipped - an app with the same derived id already exists." } else { '' }) +
-            ' Review each one, then save.') $(if ([int]$script:BulkSkipped) { '#FFFBBF24' } else { '#FF34D399' })
+            ' Review each one; the catalog saves itself.') $tone
     }
 }
 
@@ -1412,9 +1515,23 @@ function Remove-App($App, [string]$Name) {
     # rather than deleted, because a hand-made icon is not something to destroy on a click that
     # was about the catalog entry.
     Hide-AppIcon $id
+    # and the upload sidecar, which is keyed by id. Left behind, the next application whose name
+    # derives the same id - which is exactly what "delete it and start over" produces - silently
+    # inherited the removed one's localPath, size and part-finished multipart upload, and that
+    # stale local path then drove the proposed key and the push plan.
+    try {
+        $st = Get-PushState
+        if ($id -and $st -and $st.apps -and $st.apps.ContainsKey($id)) { $st.apps.Remove($id); Save-PushState }
+    } catch { }
     Set-CatalogDirty
     Update-List
-    Set-StatusText "Removed $Name.."
+    # The drawer was still showing the removed entry: the rebuild deselects, Update-Inspector
+    # reads that as "mid-rebuild" and leaves the panel alone, and nothing else ever closed it -
+    # so a technician could keep typing into an application that was no longer in the catalog.
+    Close-DrawerIfGone
+    # Green - a result, not ambient. At the default level this lost to any fresher result (the
+    # "Added N" of a bulk import, say) and a removal went unconfirmed for six seconds.
+    Set-StatusText "Removed $Name." '#FF34D399'
 }
 
 # Named with a leading dot so it sorts out of the way and reads as machinery rather than as a
@@ -1480,12 +1597,44 @@ function Show-CategoryRemove([string]$Name) {
     $bytes = 0L
     foreach ($a in $apps) { $bytes += [long](Get-Field $a 'sizeBytes') }
     $TxtOverlayTitle.Text = "Remove the $Name category?"
-    $TxtOverlayBody.Text = (
+    # TWO bodies, and the checkbox picks between them. The sheet used to be written once, before
+    # the box was touched, so ticking "Delete those applications instead" deleted every entry in
+    # the group - names, hashes, switches, verify paths, hand-written after-install steps - under
+    # a sentence that said only what would NOT be removed. That is a confirm describing the
+    # action that was not chosen, which this product has shipped once already.
+    $script:CatRemoveMove = (
         "It holds $($apps.Count) application(s), $(Format-Size $bytes) of installers.`r`n`r`n" +
         'Removing the category does not remove those installers from R2.')
+    $script:CatRemoveDelete = (
+        "This DELETES $($apps.Count) application(s) from the catalog, not just the category:`r`n  " +
+        ((@($apps | ForEach-Object { [string](Get-Field $_ 'name') }) | Select-Object -First 8) -join "`r`n  ") +
+        $(if ($apps.Count -gt 8) { "`r`n  ...and $($apps.Count - 8) more" } else { '' }) +
+        "`r`n`r`nEverything about them goes - hashes, silent switches, verify paths, after-install " +
+        "steps. $(Format-Size $bytes) of installers stay in R2 and are not removed by this. The " +
+        'only copy of what those entries said is apps.json.bak, as it was when you opened the editor.')
+    $TxtOverlayBody.Text = $script:CatRemoveMove
     $CmbCatTarget.ItemsSource = $others
     $CmbCatTarget.SelectedIndex = 0
     $ChkCatDeleteApps.IsChecked = $false
+    # wired once for the life of the window: registering on every open would stack handlers
+    if (-not $script:CatDeleteWired) {
+        $script:CatDeleteWired = $true
+        $ChkCatDeleteApps.Add_Checked({
+            try {
+                $TxtOverlayBody.Text  = $script:CatRemoveDelete
+                $BtnOverlayOk.Content = 'Delete the applications'
+                $CmbCatTarget.IsEnabled = $false
+            } catch { }
+        })
+        $ChkCatDeleteApps.Add_Unchecked({
+            try {
+                $TxtOverlayBody.Text  = $script:CatRemoveMove
+                $BtnOverlayOk.Content = 'Remove category'
+                $CmbCatTarget.IsEnabled = $true
+            } catch { }
+        })
+    }
+    $CmbCatTarget.IsEnabled = $true
     Hide-OverlayBodies
     $OverlayPick.Visibility = 'Visible'
     $BtnOverlayCancel.Visibility = 'Visible'
@@ -1521,6 +1670,8 @@ function Complete-CategoryChange([string]$Say) {
     # the only feedback was a status line hidden behind the overlay's own scrim - so the button
     # read as doing nothing at all.
     if ([string]$OverlayManage.Visibility -eq 'Visible') { Update-ManageList }
+    # removing a category with its applications can take the drawer's own app with it
+    Close-DrawerIfGone
     if ($Say) { Set-StatusText "$Say." }
 }
 
@@ -1601,16 +1752,23 @@ function Set-AccessCode {
         "back is to set another code and hand that one out.`r`n`r`n" +
         'A download already running is not interrupted. Anyone who STARTS the tool after this ' +
         'will be asked for the new code.') 'Set the code' ({
+        # The code just set IS the live one, so once wrangler confirms it this window can keep
+        # reading the edge with it. Only on success - a refused put leaves the old code live.
         Invoke-Wrangler @('secret', 'put', 'ACCESS_CODE') $code (
-            'Access code set. It is live at the edge now - every previous code stopped working.')
+            'Access code set. It is live at the edge now - every previous code stopped working.') ({
+            Set-SessionAccessCode $code
+            Reset-LiveState
+            try { Start-LiveCheck } catch { }
+        }.GetNewClosure())
     }.GetNewClosure())
 }
 
 $script:WranglerWatch  = $null   # the run in flight, or $null. Only ever one.
 $script:WranglerOk     = ''      # what to say if it succeeds - the caller knows, the poller does not
+$script:WranglerOnOk   = $null   # and what to DO on success, if anything
 $script:WranglerSaidIn = $false  # the sign-in notice is shown once, not every 500ms
 
-function Invoke-Wrangler([string[]]$WranglerArgs, [string]$StdIn, [string]$OkText) {
+function Invoke-Wrangler([string[]]$WranglerArgs, [string]$StdIn, [string]$OkText, [scriptblock]$OnOk = $null) {
     if ($script:WranglerWatch) {
         Show-Notice 'Already talking to Cloudflare' (
             'One edge command is already running. Wait for it to finish, or press Stop.')
@@ -1622,6 +1780,7 @@ function Invoke-Wrangler([string[]]$WranglerArgs, [string]$StdIn, [string]$OkTex
         return
     }
     $script:WranglerOk     = $OkText
+    $script:WranglerOnOk   = $OnOk
     $script:WranglerSaidIn = $false
     try {
         $script:WranglerWatch = Start-WranglerWatched -Arguments $WranglerArgs `
@@ -1689,6 +1848,8 @@ function Complete-WranglerCall {
     switch ($w.Verdict) {
         'ok' {
             Set-StatusText $script:WranglerOk '#FF34D399'
+            $onOk = $script:WranglerOnOk; $script:WranglerOnOk = $null
+            if ($onOk) { try { & $onOk } catch { } }
             return
         }
         'cancelled' {
@@ -1761,11 +1922,25 @@ $script:LiveError  = ''
 $script:LiveJob    = $null
 $script:LiveHandle = $null
 
+# The access code, for THIS session only. /apps.json is behind the gate (cloudflare\worker.js
+# refuses it with 403 without the x-pc2go-code header), so once a code is set the live check
+# could never read the edge again: every card lost its live chip, the summary said "live copy
+# unreadable" for ever, and the id stopped freezing for published apps - so a rename quietly
+# orphaned the files/<id>/ key. Held in memory, never written: typed under Settings, or taken
+# from the code the moment this window sets one.
+$script:AccessCode = ''
+function Set-SessionAccessCode([string]$Code) { $script:AccessCode = '' + $Code }
+# Named, because both callers are closures and a $script: assignment made inside one lands in
+# the closure's own scope - the trap this file documents at Set-CatalogDirty.
+function Reset-LiveState { $script:LiveApps = $null; $script:LiveError = '' }
+
 $script:LiveWork = {
-    param($Url)
+    param($Url, $Code)
     try {
         [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor 3072
-        $r = Invoke-RestMethod -Uri $Url -TimeoutSec 20
+        $hdr = @{}
+        if ($Code) { $hdr['x-pc2go-code'] = [string]$Code }
+        $r = Invoke-RestMethod -Uri $Url -TimeoutSec 20 -Headers $hdr
         $m = @{}
         foreach ($a in @($r.apps)) {
             $id = [string]$a.id
@@ -1809,7 +1984,8 @@ function Test-CatalogIsLive {
 function Start-LiveCheck {
     if ($script:LiveJob) { return }
     $script:LiveJob = [powershell]::Create()
-    [void]$script:LiveJob.AddScript($script:LiveWork).AddArgument("$($BaseUrl.TrimEnd('/'))/apps.json")
+    [void]$script:LiveJob.AddScript($script:LiveWork).AddArgument("$($BaseUrl.TrimEnd('/'))/apps.json").
+           AddArgument([string]$script:AccessCode)
     $script:LiveHandle = $script:LiveJob.BeginInvoke()
 }
 
@@ -1844,6 +2020,11 @@ function Complete-LiveCheck {
         # because the network was down for a moment.
         $script:LiveApps  = $null
         $script:LiveError = [string]$r.error
+        # 403 is the gate, not the network: say what will fix it rather than quoting the status
+        if ($script:LiveError -match '\b403\b|Forbidden') {
+            $script:LiveError = $(if ($script:AccessCode) { 'the edge refused the access code entered under Settings' }
+                                  else { 'the edge wants the access code - enter it under Settings to read what is live' })
+        }
     }
     Update-List
 }
@@ -2208,8 +2389,11 @@ function Update-List {
     # have open answers nothing.
     $q = [string]$script:SearchText
     if ($q) {
+        # a plain substring, case-insensitive. -like turned a typed "[" into a broken wildcard
+        # and threw out of every refresh - one "Refresh list failed" notice per keystroke.
+        $ci = [StringComparison]::OrdinalIgnoreCase
         $shown = @($script:Catalog.apps | Where-Object {
-            ([string](Get-Field $_ 'name')) -like "*$q*" -or ([string](Get-Field $_ 'id')) -like "*$q*" })
+            ([string](Get-Field $_ 'name')).IndexOf($q, $ci) -ge 0 -or ([string](Get-Field $_ 'id')).IndexOf($q, $ci) -ge 0 })
     }
     $rows = @($shown | ForEach-Object {
         $p = Get-AppProblems $_
@@ -2219,6 +2403,11 @@ function Update-List {
         $bad  = $false
         if ($script:BulkCurrent -eq $_) { $busy = 'hashing...' }
         elseif (@($script:BulkQueue) -contains $_) { $busy = 'waiting to hash' }
+        elseif ($script:BulkErrors -and -not (Test-RealHash ([string](Get-Field $_ 'sha256'))) -and
+                $script:BulkErrors.ContainsKey([System.Runtime.CompilerServices.RuntimeHelpers]::GetHashCode($_))) {
+            # a bulk hash that FAILED, said on the card rather than folded into "not hashed yet"
+            $busy = "hash failed - $($script:BulkErrors[[System.Runtime.CompilerServices.RuntimeHelpers]::GetHashCode($_)])"; $bad = $true
+        }
         elseif ($script:PushProgress) {
             # Same idea as 'hashing...': an app mid-upload is not "missing something", it is
             # in flight, and listing it as a problem reads like something went wrong.
@@ -2424,8 +2613,12 @@ function ConvertTo-PostStep($row) {
         if (-not $s) { $s = [pscustomobject]@{} }
         Set-Field $s 'type' 'powershell'
         Set-Field $s 'command' $row.Cmd
-        # a command is not a file: nothing to take out of the package, nowhere to put it
-        foreach ($dead in 'from', 'file', 'dest', 'sha256') { Remove-Field $s $dead }
+        # a command is not a file: nothing to take out of the package, nowhere to put it, and
+        # nothing to download. `url` was missing from this list, so a step converted from a
+        # downloaded file to a command kept its url - and the unelevated side downloads $st.url
+        # for ANY step that has one, before the app is even queued, and abandons the whole
+        # application if that object has gone.
+        foreach ($dead in 'from', 'file', 'dest', 'sha256', 'url') { Remove-Field $s $dead }
         $nm = [string](Get-Field $s 'name')
         if (-not $nm -or $nm -match '^PowerShell') {
             $one = (('' + $row.Cmd) -replace '\s+', ' ').Trim()
@@ -2439,7 +2632,11 @@ function ConvertTo-PostStep($row) {
     if (-not $s) { $s = [pscustomobject]@{} }
     Set-Field $s 'type' $row.Kind
     # No url and no sha256 in either shape: the file travels INSIDE the package, whose own hash
-    # was checked before a single byte was unpacked.
+    # was checked before a single byte was unpacked. This comment was true and the code did not
+    # do it - a step retargeted from a downloaded file to one inside the package kept both, so
+    # the client downloaded the old object first (abandoning the app if it had gone), and then
+    # checked the old hash against the file it pulled out of the package and refused to copy it.
+    foreach ($dead in 'url', 'sha256') { Remove-Field $s $dead }
     Set-Field $s 'from' $row.From
     # `from` and `file` are alternatives and the worker reads `from` first - a stale `file` left
     # behind would make the step read as though it pointed somewhere it does not
@@ -2983,6 +3180,11 @@ function Show-AppDialog($App, $Owner, [string]$LocalFile = '') {
     # and must survive the drawer untouched - apply merges around them, and this says so
     $vpMore = @(@(Get-Field $App 'verifyPaths')).Count - 1
     if ($vpMore -gt 0) { $c.DlgVerifyHint.Text = "+ $vpMore more verify path(s) kept from the catalog" }
+    # The paths beyond the first, taken ONCE at open. Re-reading them from the entry on every
+    # apply made the merge eat itself: clear the box, and the next keystroke anywhere shifted
+    # the second path into first place, then the one after dropped it - one curated path lost
+    # per apply until none were left.
+    $state.vpRest = @(@(Get-Field $App 'verifyPaths') | Select-Object -Skip 1)
     $entry = [string](Get-Field $App 'entry')
     if ($entry) { [void]$c.DlgEntry.Items.Add($entry); $c.DlgEntry.Text = $entry }
 
@@ -3186,6 +3388,12 @@ function Show-AppDialog($App, $Owner, [string]$LocalFile = '') {
         $state.rows.Insert($j, $row)
         & ($fn.refreshRows) $j
         & ($fn.apply)      # the order IS the behaviour, and it was not being written either
+        # and say so either way: a reorder that was withheld used to move on screen and be
+        # written nowhere, with no message at all
+        if (-not $state.stepsWithheld) {
+            $c.DlgStatus.Foreground = '#FF9A9AA6'
+            $c.DlgStatus.Text = 'Order saved.'
+        }
     }.GetNewClosure()
 
     & ($fn.syncHash)
@@ -3233,8 +3441,10 @@ function Show-AppDialog($App, $Owner, [string]$LocalFile = '') {
             $state.rows.RemoveAt($i)
             & ($fn.refreshRows) ([Math]::Min($i, $state.rows.Count - 1))
             & ($fn.apply)      # a removal that is not written comes back on the next open
-            $c.DlgStatus.Foreground = '#FF9A9AA6'
-            $c.DlgStatus.Text = "Removed: $what"
+            if (-not $state.stepsWithheld) {
+                $c.DlgStatus.Foreground = '#FF9A9AA6'
+                $c.DlgStatus.Text = "Removed: $what"
+            }   # else apply's own amber line stands - it says why nothing was written
             return
         }
         Show-Confirm 'Remove this action?' (
@@ -3246,8 +3456,10 @@ function Show-AppDialog($App, $Owner, [string]$LocalFile = '') {
             $state.rows.RemoveAt($i)
             & ($fn.refreshRows) ([Math]::Min($i, $state.rows.Count - 1))
             & ($fn.apply)
-            $c.DlgStatus.Foreground = '#FF9A9AA6'
-            $c.DlgStatus.Text = "Removed: $what"
+            if (-not $state.stepsWithheld) {
+                $c.DlgStatus.Foreground = '#FF9A9AA6'
+                $c.DlgStatus.Text = "Removed: $what"
+            }
         }.GetNewClosure())
     }.GetNewClosure())
     # parenthesised, or -1 is read as a parameter name rather than a number
@@ -3476,7 +3688,26 @@ function Show-AppDialog($App, $Owner, [string]$LocalFile = '') {
         # the ranked best guess is proposed; a setup file chosen by hand survives, one left over
         # from the previous package does not - and a package with no installer inside clears it,
         # or an .exe would keep a setup path belonging to somebody else's zip
-        & ($fn.setAuto) $c.DlgEntry 'entry' $(if (@($r.entries).Count) { [string](@($r.entries)[0]) } else { '' })
+        #
+        # Except the same product's own file arriving again: a setup file somebody CHOSE over
+        # the ranked guess - Autodesk's image\Installer.exe instead of the top-level Setup.exe,
+        # which its own _installNote insists on - was being put back to the guess by every
+        # re-fetch, because the seed for "what the dialog proposed" is whatever the catalog
+        # held. A chosen entry that is still inside the package stays; one that is not follows
+        # the new listing.
+        $keepEntry = ''
+        if ($sameProduct) {
+            # off the entry, not the box: Items.Clear() above has already blanked the box
+            $curEntry = [string](Get-Field $App 'entry')
+            if ($curEntry -and (Test-InPackage @($r.files) $curEntry)) { $keepEntry = $curEntry }
+        }
+        if ($keepEntry) {
+            $state.loading = $true
+            try { $c.DlgEntry.Text = $keepEntry } finally { $state.loading = $false }
+            $state.auto['entry'] = $keepEntry
+        } else {
+            & ($fn.setAuto) $c.DlgEntry 'entry' $(if (@($r.entries).Count) { [string](@($r.entries)[0]) } else { '' })
+        }
         if (@($r.entries).Count) {
             $c.DlgStatus.Text = "Found $(@($r.entries).Count) installer(s) and $(@($r.files).Count) file(s) inside the package."
             $c.DlgStatus.Foreground = '#FF34D399'
@@ -3564,8 +3795,26 @@ function Show-AppDialog($App, $Owner, [string]$LocalFile = '') {
         # the sidecar that the published catalog points at. Double-clicking the id line opens
         # the box, and a typed id wins as before.
         if ("$($c.DlgIdPanel.Visibility)" -eq 'Collapsed') {
+            # Fail CLOSED. Get-AppLive answers '' - not 'live' - whenever the live check has not
+            # succeeded: no session access code typed (it is never persisted, so that is the
+            # normal state), the edge unreachable, or simply the window between launch and the
+            # first check landing. The freeze was conditional on a positive 'live', so in all of
+            # those the id followed the name again and renaming a PUBLISHED app silently re-keyed
+            # it - orphaning files/<old-id>/ in the bucket, still billed, while the next push
+            # re-uploaded the same multi-gigabyte installer under the new key.
+            #
+            # An app with a real hash and a url on our own server has been published or is about
+            # to be; that is knowable without asking anyone, so it is what the freeze rests on
+            # when the live state is unknown.
             $live = $false
-            try { $live = ("$((Get-AppLive $App).Text)" -eq 'live') } catch { }
+            try {
+                $lt = "$((Get-AppLive $App).Text)"
+                if ($lt) { $live = ($lt -eq 'live') }
+                else {
+                    $live = ((Test-RealHash ([string](Get-Field $App 'sha256'))) -and
+                             [bool]([string](Get-Field $App 'url')))
+                }
+            } catch { $live = [bool]$haveId }
             $wantId = $(if ($live -and $haveId) { $haveId } elseif ($name) { ConvertTo-Id $name } else { $haveId })
         }
         if ($wantId -and $wantId -ne $haveId) {
@@ -3662,8 +3911,8 @@ function Show-AppDialog($App, $Owner, [string]$LocalFile = '') {
         # Merge, never replace: the combo edits only the FIRST verify path, and an app can
         # carry several (hand-curated). Writing back a one-element array here silently threw
         # the rest away - the app then "verified" on its weakest path alone.
-        $vpRest = @(@(Get-Field $App 'verifyPaths') | Select-Object -Skip 1)
-        Set-Field $App 'verifyPaths' @(@(@((Get-BoxText $c.DlgVerify)) + $vpRest) | Where-Object { $_ })
+        $vpFirst = Get-BoxText $c.DlgVerify
+        Set-Field $App 'verifyPaths' @(@(@($vpFirst) + @($state.vpRest | Where-Object { $_ -ne $vpFirst })) | Where-Object { $_ })
         }
         # requires: ids, space or comma separated; blank removes the field outright
         $reqIds = @(((Get-BoxText $c.DlgRequires)) -split '[,\s]+' | Where-Object { $_ })
@@ -3692,7 +3941,8 @@ function Show-AppDialog($App, $Owner, [string]$LocalFile = '') {
         $why = ''
         $stepProblem = $false
         if (-not $name)                    { $why = 'This application still needs a name.' }
-        elseif (-not (Get-BoxText $c.DlgUrl)) { $why = 'It needs a download URL before it can be published.' }
+        # not for an uninstall-only entry: it has no URL by design, and Test-App agrees
+        elseif (-not $unOnly -and -not (Get-BoxText $c.DlgUrl)) { $why = 'It needs a download URL before it can be published.' }
         # Walked ALWAYS, never behind the name/url check: whether the steps are complete decides
         # whether they get written at all, and a missing URL must not make an empty action look
         # fine by short-circuiting past it.
@@ -3722,6 +3972,11 @@ function Show-AppDialog($App, $Owner, [string]$LocalFile = '') {
         # as you type, but a half-built action is not a smaller version of a good one - it is a
         # step the worker would refuse on a client, and writing it would put it in apps.json the
         # next time anything saved. The old dialog got this for free by refusing to close.
+        # recorded, so the buttons that call this can tell whether their edit actually landed.
+        # Remove used to print "Removed: <step>" in neutral grey directly over the amber warning
+        # apply had just written - so one unfinished row in the list meant a removal, or a
+        # reorder, was shown as done and never written, and came back on the next open.
+        $state.stepsWithheld = [bool]$stepProblem
         if (-not $stepProblem) { Set-PostRows $App $state.rows }
 
         if ($why) { $c.DlgStatus.Text = $why; $c.DlgStatus.Foreground = '#FFFBBF24' }
@@ -4486,6 +4741,14 @@ $xaml = @'
                                  Foreground="{StaticResource Muted}" Margin="0,3,0,8"/>
                       <Button x:Name="BtnSetCode" Content="Set or rotate the access code"
                               Style="{StaticResource Btn}" HorizontalAlignment="Left" Margin="0"/>
+                      <!-- The current code, for reading the live catalog from this window. Held
+                           for the session only - it is never written anywhere by this tool. -->
+                      <TextBlock x:Name="TxtSessionCodeState" TextWrapping="Wrap" FontSize="11"
+                                 Foreground="{StaticResource Muted}" Margin="0,10,0,3"/>
+                      <PasswordBox x:Name="PwdSessionCode" Background="{StaticResource Sunken}"
+                                   Foreground="{StaticResource Ink}" BorderBrush="{StaticResource Line}"
+                                   Padding="6,5" CaretBrush="{StaticResource Ink}" MaxWidth="320"
+                                   HorizontalAlignment="Left" MinWidth="240"/>
                     </StackPanel>
                   </Border>
                   <Border Background="{StaticResource Sunken}" BorderBrush="{StaticResource Line}"
@@ -4552,6 +4815,7 @@ foreach ($n in 'ListApps','BtnAdd','BtnAddFolder','BtnDelete','TxtStatus','TxtSu
                'Overlay','TxtOverlayTitle','TxtOverlayBody','BtnOverlayOk','BtnOverlayCancel',
                'BtnPush','PushBar','TxtPushApp','PushProgressBar','TxtPushDetail','BtnPushCancel',
                'BtnSettings','OverlaySettings','BtnSetCode','BtnSetCreds','TxtSetCodeState','TxtSetCredsState',
+               'TxtSessionCodeState','PwdSessionCode',
                'OverlayCode','PwdAccessCode','TxtCodeHint',
                'OverlayInput','TxtR2Account','TxtR2Key','PwdR2Secret',
                'ListCats','BtnCatNew','BtnCatRename','BtnCatUp','BtnCatDown','BtnCatDelete',
@@ -4774,11 +5038,30 @@ function Show-Settings {
         'Not set. Publishing will ask for these the first time it needs them.'
     })
 
+    # The code this window uses to READ the edge. Kept for the session, so the box is shown
+    # empty with a note saying whether one is held - never the code itself.
+    $TxtSessionCodeState.Text = $(if ($script:AccessCode) {
+        'An access code is held for this session, so the live chips can read the edge. Type another to replace it.'
+    } else {
+        'To read what the edge is serving while the gate is on, type the current access code here. Kept for this session only - it is never stored.'
+    })
+    $PwdSessionCode.Password = ''
+
     Hide-OverlayBodies
     $OverlaySettings.Visibility  = 'Visible'
     $BtnOverlayCancel.Visibility = 'Collapsed'
     $BtnOverlayOk.Content = 'Done'
-    $script:ConfirmAction = $null
+    # Done takes a typed session code with it and asks the edge again straight away.
+    $script:ConfirmAction = {
+        $typed = '' + $PwdSessionCode.Password
+        $PwdSessionCode.Password = ''
+        if ($typed) {
+            Set-SessionAccessCode $typed
+            Reset-LiveState
+            try { Start-LiveCheck } catch { }
+            Show-Done 'Access code held for this session - reading what is live...'
+        }
+    }
     $Overlay.Visibility = 'Visible'
 }
 
@@ -5064,6 +5347,35 @@ function Test-ImageHasAlpha($Frame) {
     } catch { return $true }   # unreadable alpha: pad rather than crop, which never cuts artwork
 }
 
+# The rectangle that actually holds artwork: the smallest box around every pixel whose alpha
+# is above the noise floor. $null when the picture is fully transparent or unreadable.
+function Get-ImageOpaqueBox($Frame) {
+    try {
+        $conv = New-Object Windows.Media.Imaging.FormatConvertedBitmap
+        $conv.BeginInit()
+        $conv.Source            = $Frame
+        $conv.DestinationFormat = [Windows.Media.PixelFormats]::Bgra32
+        $conv.EndInit()
+        $w = $conv.PixelWidth; $h = $conv.PixelHeight
+        if ($w -lt 1 -or $h -lt 1) { return $null }
+        $stride = $w * 4
+        $px = New-Object byte[] ($stride * $h)
+        $conv.CopyPixels($px, $stride, 0)
+        $minX = $w; $minY = $h; $maxX = -1; $maxY = -1
+        for ($y = 0; $y -lt $h; $y++) {
+            $row = $y * $stride
+            for ($x = 0; $x -lt $w; $x++) {
+                if ($px[$row + ($x * 4) + 3] -gt 16) {
+                    if ($x -lt $minX) { $minX = $x }; if ($x -gt $maxX) { $maxX = $x }
+                    if ($y -lt $minY) { $minY = $y }; if ($y -gt $maxY) { $maxY = $y }
+                }
+            }
+        }
+        if ($maxX -lt 0) { return $null }
+        return @{ X = $minX; Y = $minY; Width = ($maxX - $minX + 1); Height = ($maxY - $minY + 1) }
+    } catch { return $null }
+}
+
 function Convert-ImageToIcon([string]$Source, [string]$Destination, [int]$Size = 256) {
     $frame = $null
     try {
@@ -5085,6 +5397,24 @@ function Convert-ImageToIcon([string]$Source, [string]$Destination, [int]$Size =
     # carries transparency keeps its shape and its padding, because on a logo that space is
     # deliberate and cropping into it would cut the mark. A square source is identical either way.
     $transparent = Test-ImageHasAlpha $frame
+    # Transparent margins are trimmed first. Two logos picked "at the same size" came out
+    # different sizes on the tile because one source carried its artwork in the middle of an
+    # empty canvas - InDesign's filled 62% of its width, Illustrator's 100% - and the fit below
+    # honoured the empty space as if it were part of the mark. The artwork's own bounding box
+    # is what gets fitted, so every logo fills the tile the same way.
+    if ($transparent) {
+        $box = Get-ImageOpaqueBox $frame
+        if ($box -and ($box.Width -lt $frame.PixelWidth -or $box.Height -lt $frame.PixelHeight) -and $box.Width -ge 8 -and $box.Height -ge 8) {
+            $frame = [Windows.Media.Imaging.BitmapFrame]::Create((New-Object Windows.Media.Imaging.CroppedBitmap $frame, (New-Object Windows.Int32Rect $box.X, $box.Y, $box.Width, $box.Height)))
+        }
+    }
+    # NEVER upscaled. A 32-pixel source blown up to 256 bakes its blur into the file for good,
+    # and the client - which draws a catalog icon at 24 to 36 device pixels - then downsamples
+    # the blur. Measured on sketchup-pro.png: a small source enlarged here came out soft in the
+    # editor and unreadable on a client tile. A source smaller than the target keeps its own
+    # pixels at its own size; the one scale that happens is the client's, from real pixels.
+    $srcMax = [Math]::Max([int]$frame.PixelWidth, [int]$frame.PixelHeight)
+    if ($srcMax -lt $Size) { $Size = [Math]::Max(16, $srcMax) }
     if ($transparent) {
         $scale = [Math]::Min($Size / [double]$frame.PixelWidth, $Size / [double]$frame.PixelHeight)
     } else {
@@ -5097,6 +5427,9 @@ function Convert-ImageToIcon([string]$Source, [string]$Destination, [int]$Size =
     $y = [int](($Size - $h) / 2)
 
     $visual = New-Object Windows.Media.DrawingVisual
+    # Fant, not bilinear, for the one downscale this does: a 1024-pixel logo shrunk to 256 with
+    # the default filter loses its thin strokes before the client ever sees it
+    [Windows.Media.RenderOptions]::SetBitmapScalingMode($visual, [Windows.Media.BitmapScalingMode]::HighQuality)
     $ctx = $visual.RenderOpen()
     try {
         $ctx.DrawImage($frame, (New-Object Windows.Rect($x, $y, $w, $h)))
@@ -5149,6 +5482,20 @@ function Set-AppIconFromFile($App, $Panel) {
     if ($again.Count) { $ListApps.SelectedItem = $again[0] }
     Set-CatalogDirty
     Set-StatusText "Icon set for $([string](Get-Field $App 'name')). Update... uploads it with everything else."
+}
+
+# Shut the drawer when the application it shows is no longer in the catalog - after Remove,
+# or after a category was removed together with its applications. Update-Inspector cannot do
+# this on its own: the rebuild that follows a removal deselects for an instant, and that
+# instant is deliberately ignored there so that picking an icon does not shut the panel.
+function Close-DrawerIfGone {
+    $a = $script:InspApp
+    if (-not $a) { return }
+    if (@($script:Catalog.apps) -contains $a) { return }
+    Stop-Drawer
+    $script:InspApp = $null
+    $DrawerHost.Content = $null
+    Close-Drawer
 }
 
 function Update-Inspector {
@@ -5291,12 +5638,32 @@ $window.Add_PreviewMouseLeftButtonDown({ param($src, $e) Invoke-Guarded {
     $lb = Get-AncestorOfType $e.OriginalSource ([Windows.Controls.ListBox])
     if ($lb -and $lb -eq $ListApps) { return }
     # the title bar is for moving the window, not for dismissing things
+    # A ComboBox dropdown lives in a Popup, which is its own visual tree rooted at PopupRoot -
+    # VisualTreeHelper::GetParent stops there and never reaches DrawerPanel. Since this handler
+    # is PREVIEW (it tunnels, so it runs before ComboBoxItem can mark the click handled), every
+    # one of the drawer's five dropdowns - category, setup file, verify path, after-install file
+    # and destination - would have closed the drawer the moment an item was clicked, throwing
+    # away the pick. The old ContentControl exemption hid this by returning for every click in
+    # the window. The logical tree DOES cross the popup boundary, so ask it first.
+    $pop = $e.OriginalSource
+    while ($pop) {
+        if ($pop -is [Windows.Controls.Primitives.Popup]) { return }
+        $pop = [Windows.LogicalTreeHelper]::GetParent($pop)
+    }
     $d0 = $e.OriginalSource
     while ($d0) {
         if ($d0 -eq $TitleBar) { return }
         $d0 = $(if ($d0 -is [Windows.Media.Visual]) { [Windows.Media.VisualTreeHelper]::GetParent($d0) } else { $null })
     }
-    if (Get-AncestorOfType $e.OriginalSource ([Windows.Controls.ContentControl])) { return }
+    # The overlay is modal in intent: answering a confirm must not also shut the drawer the
+    # question was about. This used to exempt any ContentControl ancestor instead - and a
+    # Window IS a ContentControl, so every click in the window found one and returned here.
+    # Click-away never closed the drawer at all; only the category rail did.
+    $ov = $e.OriginalSource
+    while ($ov) {
+        if ($ov -eq $Overlay) { return }
+        $ov = $(if ($ov -is [Windows.Media.Visual]) { [Windows.Media.VisualTreeHelper]::GetParent($ov) } else { $null })
+    }
     $d = $e.OriginalSource
     while ($d) {
         if ($d -eq $DrawerPanel) { return }
@@ -5742,7 +6109,8 @@ function Start-PushConfirm {
         }
     }
     $plan = New-PushPlan
-    if (-not $plan.Items.Count) {
+    $icons = @(Get-IconUploads)
+    if (-not $plan.Items.Count -and -not $icons.Count) {
         # Everything ready is already in the bucket. That is not "nothing to do" - the catalog
         # still has to reach the edge before any client can see those apps, and telling somebody
         # to go and press a different button for the second half of the job is how a finished
@@ -5754,8 +6122,20 @@ function Start-PushConfirm {
             "Worker - which is what makes them visible on a client machine.") 'Publish' { Start-PublishOnly }
         return
     }
-    $script:PushPlan = $plan.Items
-    $script:PushIcons = @(Get-IconUploads)
+    $script:PushPlan = @($plan.Items)
+    $script:PushIcons = $icons
+    if (-not $plan.Items.Count) {
+        # Only icons. They used to be carried ONLY alongside an installer upload, so a catalog
+        # whose installers were all in the bucket published its icons never - measured: every
+        # /icons/<id>.png on the edge answered 404 while eight sat in icons\. The push runspace
+        # runs with an empty installer plan and the icons ride as they always did.
+        $n = Get-ServableCount
+        Show-Confirm 'Icons to upload' (
+            "All $n ready application(s) are already in R2. $($icons.Count) icon(s) in icons\ are " +
+            "checked against the bucket and uploaded if they are not there, then the catalog is " +
+            "rewritten with their URLs, saved, and published.") 'Update' { Start-Push }
+        return
+    }
 
     $left = @($plan.NotReady).Count + @($plan.NoFile).Count
     $body = "$($plan.Items.Count) installer(s), $(Format-Size $plan.Bytes), will be checked " +
@@ -5776,6 +6156,9 @@ function Start-PushConfirm {
         $body += "$($plan.Converting) of them is a .rar and will be rewritten as a .zip first. " +
                  'Windows clients on an older build cannot extract a .rar at all - their tar is ' +
                  "too old - so this is what makes those apps installable.`r`n`r`n"
+    }
+    if ($icons.Count) {
+        $body += "$($icons.Count) icon(s) from icons\ go up with them - only the ones the bucket does not already hold.`r`n`r`n"
     }
     $body += 'The window stays usable and Stop is safe - a stopped upload resumes from where it ' +
              "got to rather than starting the file again.`r`n`r`n"
@@ -6037,7 +6420,17 @@ function Complete-Push {
     $unfinished = @(@($script:Catalog.apps) | Where-Object { (Test-App $_).Count }).Count
     $note = $(if ($unfinished) { " $unfinished not ready yet - those stay hidden from clients." } else { '' })
     $conv = $(if ($convCount) { " $convCount converted to .zip." } else { '' })
-    Set-StatusText "$okCount uploaded, $skipCount already there.$conv $changed rewritten. Publishing...$note" '#FF4C8DFF'
+    # The icons, by outcome. A failure here was written to a log nobody read; it is on the row now.
+    $icUp   = @($p.Icons | Where-Object { -not $_.skipped }).Count
+    $icHave = @($p.Icons | Where-Object { $_.skipped }).Count
+    $icFail = @($p.Log | Where-Object { "$_" -like 'icon *' })
+    $icons = ''
+    if ($icUp -or $icHave) { $icons = " $icUp icon(s) uploaded, $icHave already there." }
+    if ($icFail.Count) {
+        $icons += " $($icFail.Count) icon(s) FAILED: $(($icFail | Select-Object -First 2) -join '; ')."
+        Show-Warn "$($icFail.Count) icon(s) did not upload - $($icFail[0])"
+    }
+    Set-StatusText "$okCount uploaded, $skipCount already there.$conv$icons $changed rewritten. Publishing...$note" '#FF4C8DFF'
     Start-Publish
 }
 
@@ -6188,6 +6581,9 @@ $BtnPush.Add_Click({ Invoke-Guarded {
         return
     }
 
+    # An icon rename still pending from a keystroke a moment ago must land before the plan looks
+    # for icons\<id>.png, or the just-renamed app pushes without its artwork this time round.
+    try { Complete-IconMoves } catch { }
     $plan = New-PushPlan
     # Only a catalog with nothing servable AT ALL is a dead end. With at least one complete app,
     # Push still has work to do even when every byte is already uploaded - publishing the
@@ -6272,16 +6668,57 @@ $window.Dispatcher.Add_UnhandledException({ param($src, $e)
 $script:ForceClose = $false
 $window.Add_Closing({
     param($eventSource, $e)
+    # A wrangler run first, because it is the only thing here that can change the PRODUCTION
+    # access code, and because it leaves the code in plaintext in %TEMP% until it is collected.
+    # Closing over the top of one used to let the rotation land with nobody watching - every
+    # previously issued code dead, no record that it happened, and the new one still sitting in
+    # a temp file - and Set-SessionAccessCode never ran, so even a reopened editor could not
+    # read /apps.json.
+    if ($script:WranglerWatch -and -not $script:ForceClose) {
+        $e.Cancel = $true
+        Show-Confirm 'Cloudflare is still being changed' (
+            'A wrangler command is running. It can take the better part of a minute on a cold ' +
+            "npx cache, which usually looks like nothing is happening.`r`n`r`n" +
+            'Closing stops it. If it was setting or removing the access code, the code may or ' +
+            'may not have been changed - check it before handing one out.'
+        ) 'Stop it and close' {
+            try { Stop-WranglerWatched -Watch $script:WranglerWatch } catch { }
+            $script:ForceClose = $true; $window.Close()
+        }
+        return
+    }
+    # A bulk import in flight. Those entries are in the catalog already and will be SAVED - they
+    # just have no hash, and a card that was never hashed reads the same as one nobody has got
+    # to yet. Silently abandoning seventeen of them is how a technician ends up believing a
+    # folder import finished.
+    if (($script:BulkQueue.Count -or $script:BulkJob) -and -not $script:ForceClose) {
+        $e.Cancel = $true
+        $left = [int]$script:BulkQueue.Count + $(if ($script:BulkJob) { 1 } else { 0 })
+        Show-Confirm 'Applications are still being hashed' (
+            "$left of the applications added from the folder have not been hashed yet." +
+            "`r`n`r`nThey stay in the catalog, but an application with no hash is not served to " +
+            'anyone and cannot be uploaded. Closing now means opening each one and pressing ' +
+            'Fetch and hash by hand later.'
+        ) 'Close anyway' { $script:ForceClose = $true; $window.Close() }
+        return
+    }
     # Before the dirty check, because pre-rewrite the catalog is often CLEAN mid-push: closing
     # then killed the upload runspace mid-file with no prompt at all.
     if (($script:PushJob -or $script:PublishProc) -and -not $script:ForceClose) {
         $e.Cancel = $true
         Show-Confirm 'A push is still running' (
             'Closing now kills the upload mid-file. Stop is the safe way out - it lets the ' +
-            'current part finish so the resume record stays honest.'
+            "current part finish so the resume record stays honest.`r`n`r`n" +
+            'Anything you have edited since the upload started is still only in memory - ' +
+            'Complete-Save refuses to write while a push is running - so it is written to ' +
+            'apps.json before the window goes.'
         ) 'Close anyway' {
             # what the body text promises: the current part is allowed to finish
             try { $script:PushProgress.Cancel = $true } catch { }
+            # and the edits made DURING the push, which the one-writer rule has been deferring.
+            # Without this, "Close anyway" threw away every change made across a multi-hour
+            # upload, under a sheet that talked only about the upload.
+            try { [void](Complete-Save -Force) } catch { }
             $script:ForceClose = $true; $window.Close()
         }
         return
