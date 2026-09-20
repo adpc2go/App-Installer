@@ -29,7 +29,7 @@ PUBLIC_BASE_URL = ""
 # This is a var and not a secret on purpose: the value is public the moment go.ps1 is
 # served, and keeping it in version control makes "which build is live?" answerable
 # from git rather than from the dashboard.
-APPDEPLOY_SHA256 = "C432EA4A770C4D21B01C2DA5394230E544DCADCE745E648DA9C6103B2E6387D5"
+APPDEPLOY_SHA256 = "B1B862686C328BF979159C68D3EB458773F6FC1BA23BC3AFA53E00373057F078"
 
 # The compiled client (client\PC2Go.Deploy, built by tools\Build-Client.ps1).
 #   BOOT_CLIENT       which client go.ps1 launches for everyone: "script" or "exe". Flip it to
@@ -38,7 +38,7 @@ APPDEPLOY_SHA256 = "C432EA4A770C4D21B01C2DA5394230E544DCADCE745E648DA9C6103B2E63
 #                     tools\Publish-Release.ps1 -Client - do not edit by hand. Empty means the
 #                     exe is never launched, whatever BOOT_CLIENT says.
 BOOT_CLIENT = "script"
-CLIENT_EXE_SHA256 = "1D972C98B03C50DF6E49D2C8611EA1CA70B1A4FAFD88861E14C4A4CF6DE9C2A8"
+CLIENT_EXE_SHA256 = "2A0B370A07537D9A8831F30B0400BAD59353B79E3B6907B038411F65A4170D4A"
 
 # SIGNING_KEY is a secret, never a var. Set it once with:
 #   wrangler secret put SIGNING_KEY
