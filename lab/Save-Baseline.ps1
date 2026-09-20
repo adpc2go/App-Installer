@@ -47,6 +47,7 @@ if ($Promote) {
         # Renamed, never deleted - a baseline costs a few GB and is expensive to rebuild.
         Rename-VMCheckpoint -VMName $VMName -Name $Current -NewName $old
         Write-Host "previous baseline kept as '$old'"
+        Start-Sleep -Seconds 2   # Hyper-V needs a beat between renames, or the next one says "Unable to find a snapshot"
     }
     Rename-VMCheckpoint -VMName $VMName -Name $To -NewName $Current
     Write-Host "'$To' is now '$Current' - plain .\Test.ps1 uses it" -ForegroundColor Green

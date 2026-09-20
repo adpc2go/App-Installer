@@ -21,3 +21,14 @@ icons/.removed/
 # Real vendor installers downloaded by tests\Get-InstallerFixtures.ps1 for Test-InstallerFamily.ps1 -
 # pinned by SHA-256 in that script, never versioned here.
 tests/fixtures/
+
+# The compiled client's build tree and outputs. Resources\worker.ps1 is rendered from
+# server\AppDeploy.ps1 by tools\Build-Client.ps1 on every build - the script is the source.
+client/PC2Go.Deploy/bin/
+client/PC2Go.Deploy/obj/
+client/PC2Go.Deploy/Resources/worker.ps1
+client/PC2Go.Deploy/Resources/reader.ps1
+client/dist/
+# the Catalog Editor keeps the outgoing icon as <id>.png.previous when you pick a new one;
+# it is a local undo, not source, and there is no UI that restores it
+icons/*.previous

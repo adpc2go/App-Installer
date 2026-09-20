@@ -35,13 +35,17 @@ export default {
     }
 
     try {
-      if (path === "/go" || path === "/go.ps1") return await serveBootstrap(env, url);
+      if (path === "/go" || path === "/go.ps1") return await serveBootstrap(env, url, null);
+      // The same bootstrap with the client choice forced, for trying the compiled client before
+      // BOOT_CLIENT flips it on for everyone:  irm https://apps.pc2go.ca/go-exe | iex
+      if (path === "/go-exe") return await serveBootstrap(env, url, "exe");
+      if (path === "/go-script") return await serveBootstrap(env, url, "script");
       // The access gate. /go stays open - the bootstrap is useless without what it fetches -
       // but the tool and the catalog are refused without the code. The catalog matters most:
       // it MINTS fresh signed /files URLs, so serving it to a stranger hands them every
       // installer. A noted paste-line therefore gains nothing; rotation is one
       // `wrangler secret put ACCESS_CODE` and every code ever handed out is dead.
-      if (path === "/AppDeploy.ps1" || path === "/apps.json") {
+      if (path === "/AppDeploy.ps1" || path === "/apps.json" || path === "/PC2Go.Deploy.exe") {
         if (!accessOk(request, url, env)) {
           return new Response("Access code required\n", {
             status: 403,
@@ -50,6 +54,8 @@ export default {
         }
       }
       if (path === "/AppDeploy.ps1") return await serveObject(request, env, "AppDeploy.ps1", { cache: "no-cache" });
+      // The compiled client, gated exactly like the script it replaces. Its pin is CLIENT_EXE_SHA256.
+      if (path === "/PC2Go.Deploy.exe") return await serveObject(request, env, "PC2Go.Deploy.exe", { cache: "no-cache" });
       if (path === "/apps.json") return await serveCatalog(env, url);
       if (path.startsWith("/files/")) return await serveGated(request, env, url, path);
       if (PUBLIC_PREFIXES.some((p) => path.startsWith(p))) {
@@ -97,7 +103,7 @@ function accessOk(request, url, env) {
  * worthless: an attacker who can rewrite AppDeploy.ps1 could rewrite its hash too.
  * Keeping it in the Worker config means compromising R2 alone is not enough.
  */
-async function serveBootstrap(env, url) {
+async function serveBootstrap(env, url, forceClient) {
   const obj = await env.BUCKET.get("go.ps1");
   if (!obj) return notFound();
 
@@ -109,6 +115,17 @@ async function serveBootstrap(env, url) {
   const pin = (env.APPDEPLOY_SHA256 || "").trim().toUpperCase();
   if (/^[0-9A-F]{64}$/.test(pin)) {
     text = text.replace(/^(\s*\$PinnedHash\s*=\s*)'[^']*'/m, `$1'${pin}'`);
+  }
+
+  // The compiled client: which kind of client go.ps1 launches, and the exe's own pin. The
+  // choice is a var so "which client is live?" is answerable from git; /go-exe and /go-script
+  // override it per request for a trial run. go.ps1 refuses the exe without a real pin, so an
+  // empty CLIENT_EXE_SHA256 can never produce an unverified launch - it produces the script.
+  const client = (forceClient || env.BOOT_CLIENT || "script").trim().toLowerCase() === "exe" ? "exe" : "script";
+  text = text.replace(/^(\s*\$Client\s*=\s*)'[^']*'/m, `$1'${client}'`);
+  const exePin = (env.CLIENT_EXE_SHA256 || "").trim().toUpperCase();
+  if (/^[0-9A-F]{64}$/.test(exePin)) {
+    text = text.replace(/^(\s*\$ExeHash\s*=\s*)'[^']*'/m, `$1'${exePin}'`);
   }
   // If no valid pin is configured the placeholder survives and go.ps1 skips the check,
   // which is its documented behaviour. Nothing at the edge reports that state; go.ps1

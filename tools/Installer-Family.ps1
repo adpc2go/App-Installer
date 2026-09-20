@@ -23,7 +23,29 @@ $script:InstallerFamilyLabels = @{
     inno = 'Inno Setup'; nsis = 'NSIS'; burn = 'WiX Burn bundle'; sfx7z = '7-Zip SFX'; sfxrar = 'WinRAR SFX'
     installshield = 'InstallShield'; odis = 'Autodesk ODIS'; adobeac = 'Adobe Admin Console package'
     officeodt = 'Office Deployment Tool'; acrobat = 'Adobe Acrobat bootstrap'
+    squirrel = 'Squirrel.Windows'; velopack = 'Velopack'; advinst = 'Advanced Installer'; wise = 'Wise Installation System'
+    setupfactory = 'Setup Factory'; installaware = 'InstallAware'; qtifw = 'Qt Installer Framework'; install4j = 'install4j'
+    iexpress = 'IExpress self-extractor'; bitrock = 'InstallBuilder (BitRock)'; clickteam = 'Clickteam Install Creator'
 }
+
+# The second-pass families: installers whose loader carries its maker's name in its own image
+# (a version resource or a plain string in the stub) rather than a structural marker. Searched
+# ONLY when nothing structural, no package layout and no InstallShield resource matched, in the
+# bounded regions the file header comment names. Order matters: Velopack is a Squirrel fork and
+# still carries Squirrel strings, so it is asked first.
+$script:InstallerIdentityMarkers = @(
+    @{ Family = 'velopack';     Markers = @('Velopack') }
+    @{ Family = 'squirrel';     Markers = @('SquirrelSetup', 'Squirrel.Windows', 'SquirrelAwareVersion') }
+    @{ Family = 'advinst';      Markers = @('Advanced Installer', 'Caphyon') }
+    @{ Family = 'wise';         Markers = @('WiseMain', 'Wise Installation System', 'Wise Solutions') }
+    @{ Family = 'setupfactory'; Markers = @('Setup Factory', 'Indigo Rose') }
+    @{ Family = 'installaware'; Markers = @('InstallAware') }
+    @{ Family = 'qtifw';        Markers = @('Qt Installer Framework', 'installerbase') }
+    @{ Family = 'install4j';    Markers = @('install4j') }
+    @{ Family = 'bitrock';      Markers = @('BitRock InstallBuilder', 'InstallBuilder', 'BitRock') }
+    @{ Family = 'clickteam';    Markers = @('Clickteam Install Creator', 'Install Creator', 'Clickteam') }
+    @{ Family = 'iexpress';     Markers = @('Win32 Cabinet Self-Extractor', 'WEXTRACT.EXE') }
+)
 
 function Get-InstallerFamilyLabel([string]$Family) {
     if ($Family -and $script:InstallerFamilyLabels.ContainsKey($Family)) { return $script:InstallerFamilyLabels[$Family] }
@@ -47,6 +69,7 @@ function Get-FamilySwitches([string]$Family, [string]$SubType = '') {
             switch ($SubType) {
                 'basicmsi'      { return @{ Install = '/s /v"/qn /norestart"'; UninstallExe = '^msiexec(\.exe)?$'; UninstallArgs = '/x {ProductCode} /qn /norestart'; Doc = 'Revenera: Setup.exe command-line parameters (Basic MSI)' } }
                 'installscript' { return @{ Install = '/s /f1"{ResponseFile}"'; UninstallExe = '(?i)^setup\.exe$'; UninstallArgs = '-runfromtemp -removeonly /s /f1"{ResponseFile}"'; Doc = 'Revenera: InstallScript silent install with a recorded response file' } }
+                'suite'         { return @{ Install = '/silent'; UninstallExe = '(?i)\.exe$'; UninstallArgs = '-remove -silent'; Doc = 'Revenera: Suite/Advanced UI Setup.exe command-line parameters (/silent, /remove)' } }
                 default         { return @{ Install = ''; UninstallExe = ''; UninstallArgs = ''; Doc = 'Revenera: the silent switch depends on the project type, which a single setup.exe does not prove' } }
             }
         }
@@ -54,6 +77,18 @@ function Get-FamilySwitches([string]$Family, [string]$SubType = '') {
         'adobeac'   { return @{ Install = '--silent'; UninstallExe = '(?i)^setup\.exe$'; UninstallArgs = '--uninstall=1'; Doc = 'Adobe Enterprise: setup.exe --silent / --uninstall=1' } }
         'officeodt' { return @{ Install = '/configure configuration.xml'; UninstallExe = '(?i)OfficeClickToRun\.exe$'; UninstallArgs = ''; Doc = 'Microsoft: Office Deployment Tool setup.exe /configure' } }
         'acrobat'   { return @{ Install = '/sAll /rs /rps /msi EULA_ACCEPT=YES'; UninstallExe = '^msiexec(\.exe)?$'; UninstallArgs = '/x {ProductCode} /qn /norestart'; Doc = 'Adobe Acrobat Enterprise Toolkit: Setup.exe /sAll /rs /msi' } }
+        # ---- the second pass: identity-string families (see $script:InstallerIdentityMarkers)
+        'squirrel'     { return @{ Install = '--silent'; UninstallExe = '(?i)^update\.exe$'; UninstallArgs = '--uninstall'; Doc = 'Squirrel.Windows: Setup.exe --silent; Update.exe --uninstall runs without UI' } }
+        'velopack'     { return @{ Install = '--silent'; UninstallExe = '(?i)^update\.exe$'; UninstallArgs = '--uninstall'; Doc = 'Velopack: Setup.exe --silent; Update.exe --uninstall' } }
+        'advinst'      { return @{ Install = '/exenoui /qn'; UninstallExe = '(?i)\.exe$'; UninstallArgs = '/x /exenoui /qn'; Doc = 'Advanced Installer: EXE bootstrapper command line (/exenoui /qn; /x uninstalls)' } }
+        'wise'         { return @{ Install = '/s'; UninstallExe = '(?i)^unwise(32)?\.exe$'; UninstallArgs = '/S {InstallLog}'; Doc = 'Wise Installation System: setup /s; UNWISE.EXE /S install.log' } }
+        'setupfactory' { return @{ Install = '/S'; UninstallExe = '(?i)\.exe$'; UninstallArgs = '/S'; Doc = 'Indigo Rose Setup Factory: /S for the setup and its uninstaller' } }
+        'installaware' { return @{ Install = '/s'; UninstallExe = '(?i)\.exe$'; UninstallArgs = '/s MODIFY=FALSE REMOVE=TRUE UNINSTALL=YES'; Doc = 'InstallAware: /s; uninstall with MODIFY=FALSE REMOVE=TRUE UNINSTALL=YES' } }
+        'qtifw'        { return @{ Install = '--accept-licenses --default-answer --confirm-command install'; UninstallExe = '(?i)^maintenancetool\.exe$'; UninstallArgs = '--confirm-command purge'; Doc = 'Qt Installer Framework 4: command-line install and purge' } }
+        'install4j'    { return @{ Install = '-q'; UninstallExe = '(?i)^uninstall\.exe$'; UninstallArgs = '-q'; Doc = 'install4j: -q (unattended) for the installer and the uninstaller' } }
+        'iexpress'     { return @{ Install = '/Q'; UninstallExe = ''; UninstallArgs = ''; Doc = 'IExpress / wextract: /Q quiet (the package decides what it runs)' } }
+        'bitrock'      { return @{ Install = '--mode unattended'; UninstallExe = '(?i)^uninstall\.exe$'; UninstallArgs = '--mode unattended'; Doc = 'InstallBuilder (BitRock / VMware): --mode unattended' } }
+        'clickteam'    { return @{ Install = '/S'; UninstallExe = '(?i)^uninstal\.exe$'; UninstallArgs = '/S'; Doc = 'Clickteam Install Creator: /S; Uninstal.exe /S' } }
         default     { return @{ Install = ''; UninstallExe = ''; UninstallArgs = ''; Doc = '' } }
     }
 }
@@ -363,6 +398,12 @@ function Get-InstallerFamily {
     $shieldCo = @('installshield software corporation', 'installshield software corp.', 'macrovision corporation', 'acresso software inc.', 'flexera software llc', 'flexera software, llc', 'flexera', 'revenera')
     $shieldDesc = @('installshield (r) setup launcher', 'installshield setup launcher', 'setup launcher unicode', 'setup launcher', 'installshield setup')
     if (($shieldCo -contains $ver.CompanyName.ToLowerInvariant()) -or ($shieldDesc -contains $ver.FileDescription.ToLowerInvariant()) -or ($ver.ProductName -eq 'InstallShield')) { $isShield = $true }
+    # A Suite/Advanced UI bootstrapper carries the VENDOR's company name (Trimble, not Flexera)
+    # and identifies its engine only in InternalName. Measured on SketchUp 2026's installer:
+    # 'Trimble, Inc. | SketchUp Installer | SetupSuite'. Its silent switch is /silent - the one
+    # InstallShield project type whose switch a single exe DOES prove.
+    $isSuite = ($ver.InternalName -eq 'SetupSuite')
+    if ($isSuite) { $isShield = $true }
 
     # ---- 4. package layouts
     $layout = $null
@@ -390,7 +431,10 @@ function Get-InstallerFamily {
         $iss = Test-Companion $names '*.iss'
         $msiBeside = Test-Companion $names '*.msi'
         $iniBeside = Test-Companion $names 'setup.ini'
-        if ($msiBeside -or $iniBeside) {
+        if ($isSuite) {
+            $res.SubType = 'suite'; $res.Evidence += "Suite/Advanced UI engine (InternalName 'SetupSuite')"
+            $res.InstallArgs = (Get-FamilySwitches 'installshield' 'suite').Install
+        } elseif ($msiBeside -or $iniBeside) {
             $res.SubType = 'basicmsi'; $res.Evidence += "Basic MSI layout ($(@($msiBeside, $iniBeside) | Where-Object { $_ } | Select-Object -First 1) beside)"
         } elseif ((Test-Companion $names 'setup.inx') -or (Test-Companion $names 'issetup.dll') -or (Test-Companion $names 'data1.cab')) {
             $res.SubType = 'installscript'
@@ -401,11 +445,63 @@ function Get-InstallerFamily {
             $res.Notes += 'a single InstallShield setup.exe does not prove its project type: the switch is /s /v"/qn" (Basic MSI), /s /f1 (InstallScript, needs a response file) or /silent (Suite) - take it from the vendor page'
         }
     } else {
-        if ($ver.CompanyName) { $res.Evidence += "PE by '$($ver.CompanyName)' with no known installer signature in the probed regions" }
-        else { $res.Evidence += 'PE with no known installer signature in the probed regions' }
-        if ($pe.OverlaySize -gt 0) { $res.Notes += ('overlay probed 0x{0:X}-0x{1:X} only' -f $pe.OverlayOffset, ($pe.OverlayOffset + [Math]::Min([long]$OverlayProbeBytes, $pe.OverlaySize))) }
+        # ---- 6. the second pass: a maker's name in the loader's own image
+        #
+        # Nothing structural, no layout, no InstallShield resource. The remaining families
+        # name themselves in plain text - in the stub's data, or in the version resource
+        # (UTF-16, so the same bytes are also read with their NULs dropped). Bounded: the
+        # first 128 KB, up to 256 KB of .rsrc, the overlay head already in hand, and the tail.
+        $ident = Find-InstallerIdentity $Path $pe $ver $overlay $tail $ctx
+        if ($ident) {
+            $res.Family = $ident.Family; $res.Confidence = 'signature'; $res.Evidence += $ident.Evidence
+            if ($res.EmbeddedMsi -like 'found@*') { $res.Notes += "an MSI is embedded ($($res.EmbeddedMsi)); the wrapper's switch applies to the wrapper" }
+        } else {
+            if ($ver.CompanyName) { $res.Evidence += "PE by '$($ver.CompanyName)' with no known installer signature in the probed regions" }
+            else { $res.Evidence += 'PE with no known installer signature in the probed regions' }
+            if ($pe.OverlaySize -gt 0) { $res.Notes += ('overlay probed 0x{0:X}-0x{1:X} only' -f $pe.OverlayOffset, ($pe.OverlayOffset + [Math]::Min([long]$OverlayProbeBytes, $pe.OverlaySize))) }
+        }
     }
     return (& $finish $res)
+}
+
+# The identity-string pass. Returns @{ Family; Evidence } for the first family whose marker is
+# found, or $null. Every hit names the marker and where it was read, so the verdict is still
+# "found X at Y" - never an inference from an absence.
+function Find-InstallerIdentity([string]$Path, $Layout, $Ver, [string]$Overlay, [string]$Tail, [hashtable]$Ctx) {
+    # exact version-resource values first: the cheapest and the most specific evidence
+    $co = ('' + $Ver.CompanyName).ToLowerInvariant()
+    $fd = ('' + $Ver.FileDescription).ToLowerInvariant()
+    $of = ('' + $Ver.OriginalFilename).ToLowerInvariant()
+    if ($of -eq 'wextract.exe' -or $fd -eq 'win32 cabinet self-extractor') { return @{ Family = 'iexpress'; Evidence = "version resource: '$($Ver.FileDescription)' / '$($Ver.OriginalFilename)'" } }
+    if ($co -like 'caphyon*')       { return @{ Family = 'advinst';      Evidence = "version resource CompanyName '$($Ver.CompanyName)'" } }
+    if ($co -like 'installaware*')  { return @{ Family = 'installaware'; Evidence = "version resource CompanyName '$($Ver.CompanyName)'" } }
+    if ($co -like 'wise solutions*'){ return @{ Family = 'wise';         Evidence = "version resource CompanyName '$($Ver.CompanyName)'" } }
+    if ($co -like 'indigo rose*')   { return @{ Family = 'setupfactory'; Evidence = "version resource CompanyName '$($Ver.CompanyName)'" } }
+    if ($co -like 'ej-technologies*'){ return @{ Family = 'install4j';   Evidence = "version resource CompanyName '$($Ver.CompanyName)'" } }
+    if ($co -like 'clickteam*')     { return @{ Family = 'clickteam';    Evidence = "version resource CompanyName '$($Ver.CompanyName)'" } }
+    # then the bounded regions, as plain bytes and with NULs dropped (UTF-16 strings)
+    $regions = @()
+    $regions += @{ Name = 'head';    Text = (ConvertTo-Latin1 (Read-FileRange $Path 0 131072 $Ctx)) }
+    $rs = $Layout.ResourceSection
+    if ($rs -and $rs.RawSize -gt 0) {
+        $regions += @{ Name = '.rsrc'; Text = (ConvertTo-Latin1 (Read-FileRange $Path ([long]$rs.RawPtr) ([int][Math]::Min([long]$rs.RawSize, 262144)) $Ctx)) }
+    }
+    if ($Overlay) { $regions += @{ Name = 'overlay'; Text = $Overlay } }
+    if ($Tail)    { $regions += @{ Name = 'tail';    Text = $Tail } }
+    foreach ($fam in $script:InstallerIdentityMarkers) {
+        foreach ($rg in $regions) {
+            $plain = [string]$rg.Text
+            if (-not $plain) { continue }
+            $wide  = $plain.Replace([string][char]0, '')
+            foreach ($m in $fam.Markers) {
+                $at = Find-Marker $plain $m
+                if ($at -ge 0) { return @{ Family = $fam.Family; Evidence = ("marker '{0}' at {1}+0x{2:X}" -f $m, $rg.Name, $at) } }
+                $at = Find-Marker $wide $m
+                if ($at -ge 0) { return @{ Family = $fam.Family; Evidence = ("marker '{0}' (UTF-16) in the {1}" -f $m, $rg.Name) } }
+            }
+        }
+    }
+    return $null
 }
 
 # The registry side: from an uninstall entry's exe + args (+ the key's values), recognise the
@@ -457,6 +553,66 @@ function Get-UninstallFamily {
         }
     }
     if ($Exe -match '(?i)AdODIS\\V1\\Installer\.exe$') { $r.Family = 'odis'; $r.Silent = ($argl -match '(?i)(^|\s)-q(\s|$)'); $r.Evidence = 'Autodesk ODIS installer'; return $r }
+    # Wise's uninstaller is named for what it is, and takes /S BEFORE the install log
+    if ($leaf -match '^unwise(32)?\.exe$') {
+        $r.Family = 'wise'; $r.Silent = $true; $r.Evidence = 'Wise UNWISE.EXE uninstaller'
+        if ($argl -notmatch '(?i)(^|\s)/S(\s|$)') { $r.Args = ('/S ' + $argl).Trim() }
+        return $r
+    }
+    # The second-pass families: the uninstaller is asked what built it, the same way an NSIS
+    # or Inno one is above, and only a positive identity appends that family's documented
+    # quiet flags. An uninstaller that is not on disk is left exactly as registered.
+    if ($Exe -and $leaf -match '\.exe$' -and (Test-Path -LiteralPath $Exe)) {
+        $f2 = $null
+        try { $f2 = Get-InstallerFamily -Path $Exe } catch { $f2 = $null }
+        if ($f2 -and $f2.Confidence -eq 'signature' -and $f2.Family) {
+            $ev = ($f2.Evidence -join '; ')
+            switch ($f2.Family) {
+                'squirrel' { $r.Family = 'squirrel'; $r.Silent = $true; $r.Evidence = $ev
+                             if ($argl -notmatch '(?i)--uninstall') { $r.Notes += 'registered without --uninstall - left as registered' }
+                             return $r }
+                'velopack' { $r.Family = 'velopack'; $r.Silent = $true; $r.Evidence = $ev
+                             if ($argl -notmatch '(?i)--uninstall') { $r.Notes += 'registered without --uninstall - left as registered' }
+                             return $r }
+                'setupfactory' { $r.Family = 'setupfactory'; $r.Silent = $true; $r.Evidence = $ev
+                                 if ($argl -notmatch '(?i)(^|\s)/S(\s|$)') { $r.Args = ($argl + ' /S').Trim() }
+                                 return $r }
+                'clickteam' { $r.Family = 'clickteam'; $r.Silent = $true; $r.Evidence = $ev
+                              if ($argl -notmatch '(?i)(^|\s)/S(\s|$)') { $r.Args = ($argl + ' /S').Trim() }
+                              return $r }
+                'install4j' { $r.Family = 'install4j'; $r.Silent = $true; $r.Evidence = $ev
+                              if ($argl -notmatch '(?i)(^|\s)-q(\s|$)') { $r.Args = ($argl + ' -q').Trim() }
+                              return $r }
+                'bitrock'   { $r.Family = 'bitrock'; $r.Silent = $true; $r.Evidence = $ev
+                              if ($argl -notmatch '(?i)--mode\s+unattended') { $r.Args = ($argl + ' --mode unattended').Trim() }
+                              return $r }
+                'qtifw'     { $r.Family = 'qtifw'; $r.Silent = $true; $r.Evidence = $ev
+                              if ($argl -notmatch '(?i)\bpurge\b') { $r.Args = ($argl + ' --confirm-command purge').Trim() }
+                              elseif ($argl -notmatch '(?i)--confirm-command|(^|\s)-c(\s|$)') { $r.Args = ($argl + ' --confirm-command').Trim() }
+                              return $r }
+                'advinst'   { $r.Family = 'advinst'; $r.Silent = $true; $r.Evidence = $ev
+                              if ($argl -notmatch '(?i)(^|\s)/x(\s|$)') { $r.Notes += 'registered without /x - this may be the installer rather than an uninstall line' }
+                              if ($argl -notmatch '(?i)(^|\s)/qn(\s|$)') { $r.Args = ($argl + ' /exenoui /qn').Trim() }
+                              return $r }
+                'installaware' { $r.Family = 'installaware'; $r.Silent = $true; $r.Evidence = $ev
+                                 if ($argl -notmatch '(?i)(^|\s)/s(\s|$)') { $r.Args = ($argl + ' /s MODIFY=FALSE REMOVE=TRUE UNINSTALL=YES').Trim() }
+                                 return $r }
+                'wise'      { $r.Family = 'wise'; $r.Silent = $true; $r.Evidence = $ev
+                              if ($argl -notmatch '(?i)(^|\s)/S(\s|$)') { $r.Args = ('/S ' + $argl).Trim() }
+                              return $r }
+            }
+        }
+    }
+    # "-remove -runfromtemp" is the Suite/Advanced UI uninstall (silent with -silent);
+    # "-removeonly" (with -runfromtemp) is InstallScript's, silent only with a response file
+    if ($argl -match '(?i)(^|\s)[-/]remove(\s|$)' -and $argl -notmatch '(?i)-removeonly') {
+        $r.Family = 'installshield'; $r.Evidence = 'InstallShield Suite uninstall (-remove)'
+        # the documented quiet flag, appended when the entry lacks it - measured on SketchUp 2026,
+        # whose entry is "-remove -runfromtemp" and whose uninstall otherwise opens its wizard
+        if ($argl -notmatch '(?i)[-/]silent') { $r.Args = ($Arguments.Trim() + ' -silent').Trim() }
+        $r.Silent = $true
+        return $r
+    }
     if ($argl -match '(?i)-runfromtemp|-removeonly') { $r.Family = 'installshield'; $r.Evidence = 'InstallShield InstallScript uninstall'; $r.Notes += 'silent only with a recorded response file (/s /f1)'; return $r }
     return $r
 }
@@ -479,6 +635,19 @@ function New-InstallerFamilyFixture {
         'rar'   { $tail = $latin.GetBytes('Rar!' + [char]0x1A + [char]0x07 + [char]0x00 + ([string][char]0) * 64) }
         'burn'  { $tail = $null }
         'none'  { $tail = New-Object byte[] 0 }
+        # the identity-string families: their marker, as the stub would carry it, in the overlay
+        'squirrel'     { $tail = $latin.GetBytes(([string][char]0) * 16 + 'SquirrelSetup' + ([string][char]0) * 32) }
+        'velopack'     { $tail = $latin.GetBytes(([string][char]0) * 16 + 'Velopack' + ([string][char]0) * 32) }
+        'advinst'      { $tail = $latin.GetBytes(([string][char]0) * 16 + 'Advanced Installer' + ([string][char]0) * 32) }
+        'wise'         { $tail = $latin.GetBytes(([string][char]0) * 16 + 'WiseMain' + ([string][char]0) * 32) }
+        'setupfactory' { $tail = $latin.GetBytes(([string][char]0) * 16 + 'Setup Factory' + ([string][char]0) * 32) }
+        'installaware' { $tail = $latin.GetBytes(([string][char]0) * 16 + 'InstallAware' + ([string][char]0) * 32) }
+        'qtifw'        { $tail = $latin.GetBytes(([string][char]0) * 16 + 'Qt Installer Framework' + ([string][char]0) * 32) }
+        'install4j'    { $tail = $latin.GetBytes(([string][char]0) * 16 + 'install4j' + ([string][char]0) * 32) }
+        'bitrock'      { $tail = $latin.GetBytes(([string][char]0) * 16 + 'BitRock InstallBuilder' + ([string][char]0) * 32) }
+        'clickteam'    { $tail = $latin.GetBytes(([string][char]0) * 16 + 'Clickteam Install Creator' + ([string][char]0) * 32) }
+        # as a version resource would carry it: UTF-16, which the scan reads with NULs dropped
+        'iexpress'     { $tail = [Text.Encoding]::Unicode.GetBytes('Win32 Cabinet Self-Extractor') }
         default { throw "unknown fixture family '$Family'" }
     }
     if ($Family -eq 'burn') {
