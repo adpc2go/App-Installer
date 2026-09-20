@@ -17526,6 +17526,12 @@ $script:ToolsLoaded = $false
 $script:FwUserPicked = $false   # once the tech picks a filter, stop auto-defaulting it
 $script:FwDirty = $true
 $script:LastJobState = ''   # de-dupes the BITS retry log across 400ms ticks
+# The elevated worker we launch, so its death can be noticed: discarded with | Out-Null
+# there was nothing in this half that could tell a worker which is installing from one
+# antivirus killed, and Cancel made the resulting hang permanent.
+$script:WorkerProc     = $null
+$script:LastWorkerWord = [datetime]::MinValue
+$script:ClosePermitted = $false   # set by the close confirm - see the Add_Closing handler
 
 function Start-Worker {
     # launch the single elevated worker the moment the first file is ready;
@@ -17597,8 +17603,17 @@ try {
 }
 "@
         $enc = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($stub))
-        Start-Process -FilePath $psExe -Verb RunAs -WindowStyle Hidden `
-                      -ArgumentList "-NoProfile -ExecutionPolicy Bypass -EncodedCommand $enc" | Out-Null
+        # -PassThru, and the handle is KEPT. Discarded with | Out-Null there was nothing anywhere
+        # in this half that could tell a worker which is installing from one endpoint protection
+        # killed thirty seconds ago: Finish-Batch is reached only by the "_batch Complete" marker,
+        # so a dead worker left the window in Phase=Install for ever, spinner turning, and Cancel
+        # made it permanent - it writes the cancel file and the end marker, and nobody is left
+        # alive to read either. The only way out was closing the window. The compiled client has
+        # had CheckWorkerAlive for this since client 23; this half had nothing.
+        $script:WorkerProc = Start-Process -FilePath $psExe -Verb RunAs -WindowStyle Hidden `
+                                           -ArgumentList "-NoProfile -ExecutionPolicy Bypass -EncodedCommand $enc" -PassThru
+        try { $null = $script:WorkerProc.Handle } catch { }   # or HasExited lies after a fast exit
+        $script:LastWorkerWord = [datetime]::MinValue
         $script:WorkerStarted = $true
         # no prompt at all when the GUI itself already holds the elevated token - saying
         # "one UAC prompt" there would be describing something that did not happen
@@ -17836,6 +17851,32 @@ function Abort-Batch([string]$Reason, [string]$Kind = 'fail') {
     Finish-Batch
 }
 
+# A worker that EXITED without sending its end marker, and has said nothing for 90 seconds, is
+# dead. Both halves of that matter: Install-One writes one status line and then watches an
+# installer for up to 90 minutes without another word, so silence alone proves nothing and exit
+# alone can race the final flush. Ninety seconds of both is a verdict.
+function Test-WorkerAlive {
+    if (-not $script:WorkerStarted -or -not $script:WorkerProc) { return }
+    if ($script:Phase -notin 'Download', 'Install') { return }
+    $gone = $false
+    try { $gone = $script:WorkerProc.HasExited } catch { return }   # no rights to ask: assume alive
+    if (-not $gone) { return }
+    if ($script:LastWorkerWord -eq [datetime]::MinValue) { $script:LastWorkerWord = [datetime]::Now; return }
+    if (((Get-Date) - $script:LastWorkerWord).TotalSeconds -lt 90) { return }
+    $code = ''
+    try { $code = " (exit $($script:WorkerProc.ExitCode))" } catch { }
+    $why = "the elevated installer stopped before it finished and said nothing for 90 seconds$code"
+    Add-Log "$why - anything it had not reported is marked failed. Antivirus on this machine is the usual cause."
+    foreach ($row in $script:Pending) {
+        if ($row.Status -notmatch '^(Installed|Uninstalled|Applied|Reverted|Cleaned|Failed|Cancelled|Skipped|Removed)') {
+            Set-Status $row "Failed: $why" 'fail'; Set-Ring $row 'fail'
+        }
+    }
+    $script:HadFailures = $true
+    $script:AwaitingScan = $false
+    Finish-Batch
+}
+
 function Read-WorkerStatus {
     if (-not (Test-Path $script:StatusPath)) { return }
     $lines = @(Get-Content $script:StatusPath -ErrorAction SilentlyContinue)
@@ -17860,6 +17901,8 @@ function Read-WorkerStatus {
     # in Test-GuiBatch's failing-removal sequence: three rows settled, no end marker, 240 s
     # timeout, "1 worker(s) still running at exit". The loop stays skipped; the check does not.
     $fresh = ($lines.Count -gt $script:StatusOffset)
+    # any line at all is proof of life, and the watchdog below measures silence from here
+    if ($fresh) { $script:LastWorkerWord = [datetime]::Now }
     for ($i = $script:StatusOffset; $fresh -and $i -lt $lines.Count; $i++) {
         $s = $null
         try { $s = $lines[$i] | ConvertFrom-Json } catch { continue }
@@ -18569,6 +18612,9 @@ $timer.Add_Tick({
         # pull the steps behind it out of the queue before the worker reaches them
         if ($script:Phase -in 'Download', 'Install') { Sync-DepGuards }
         if ($script:WorkerStarted -and $script:Phase -in 'Download', 'Install') { Read-WorkerStatus }
+        # after the read, so a worker that exited having already reported everything ends the
+        # batch through its own end marker rather than through the watchdog
+        if ($script:WorkerStarted -and $script:Phase -in 'Download', 'Install') { Test-WorkerAlive }
         # header counts and which rows still offer a remove button are both answers about how
         # far the batch got, so they are recomputed from it rather than tracked separately
         if ($script:Phase -in 'Download', 'Install') { Sync-BatchStrip }
@@ -22804,6 +22850,39 @@ $window.Add_Loaded({
         }
     } catch {
         $window.Opacity = 1
+    }
+})
+
+# Closing the window does NOT stop the elevated worker, and nothing used to say so. The worker
+# reads its parent's pid only when the queue is EXHAUSTED, so a window closed with eight
+# applications still queued left all eight installing, elevated and invisible, on a customer's
+# machine after the tool was gone - no window, no progress, and no cancel, because cancel.flag is
+# only ever written by the GUI. There was no Add_Closing handler at all; Add_Closed is too late to
+# stop anything.
+#
+# This does not refuse to close. It asks once, and then does the thing the technician meant: tell
+# the worker to stop, let the current installer finish rather than killing it mid-write, and go.
+$window.Add_Closing({
+    param($closingSource, $ev)
+    if ($script:ClosePermitted) { return }
+    if ($script:Phase -notin 'Download', 'Install') { return }
+    $ev.Cancel = $true
+    $left = @($script:Pending | Where-Object {
+        $_.Status -notmatch '^(Installed|Uninstalled|Applied|Reverted|Cleaned|Failed|Cancelled|Skipped|Removed)' }).Count
+    Show-Confirm 'A batch is still running' (
+        "$left application$(if ($left -ne 1) { 's' }) have not finished.`r`n`r`n" +
+        'Closing this window does not stop them by itself - the elevated installer keeps working ' +
+        "through the queue with nothing on screen, and there is no way to cancel it once this " +
+        "window is gone.`r`n`r`n" +
+        'Closing now tells it to stop. The installer that is running right now is allowed to ' +
+        'finish rather than being killed part-way; nothing after it is started.'
+    ) {
+        # the same two things Cancel does, in the same order: stop the queue, then release it
+        try { Set-Content -LiteralPath $script:CancelPath -Value '' -Encoding UTF8 } catch { }
+        try { Complete-Worker } catch { }
+        Add-Log 'Window closed with a batch running - the elevated installer was told to stop after the current item.'
+        $script:ClosePermitted = $true
+        $window.Close()
     }
 })
 
