@@ -18,45 +18,45 @@ if (-not (Test-Path $winPS)) {
     return
 }
 
-$BaseUrl = 'https://apps.pc2go.ca'             # <-- your server
-# Stamped by tools\Publish-Release.ps1 at publish time and printed in the banner. That line used
-# to end with Get-Date, which is just "now": it read as a login time and told the technician
-# nothing about whether the tool in front of him was the current one. These two say what went
-# out and when it went out, in UTC, because the people running this are not in one timezone.
-$Release  = 'unpublished'                      # <-- rewritten on publish
+$BaseUrl = 'https://apps.pc2go.ca'             # <-- your server
+# Stamped by tools\Publish-Release.ps1 at publish time and printed in the banner. That line used
+# to end with Get-Date, which is just "now": it read as a login time and told the technician
+# nothing about whether the tool in front of him was the current one. These two say what went
+# out and when it went out, in UTC, because the people running this are not in one timezone.
+$Release  = 'unpublished'                      # <-- rewritten on publish
 $Released = 'unpublished'                      # <-- rewritten on publish
-# The launch line is pasted into whatever window happened to be open - often 80x25, sometimes a
-# tall thin one - and the banner is designed at 64 columns with wider status lines under it. So
-# the window is put into a known shape once, here, before anything is drawn. Every call is
-# guarded: a redirected host, a remote session and the ISE each refuse one or more of them, and
-# none of it is worth failing a launch over.
-function Set-ConsoleShape {
-    try { $Host.UI.RawUI.WindowTitle = 'PC2Go App Installer' } catch { }
-    # Three steps, in this order, through the .NET console API rather than $Host.UI.RawUI.
-    #
-    # The rule the console enforces is that the window may never be wider or taller than the
-    # buffer, not even for the instant between two assignments - so the window is shrunk to
-    # something that fits the CURRENT buffer first, the buffer then takes its real shape, and
-    # only then does the window grow into it. Measured: doing it in any other order either
-    # throws "Window cannot be taller than the screen buffer" or silently collapses the buffer.
-    #
-    # The 3000-row buffer is a request, not a promise. Under Windows Terminal - which is the
-    # default on Windows 11 - the console is a ConPTY, where the buffer IS the window and
-    # scrollback belongs to the terminal rather than to us; there BufferHeight simply reads back
-    # as the window height and Terminal keeps its own, longer, scrollback. Under classic conhost
-    # it takes, and a long run stays readable afterwards. Neither case is worth failing over.
-    try {
-        $wantW = [Math]::Min(100, [Console]::LargestWindowWidth)
-        $wantH = [Math]::Min(34,  [Console]::LargestWindowHeight)
-        $w0 = [Math]::Min($wantW, [Console]::BufferWidth)
-        $h0 = [Math]::Min([Console]::WindowHeight, [Console]::BufferHeight)
-        [Console]::SetWindowSize($w0, $h0)
-        [Console]::SetBufferSize($wantW, [Math]::Max(3000, $h0))
-        [Console]::SetWindowSize($wantW, $wantH)
-    } catch { }
-}
-Set-ConsoleShape
-
+# The launch line is pasted into whatever window happened to be open - often 80x25, sometimes a
+# tall thin one - and the banner is designed at 64 columns with wider status lines under it. So
+# the window is put into a known shape once, here, before anything is drawn. Every call is
+# guarded: a redirected host, a remote session and the ISE each refuse one or more of them, and
+# none of it is worth failing a launch over.
+function Set-ConsoleShape {
+    try { $Host.UI.RawUI.WindowTitle = 'PC2Go App Installer' } catch { }
+    # Three steps, in this order, through the .NET console API rather than $Host.UI.RawUI.
+    #
+    # The rule the console enforces is that the window may never be wider or taller than the
+    # buffer, not even for the instant between two assignments - so the window is shrunk to
+    # something that fits the CURRENT buffer first, the buffer then takes its real shape, and
+    # only then does the window grow into it. Measured: doing it in any other order either
+    # throws "Window cannot be taller than the screen buffer" or silently collapses the buffer.
+    #
+    # The 3000-row buffer is a request, not a promise. Under Windows Terminal - which is the
+    # default on Windows 11 - the console is a ConPTY, where the buffer IS the window and
+    # scrollback belongs to the terminal rather than to us; there BufferHeight simply reads back
+    # as the window height and Terminal keeps its own, longer, scrollback. Under classic conhost
+    # it takes, and a long run stays readable afterwards. Neither case is worth failing over.
+    try {
+        $wantW = [Math]::Min(100, [Console]::LargestWindowWidth)
+        $wantH = [Math]::Min(34,  [Console]::LargestWindowHeight)
+        $w0 = [Math]::Min($wantW, [Console]::BufferWidth)
+        $h0 = [Math]::Min([Console]::WindowHeight, [Console]::BufferHeight)
+        [Console]::SetWindowSize($w0, $h0)
+        [Console]::SetBufferSize($wantW, [Math]::Max(3000, $h0))
+        [Console]::SetWindowSize($wantW, $wantH)
+    } catch { }
+}
+Set-ConsoleShape
+
 $dir = Join-Path $env:LOCALAPPDATA 'PC2GoDeploy'
 New-Item -ItemType Directory -Force -Path $dir | Out-Null
 $ps1 = Join-Path $dir 'AppDeploy.ps1'
@@ -189,6 +189,19 @@ function Show-Splash {
     }
 }
 
+# A launch that exits before its window appears was completely silent: the tool is started
+# -WindowStyle Hidden, so a copy antivirus removed between the hash check and the launch, or one
+# that threw on startup, left the console back at its prompt with no window and nothing to report
+# but "nothing happened".
+function Show-ExitNote {
+    if ($null -eq $script:ExitedEarly) { return }
+    Hide-Splash
+    Write-Host ''
+    Write-Host "   The tool exited before its window opened (code $script:ExitedEarly)." -ForegroundColor Yellow
+    Write-Host '   Antivirus may have removed it - check quarantine, then paste the line again.' -ForegroundColor Yellow
+    Write-Host ''
+}
+
 function Hide-Splash {
     $sp = $script:Splash
     if (-not $sp) { return }
@@ -226,7 +239,13 @@ function Wait-AppWindow($Proc, [int]$TimeoutSec = 45, [int]$LingerMs = 1200) {
     while (((Get-Date) - $t0).TotalSeconds -lt $TimeoutSec) {
         try {
             $Proc.Refresh()
-            if ($Proc.HasExited) { break }
+            if ($Proc.HasExited) {
+        # Silent before this. The tool is launched -WindowStyle Hidden, so a copy that antivirus
+        # removed between the hash check and the launch, or that threw on startup, produced a
+        # console back at its prompt and no window - and nothing to report but "nothing happened".
+        $script:ExitedEarly = $Proc.ExitCode
+        break
+    }
             if ($Proc.MainWindowHandle -ne [IntPtr]::Zero) {
                 # The window exists; give it long enough to paint before pulling the splash out
                 # from under it, or the two swap places with a visible gap between them.
@@ -410,12 +429,12 @@ function Show-AccessBanner {
     Write-Host '   Connections to this service may be logged.' -ForegroundColor Gray
     Write-Host ''
     Write-Host $bar -ForegroundColor DarkGreen
-    # version on the left, updated against the right-hand end of the frame, so the two read as
-    # two facts rather than one run-on line. Padded by arithmetic like every other line here, so
-    # it stays aligned at whatever width the window gives us.
-    $vTxt = "version $Release"
-    $uTxt = "updated $Released"
-    $pad  = [Math]::Max(3, $w - $vTxt.Length - $uTxt.Length)
+    # version on the left, updated against the right-hand end of the frame, so the two read as
+    # two facts rather than one run-on line. Padded by arithmetic like every other line here, so
+    # it stays aligned at whatever width the window gives us.
+    $vTxt = "version $Release"
+    $uTxt = "updated $Released"
+    $pad  = [Math]::Max(3, $w - $vTxt.Length - $uTxt.Length)
     Write-Host ('   ' + $vTxt + (' ' * $pad) + $uTxt) -ForegroundColor DarkGray
     Write-Host $bar -ForegroundColor DarkGreen
     Write-Host ''
@@ -675,21 +694,70 @@ try {
     }
 } catch { $elevate = $false }
 
+# Smart App Control refuses an unsigned executable outright - no prompt, no exclusion, no
+# override - and it is on by default after a clean Windows 11 install. Both launches below used
+# to assume the only reason Start-Process could throw was a declined UAC prompt: the elevated one
+# caught it, fell through, and relaunched THE SAME BLOCKED EXE, which threw again with nothing to
+# catch it. The technician got a raw .NET exception and no tool - and there was nothing to fall
+# back TO, because in exe mode the script is never downloaded.
+#
+# Start-Tool is that fallback, and it is deliberately the ONLY thing that launches: one attempt,
+# and if the exe was refused it swaps $launchExe to the script and tries once more. The script
+# runs on every machine, SAC included, because PowerShell stays in FullLanguage there.
+function Test-LaunchBlocked($Err) {
+    # ERROR_CANCELLED is the technician saying no. That is not a block, and swapping to the
+    # script would launch a tool they had just declined to elevate.
+    if ($Err.Exception -is [ComponentModel.Win32Exception] -and $Err.Exception.NativeErrorCode -eq 1223) { return $false }
+    return (('' + $Err.Exception.Message) -match 'Application Control|blocked this (file|app)|not permitted|virus|WDAC|Smart App')
+}
+
+function Switch-ToScript {
+    Write-Host ''
+    Write-Host '   This machine blocked the PC2Go application - Smart App Control refuses programs' -ForegroundColor Yellow
+    Write-Host '   that are not signed. Falling back to the PowerShell client, which it allows.' -ForegroundColor Yellow
+    Write-Host ''
+    $script:useExe = $false
+    # nothing has downloaded the script yet: in exe mode $tool WAS the exe
+    Get-EdgeFile -Uri "$BaseUrl/AppDeploy.ps1" -OutFile $ps1 -Headers (Get-AccessHeader)
+    if ($pinned) {
+        if ((Get-FileHash -LiteralPath $ps1 -Algorithm SHA256).Hash -ne $PinnedHash.ToUpper()) {
+            Remove-Item $ps1 -Force
+            throw 'AppDeploy.ps1 failed integrity check - aborting.'
+        }
+    }
+    $script:launchExe = $winPS
+    $script:launch = "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$ps1`" -BaseUrl `"$BaseUrl`"$extra"
+}
+
+function Start-Tool([switch]$Elevated) {
+    foreach ($attempt in 0, 1) {
+        try {
+            if ($Elevated) {
+                # the elevated copy gets a fresh environment, so the code has to travel
+                # out-of-band; -NoSelfElevate because the decision is already made
+                Save-AccessCode
+                return Start-Process -FilePath $launchExe -Verb RunAs -WindowStyle Hidden -PassThru `
+                                     -ArgumentList "$launch -NoSelfElevate"
+            }
+            return Start-Process -FilePath $launchExe -WindowStyle Hidden -PassThru -ArgumentList $launch
+        } catch {
+            if ($attempt -eq 0 -and $useExe -and (Test-LaunchBlocked $_)) { Switch-ToScript; continue }
+            throw
+        }
+    }
+}
+
 # The splash goes before the UAC prompt, not after it: a modal dialog over a window still
 # claiming to be "getting ready" reads as two things happening at once. Only on the path that
 # prompts: hidden on every launch, an already-elevated console watched it vanish for a second
 # and come back for no dialog at all (reported from the field).
 $script:SplashTimer.Stop()
 
+
 if ($elevate) {
     Hide-Splash
     try {
-        # the elevated copy gets a fresh environment, so the code has to travel out-of-band
-        Save-AccessCode
-        # -NoSelfElevate because the decision is already made; without it the elevated copy
-        # would run the same check again for nothing.
-        $child = Start-Process -FilePath $launchExe -Verb RunAs -WindowStyle Hidden -PassThru `
-                               -ArgumentList "$launch -NoSelfElevate"
+        $child = Start-Tool -Elevated
         # The tool has it (through the hand-off file); this console has no further use for it,
         # and a code left in the environment is one a later command could read.
         $env:PC2GO_CODE = ''
@@ -697,17 +765,19 @@ if ($elevate) {
         # claiming to be "getting ready" reads as two things happening at once. The prompt has
         # been answered by now, so it comes back for the wait that actually needs it.
         Wait-AppWindow $child
+        Show-ExitNote
         return
     } catch {
         # Declined, or elevation unavailable. Fall through and let the tool ask in its own way.
     }
 }
 
-$child = Start-Process -FilePath $launchExe -WindowStyle Hidden -PassThru -ArgumentList $launch
+$child = Start-Tool
 # The launched tool inherited it a moment ago; leaving a copy behind in the technician's own
 # shell serves nothing, and the next go line asks again by design.
 $env:PC2GO_CODE = ''
 Wait-AppWindow $child
+Show-ExitNote
 
 } finally {
     # Reached on EVERY exit: the normal launch above, a throw, and - the case this exists for -
