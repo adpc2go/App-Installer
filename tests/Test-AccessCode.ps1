@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     The access-code hand-off: the DACL, the freshness rule, and the shred.
 
@@ -252,7 +252,11 @@ try {
     # behaves like the real one: 403 + x-pc2go-auth without the code, gzip with it.
     Assert-True 'go.ps1 no longer fetches through Invoke-WebRequest' ($goText -notmatch '(?m)^[^#
 ]*Invoke-WebRequest')   # code lines; the comment may name it
-    Assert-True 'both fetches go through Get-EdgeFile'               (@([regex]::Matches($goText, 'Get-EdgeFile -Uri')).Count -eq 2)
+    # Three now, not two: the tool, the apps.json HEAD probe, and the Smart App Control fallback,
+    # which has to fetch AppDeploy.ps1 because in exe mode nothing ever downloaded it. The rule
+    # this is really asserting is that NOTHING bypasses Get-EdgeFile - the line above is the half
+    # that bites, and this is the count that proves no new raw fetch crept in beside it.
+    Assert-True 'every fetch goes through Get-EdgeFile'              (@([regex]::Matches($goText, 'Get-EdgeFile -Uri')).Count -eq 3)
     # the splash is hidden for the UAC prompt only; hidden on every launch it blinked (reported)
     Assert-True 'the splash is put away only on the path that prompts for elevation' `
                 ($goText -match '\$script:SplashTimer\.Stop\(\)\s*if \(\$elevate\) \{\s*Hide-Splash')
