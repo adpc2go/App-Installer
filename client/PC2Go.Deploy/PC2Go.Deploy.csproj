@@ -1,0 +1,55 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- The compiled client. .NET Framework 4.8, because it is already on every Windows 10/11 the
+       technician will paste the go line into: nothing to download, nothing to install, one exe.
+       No NuGet packages for the same reason - a second DLL is a second file to hash, ship and
+       verify. JSON goes through the in-box JavaScriptSerializer, DPAPI through System.Security. -->
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net48</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <!-- FolderBrowserDialog for the Data Backup pickers - in-box, and it works on every machine this runs on -->
+    <UseWindowsForms>true</UseWindowsForms>
+    <LangVersion>latest</LangVersion>
+    <Nullable>disable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <AssemblyName>PC2Go.Deploy</AssemblyName>
+    <RootNamespace>PC2Go.Deploy</RootNamespace>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <!-- Version moves with BuildTag (client N -> 0.N.0): reputation systems weigh a binary whose
+         version never changes, and a file description of "PC2Go.Deploy" said nothing about it -->
+    <Version>0.23.0</Version>
+    <AssemblyTitle>PC2Go App Installer</AssemblyTitle>
+    <Description>PC2Go App Installer - installs, updates and maintains the PC2Go fleet from apps.pc2go.ca</Description>
+    <Company>PC2Go</Company>
+    <Product>PC2Go App Installer</Product>
+    <Copyright>PC2Go</Copyright>
+    <!-- the same source must produce the same bytes: the edge pins the exe by SHA-256 -->
+    <Deterministic>true</Deterministic>
+    <PathMap>$(MSBuildProjectDirectory)=/src</PathMap>
+    <DebugType>none</DebugType>
+    <DebugSymbols>false</DebugSymbols>
+    <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+    <TreatWarningsAsErrors>false</TreatWarningsAsErrors>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Reference Include="System.Web" />
+    <Reference Include="System.Web.Extensions" />
+    <Reference Include="System.Net.Http" />
+    <Reference Include="System.Drawing" />
+    <Reference Include="System.Security" />
+    <Reference Include="System.DirectoryServices" />
+    <Reference Include="System.DirectoryServices.AccountManagement" />
+  </ItemGroup>
+
+  <!-- The elevated worker, lifted out of server\AppDeploy.ps1 by tools\Build-Client.ps1 with its
+       three placeholders already resolved. Generated, not versioned: the script stays the one
+       source until the worker moves into its own file. -->
+  <ItemGroup>
+    <EmbeddedResource Include="Resources\worker.ps1" LogicalName="worker.ps1" />
+    <EmbeddedResource Include="Resources\reader.ps1" LogicalName="reader.ps1" />
+  </ItemGroup>
+
+</Project>
