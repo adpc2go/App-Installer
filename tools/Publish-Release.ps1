@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Publishes go.ps1, AppDeploy.ps1 and apps.json to R2 and deploys the Worker.
 
@@ -47,7 +47,13 @@ param(
     [string]$RepoRoot,
     [switch]$SkipDeploy,
     [switch]$ValidateOnly,
-    [switch]$Force
+    [switch]$Force,
+    # The compiled client: upload client\dist\PC2Go.Deploy.exe (built by tools\Build-Client.ps1)
+    # and pin its SHA-256 as CLIENT_EXE_SHA256. Without this switch the exe in the bucket and its
+    # pin are left exactly as they are.
+    [switch]$Client,
+    # Which client go.ps1 launches for everyone: 'script' or 'exe'. Empty leaves BOOT_CLIENT alone.
+    [ValidateSet('', 'script', 'exe')][string]$BootClient = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -332,6 +338,35 @@ Write-Step 'Preparing AppDeploy.ps1 for shipping'
 $shipDir = Join-Path ([IO.Path]::GetTempPath()) ('pc2go-ship-' + [Guid]::NewGuid().ToString('N').Substring(0, 8))
 New-Item -ItemType Directory -Force -Path $shipDir | Out-Null
 $shipDeploy = Join-Path $shipDir 'AppDeploy.ps1'
+$shipGo     = Join-Path $shipDir 'go.ps1'
+
+# ---- stamp the bootstrap banner with what is going out, and when ---------------------------
+# Read from source every time rather than kept as a constant here, so the banner cannot claim a
+# version that was never built. The client tag is appended only when -Client is actually
+# uploading a new exe; without it the exe in the bucket is unchanged and saying otherwise would
+# be a lie of exactly the kind this line exists to stop.
+$relVersion = 'unknown'
+try {
+    if (((Get-Content -LiteralPath $appDeploy -TotalCount 60) -join "`n") -match '\$BuildTag\s*=\s*''([^'']+)''') { $relVersion = $Matches[1] }
+} catch { }
+# Eastern, because that is where the person reading the banner is, and labelled with the zone
+# that was actually in force on the day - EDT in summer, EST in winter. A fixed "EST" would be
+# an hour out for seven months of the year, on the one line whose whole job is to be checkable.
+$relStamp = '(unknown)'
+try {
+    $tzEt  = [TimeZoneInfo]::FindSystemTimeZoneById('Eastern Standard Time')
+    $etNow = [TimeZoneInfo]::ConvertTime([DateTimeOffset]::Now, $tzEt)
+    $relStamp = $etNow.ToString('yyyy-MM-dd HH:mm') + $(if ($tzEt.IsDaylightSavingTime($etNow)) { ' EDT' } else { ' EST' })
+} catch {
+    $relStamp = (Get-Date).ToUniversalTime().ToString('yyyy-MM-dd HH:mm') + ' UTC'
+}
+$goRaw = Get-Content -LiteralPath $goPs1 -Raw
+foreach ($pair in @(, @('Release', $relVersion)) + @(, @('Released', $relStamp))) {
+    $rx = '(?m)^(\s*\$' + $pair[0] + '\s*=\s*'')[^'']*('')'
+    if ($goRaw -notmatch $rx) { throw "go.ps1 has no `$$($pair[0]) line to stamp - refusing to publish a banner that would misdate itself." }
+    $goRaw = [regex]::Replace($goRaw, $rx, ('${1}' + $pair[1] + '${2}'))
+}
+Write-Ok "banner stamped: version $relVersion, updated $relStamp"
 
 # The installer-family detector has ONE source, tools\Installer-Family.ps1, and a verbatim copy
 # inside AppDeploy.ps1 between two marker comments (the client loads exactly one file). A
@@ -369,8 +404,39 @@ if (Test-Path -LiteralPath $compressor) {
     [IO.File]::WriteAllText($shipDeploy, $shipped, (New-Object Text.UTF8Encoding $true))
     $saved = [math]::Round((1 - ($shipped.Length / [double]$rawSrc.Length)) * 100, 1)
     Write-Ok ("{0:N0} KB -> {1:N0} KB  ({2}% smaller, identical tokens)" -f ($rawSrc.Length / 1KB), ($shipped.Length / 1KB), $saved)
+
+    # The bootstrap gets the same treatment, and it matters MORE than the tool's does.
+    #
+    # `irm .../go | iex` hands the bootstrap's text straight to AMSI, which scans it in memory
+    # before one line runs - so those bytes are the first thing any antivirus on a client
+    # machine ever sees of this tool, and they are paid for on every single launch. The file was
+    # shipping as 30 KB of source, of which 59% is comments explaining decisions to whoever
+    # reads the repository next. None of that has to travel.
+    #
+    # The edge rewrites two lines in what it serves ($BaseUrl and $PinnedHash, worker.js
+    # serveBootstrap). Both anchors are CODE, and stripping blanks comments in place without
+    # moving a line, so they still match - Test-Push pins that.
+    # $goRaw is the STAMPED text from above, not the file on disk - the banner values have to
+    # travel, and the token check below compares the stripped copy against the same bytes
+    $goShipped = ConvertTo-ShippableScript -Source $goRaw
+    if (-not (Test-ScriptTokensMatch -Original $goRaw -Stripped $goShipped)) {
+        throw 'Stripping go.ps1 changed its code, not just its comments. Refusing to publish.'
+    }
+    # The edge cannot inject into what it cannot find, and a bootstrap that keeps the
+    # placeholder is a bootstrap that runs UNPINNED on every client. Checked, not assumed.
+    foreach ($anchor in '(?m)^\s*\$BaseUrl\s*=\s*''[^'']*''', '(?m)^\s*\$PinnedHash\s*=\s*''[^'']*''',
+                        '(?m)^\s*\$Client\s*=\s*''[^'']*''', '(?m)^\s*\$ExeHash\s*=\s*''[^'']*''',
+                        '(?m)^\s*\$Release\s*=\s*''[^'']*''', '(?m)^\s*\$Released\s*=\s*''[^'']*''') {
+        if ($goShipped -notmatch $anchor) {
+            throw "Stripping go.ps1 removed a line the edge rewrites ($anchor). Refusing to publish."
+        }
+    }
+    [IO.File]::WriteAllText($shipGo, $goShipped, (New-Object Text.UTF8Encoding $true))
+    $goSaved = [math]::Round((1 - ($goShipped.Length / [double]$goRaw.Length)) * 100, 1)
+    Write-Ok ("go.ps1  {0:N0} KB -> {1:N0} KB  ({2}% smaller, identical tokens)" -f ($goRaw.Length / 1KB), ($goShipped.Length / 1KB), $goSaved)
 } else {
     Copy-Item -LiteralPath $appDeploy -Destination $shipDeploy -Force
+    [IO.File]::WriteAllText($shipGo, $goRaw, (New-Object Text.UTF8Encoding $true))
     Write-Warn 'Compress-Script.ps1 not found - shipping the source as-is.'
 }
 
@@ -402,6 +468,19 @@ if (-not $bucket) { throw "Could not read bucket_name from $wranglerToml" }
 # missing line in a toml file.
 if ($tomlRaw -notmatch '(?m)^APPDEPLOY_SHA256\s*=') {
     throw "No APPDEPLOY_SHA256 line in $wranglerToml to pin the hash into - nothing was uploaded."
+}
+# The same rule for the compiled client, and for the same reason: an exe in the bucket with no
+# pin line to write is an exe every fresh client refuses.
+$clientExe = Join-Path $root 'client\dist\PC2Go.Deploy.exe'
+$exeHash = ''
+if ($Client) {
+    if (-not (Test-Path -LiteralPath $clientExe)) { throw "-Client given but $clientExe is not there. Build it first: tools\Build-Client.ps1" }
+    if ($tomlRaw -notmatch '(?m)^CLIENT_EXE_SHA256\s*=') { throw "No CLIENT_EXE_SHA256 line in $wranglerToml to pin the exe's hash into - nothing was uploaded." }
+    $exeHash = (Get-FileHash -LiteralPath $clientExe -Algorithm SHA256).Hash.ToUpper()
+    Write-Ok ("PC2Go.Deploy.exe  {0}  ({1:N0} KB)" -f $exeHash, ((Get-Item -LiteralPath $clientExe).Length / 1KB))
+}
+if ($BootClient -eq 'exe' -and -not $Client -and $tomlRaw -match '(?m)^CLIENT_EXE_SHA256\s*=\s*""') {
+    throw '-BootClient exe, but no exe has ever been published: run with -Client first.'
 }
 
 # Preflight. Both of these fail deep inside an object-put with a raw API error that reads
@@ -448,10 +527,11 @@ Write-Ok "R2 enabled, bucket '$bucket' exists"
 Write-Step 'Uploading to R2'
 
 $uploads = @(
-    @{ Local = $goPs1;     Key = 'go.ps1';        Type = 'text/plain' },
+    @{ Local = $shipGo;    Key = 'go.ps1';        Type = 'text/plain' },
     @{ Local = $shipDeploy; Key = 'AppDeploy.ps1'; Type = 'text/plain' },
     @{ Local = $appsJson;  Key = 'apps.json';     Type = 'application/json' }
 )
+if ($Client) { $uploads += @{ Local = $clientExe; Key = 'PC2Go.Deploy.exe'; Type = 'application/octet-stream' } }
 
 foreach ($u in $uploads) {
     Invoke-Wrangler -Arguments @(
@@ -469,6 +549,14 @@ Write-Step 'Pinning hash in wrangler.toml'
 $updated = [regex]::Replace($tomlRaw, '(?m)^(APPDEPLOY_SHA256\s*=\s*)"[^"]*"', "`${1}`"$hash`"")
 if ($updated -eq $tomlRaw -and $tomlRaw -notmatch [regex]::Escape($hash)) {
     throw "Could not find an APPDEPLOY_SHA256 line to update in $wranglerToml"
+}
+if ($Client) {
+    $updated = [regex]::Replace($updated, '(?m)^(CLIENT_EXE_SHA256\s*=\s*)"[^"]*"', "`${1}`"$exeHash`"")
+    Write-Ok "CLIENT_EXE_SHA256 pinned"
+}
+if ($BootClient) {
+    $updated = [regex]::Replace($updated, '(?m)^(BOOT_CLIENT\s*=\s*)"[^"]*"', "`${1}`"$BootClient`"")
+    Write-Ok "BOOT_CLIENT = $BootClient"
 }
 
 Set-Content -LiteralPath $wranglerToml -Value $updated -Encoding UTF8 -NoNewline

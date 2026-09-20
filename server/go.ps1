@@ -19,9 +19,52 @@ if (-not (Test-Path $winPS)) {
 }
 
 $BaseUrl = 'https://apps.pc2go.ca'             # <-- your server
+# Stamped by tools\Publish-Release.ps1 at publish time and printed in the banner. That line used
+# to end with Get-Date, which is just "now": it read as a login time and told the technician
+# nothing about whether the tool in front of him was the current one. These two say what went
+# out and when it went out, in UTC, because the people running this are not in one timezone.
+$Release  = 'unpublished'                      # <-- rewritten on publish
+$Released = 'unpublished'                      # <-- rewritten on publish
+# The launch line is pasted into whatever window happened to be open - often 80x25, sometimes a
+# tall thin one - and the banner is designed at 64 columns with wider status lines under it. So
+# the window is put into a known shape once, here, before anything is drawn. Every call is
+# guarded: a redirected host, a remote session and the ISE each refuse one or more of them, and
+# none of it is worth failing a launch over.
+function Set-ConsoleShape {
+    try { $Host.UI.RawUI.WindowTitle = 'PC2Go App Installer' } catch { }
+    # Three steps, in this order, through the .NET console API rather than $Host.UI.RawUI.
+    #
+    # The rule the console enforces is that the window may never be wider or taller than the
+    # buffer, not even for the instant between two assignments - so the window is shrunk to
+    # something that fits the CURRENT buffer first, the buffer then takes its real shape, and
+    # only then does the window grow into it. Measured: doing it in any other order either
+    # throws "Window cannot be taller than the screen buffer" or silently collapses the buffer.
+    #
+    # The 3000-row buffer is a request, not a promise. Under Windows Terminal - which is the
+    # default on Windows 11 - the console is a ConPTY, where the buffer IS the window and
+    # scrollback belongs to the terminal rather than to us; there BufferHeight simply reads back
+    # as the window height and Terminal keeps its own, longer, scrollback. Under classic conhost
+    # it takes, and a long run stays readable afterwards. Neither case is worth failing over.
+    try {
+        $wantW = [Math]::Min(100, [Console]::LargestWindowWidth)
+        $wantH = [Math]::Min(34,  [Console]::LargestWindowHeight)
+        $w0 = [Math]::Min($wantW, [Console]::BufferWidth)
+        $h0 = [Math]::Min([Console]::WindowHeight, [Console]::BufferHeight)
+        [Console]::SetWindowSize($w0, $h0)
+        [Console]::SetBufferSize($wantW, [Math]::Max(3000, $h0))
+        [Console]::SetWindowSize($wantW, $wantH)
+    } catch { }
+}
+Set-ConsoleShape
+
 $dir = Join-Path $env:LOCALAPPDATA 'PC2GoDeploy'
 New-Item -ItemType Directory -Force -Path $dir | Out-Null
 $ps1 = Join-Path $dir 'AppDeploy.ps1'
+# The compiled client. 'exe' once it is live at the edge (BOOT_CLIENT in wrangler.toml); until
+# then the script is launched and these lines are idle. Both values are rewritten by the Worker.
+$Client = 'script'
+$ExeHash = 'PINNED_EXE_SHA256_GOES_HERE'
+$exe = Join-Path $dir 'PC2Go.Deploy.exe'
 
 # Integrity pin. Deliberately a placeholder in the repository: the real hash is injected at
 # the edge by the Worker from APPDEPLOY_SHA256 (cloudflare/worker.js, serveBootstrap). It is
@@ -33,6 +76,11 @@ $ps1 = Join-Path $dir 'AppDeploy.ps1'
 # directly fails its own integrity check for no reason anyone can see.
 $PinnedHash = 'PINNED_SHA256_GOES_HERE'
 $pinned = ($PinnedHash -ne 'PINNED_SHA256_GOES_HERE')
+# The exe is taken only with a real pin. An unpinned script runs with a warning; an unpinned
+# exe is not run at all - the script is launched instead, verified as it always was.
+$useExe = ($Client -eq 'exe' -and $ExeHash -match '^[0-9A-Fa-f]{64}$')
+$tool = $ps1; $want = $PinnedHash; $key = 'AppDeploy.ps1'; $toolPinned = $pinned
+if ($useExe) { $tool = $exe; $want = $ExeHash; $key = 'PC2Go.Deploy.exe'; $toolPinned = $true }
 
 # Run straight from the repository and nothing injected a pin, so the download below is
 # unverified. That is a real reduction in safety and it should never pass for a normal run.
@@ -215,9 +263,9 @@ $script:SplashTimer.Start()
 try {
 
 $needFetch = $true
-if ($pinned -and (Test-Path -LiteralPath $ps1)) {
+if ($toolPinned -and (Test-Path -LiteralPath $tool)) {
     try {
-        if ((Get-FileHash -LiteralPath $ps1 -Algorithm SHA256).Hash -eq $PinnedHash.ToUpper()) {
+        if ((Get-FileHash -LiteralPath $tool -Algorithm SHA256).Hash -eq $want.ToUpper()) {
             $needFetch = $false
         }
     } catch { $needFetch = $true }
@@ -255,10 +303,7 @@ $env:PC2GO_CODE = ''
 #     would not be, because per-code attribution does not exist yet. A banner that claims a
 #     capability nobody has is worth nothing on the day it matters.
 function Show-AccessBanner {
-    $node = 'apps.pc2go.ca'
-    try { $node = ([Uri]$BaseUrl).Host } catch { }
-    $rel = 'unpinned'
-    if ($pinned) { $rel = $PinnedHash.Substring(0, 12).ToLower() }
+
     # Width follows the window when it is narrower than the banner, or a 70-column console
     # wraps every line and the box stops being a box. 64 is the design width.
     $w = 64
@@ -267,9 +312,33 @@ function Show-AccessBanner {
     # Reverse video for the name: black on green, padded to the FULL width of the frame so it
     # reads as a solid header bar rather than a highlighted phrase. Centred by padding rather
     # than by counting spaces into the literal, so it stays centred at any width.
-    # The logo is plain ASCII on purpose: box-drawing and block characters come out as
-    # mojibake when Windows PowerShell 5.1 reads the file as ANSI. Every line is padded to the
-    # same width and centred by arithmetic, so it stays centred at any console width.
+    # Two logos. The solid one is built from U+2588 FULL BLOCK and drawn twice - once offset by
+    # one row and one column in dark grey, then again on top in green with the spaces skipped, so
+    # the grey shows through as a cast shadow. That needs three things the host may not give us:
+    # a UTF-8 output code page, a readable cursor position, and a buffer tall enough to move
+    # around in. When any of them is missing the flat ASCII logo below is drawn instead, which is
+    # what shipped before and renders on anything. The code page is put back afterwards: glyphs
+    # already on screen are stored decoded, so restoring it does not un-draw them, and the tool
+    # launched after this gets the console it expected.
+    # Assembled from per-letter columns rather than written as five long literals, because a
+    # long literal that is one character out is invisible in the source and obvious on screen -
+    # which is exactly what happened the first time this was written by hand. Every glyph is
+    # five columns, joined by one, so every row is the same width by construction.
+    $glyphs = @{
+        P = @('#### ', '#  # ', '#### ', '#    ', '#    ')
+        C = @(' ####', '#    ', '#    ', '#    ', ' ####')
+        T = @('#### ', '   # ', '#### ', '#    ', '#### ')     # the 2
+        G = @(' ####', '#    ', '# ###', '#   #', ' ####')
+        O = @(' ### ', '#   #', '#   #', '#   #', ' ### ')
+    }
+    # built at run time so the file itself stays pure ASCII on disk - the same reason the flat
+    # logo below exists at all
+    $blk = [string][char]0x2588
+    $solid = @(0..4 | ForEach-Object {
+        $r = $_
+        (@('P', 'C', 'T', 'G', 'O') | ForEach-Object { $glyphs[$_][$r] }) -join ' '
+    })
+    $solid = @($solid | ForEach-Object { $_.Replace('#', $blk) })
     $logo = @(
         ' ____   ____ ____   ____        ',
         '|  _ \ / ___|___ \ / ___| ___   ',
@@ -280,7 +349,52 @@ function Show-AccessBanner {
     $lead  = [Math]::Max(0, [int](($w - $logo[0].Length) / 2))
     Write-Host ''
     Write-Host $bar -ForegroundColor DarkGreen
-    foreach ($ln in $logo) { Write-Host ('  ' + (' ' * $lead) + $ln) -ForegroundColor Green }
+
+    $drew = $false
+    $prevEnc = $null
+    try {
+        $prevEnc = [Console]::OutputEncoding
+        [Console]::OutputEncoding = New-Object Text.UTF8Encoding $false
+        if ([Console]::OutputEncoding.CodePage -eq 65001) {
+            $raw = $Host.UI.RawUI
+            $x0  = [Math]::Max(0, [int](($w - $solid[0].Length) / 2)) + 2
+            # Room FIRST, and the position read AFTER it - not the other way round. Writing these
+            # blank lines can SCROLL the buffer, and when it does, everything already on screen
+            # moves up by however many rows scrolled. A position read beforehand then points at
+            # the wrong row, which is exactly what happens when the launch line is pasted into a
+            # console that already has output in it - i.e. every real launch. Reading afterwards
+            # and counting back cannot be wrong, because the scroll has already happened.
+            $gap = $solid.Count + 2
+            for ($i = 0; $i -lt $gap; $i++) { Write-Host '' }
+            $landed = $raw.CursorPosition
+            $y0 = $landed.Y - $gap
+            if ($y0 -lt 0) { throw 'not enough room above the cursor for the logo' }
+            for ($i = 0; $i -lt $solid.Count; $i++) {
+                $raw.CursorPosition = New-Object Management.Automation.Host.Coordinates(($x0 + 1), ($y0 + $i + 1))
+                Write-Host $solid[$i] -ForegroundColor DarkGray -NoNewline
+            }
+            # the face, in runs of solid characters, so the shadow survives in the gaps
+            for ($i = 0; $i -lt $solid.Count; $i++) {
+                $row = $solid[$i]; $c = 0
+                while ($c -lt $row.Length) {
+                    if ($row[$c] -eq ' ') { $c++; continue }
+                    $s0 = $c
+                    while ($c -lt $row.Length -and $row[$c] -ne ' ') { $c++ }
+                    $raw.CursorPosition = New-Object Management.Automation.Host.Coordinates(($x0 + $s0), ($y0 + $i))
+                    Write-Host $row.Substring($s0, $c - $s0) -ForegroundColor Green -NoNewline
+                }
+            }
+            # back to where the blank lines left us, so everything after this prints below
+            $raw.CursorPosition = $landed
+            $drew = $true
+        }
+    } catch { $drew = $false }
+    finally { try { if ($prevEnc) { [Console]::OutputEncoding = $prevEnc } } catch { } }
+    if (-not $drew) {
+        # the flat logo that shipped before, and what any host that refused one of the three
+        # things above still gets - a redirected console, a remote session, the ISE
+        foreach ($ln in $logo) { Write-Host ('  ' + (' ' * $lead) + $ln) -ForegroundColor Green }
+    }
     $sub  = 'REMOTE APPLICATION DEPLOYMENT SYSTEM'
     $lead2 = [Math]::Max(0, [int](($w - $sub.Length) / 2))
     Write-Host ('  ' + (' ' * $lead2) + $sub) -ForegroundColor Green
@@ -296,7 +410,13 @@ function Show-AccessBanner {
     Write-Host '   Connections to this service may be logged.' -ForegroundColor Gray
     Write-Host ''
     Write-Host $bar -ForegroundColor DarkGreen
-    Write-Host ('   node {0}   release {1}   {2}' -f $node, $rel, (Get-Date -Format 'yyyy-MM-dd HH:mm')) -ForegroundColor DarkGray
+    # version on the left, updated against the right-hand end of the frame, so the two read as
+    # two facts rather than one run-on line. Padded by arithmetic like every other line here, so
+    # it stays aligned at whatever width the window gives us.
+    $vTxt = "version $Release"
+    $uTxt = "updated $Released"
+    $pad  = [Math]::Max(3, $w - $vTxt.Length - $uTxt.Length)
+    Write-Host ('   ' + $vTxt + (' ' * $pad) + $uTxt) -ForegroundColor DarkGray
     Write-Host $bar -ForegroundColor DarkGreen
     Write-Host ''
 }
@@ -337,7 +457,9 @@ function Invoke-WithAccess([scriptblock]$Try) {
         try { & $Try; return $true } catch {
             $need = $false
             try {
-                $resp = $_.Exception.Response
+                $ex = $_.Exception
+                if ($ex -is [Management.Automation.MethodInvocationException] -and $ex.InnerException) { $ex = $ex.InnerException }
+                $resp = $ex.Response
                 $need = ($resp -and [int]$resp.StatusCode -eq 403 -and
                          ('' + $resp.Headers['x-pc2go-auth']) -eq 'required')
             } catch { }
@@ -369,7 +491,7 @@ function Invoke-WithAccess([scriptblock]$Try) {
             # splash was never visible while the tool was actually downloading.
             #
             # PowerShell dispatches event-action callbacks between pipeline statements. A
-            # blocking Invoke-WebRequest never yields, so a timer armed before it does not fire
+            # blocking fetch never yields, so a timer armed before it does not fire
             # until it RETURNS. Measured: an 800ms one-shot against a 4052ms download fired at
             # +4051ms - the instant the request finished, by which point the splash has nothing
             # left to cover. The only moment it could ever appear was during Read-Host, which is
@@ -387,6 +509,34 @@ function Get-AccessHeader {
     $h = @{}
     if ($env:PC2GO_CODE) { $h['x-pc2go-code'] = $env:PC2GO_CODE }
     return $h
+}
+
+# One fetch from the edge, to a file - or a HEAD, to prove the code, with no file.
+# Not Invoke-WebRequest: in PowerShell 5.1 its progress bar is redrawn per chunk (MEASURED: the
+# same 1 MB took 746 ms with it, 86 ms without) and it never asks for gzip (1,014 KB on the wire
+# against 251 KB). A 403 still arrives as a WebException with its Response, so Invoke-WithAccess
+# reads it as before, and the hash is taken after decompression, so the pin is untouched.
+function Get-EdgeFile([string]$Uri, [string]$OutFile, [hashtable]$Headers, [int]$TimeoutSec = 300, [switch]$Head) {
+    $req = [Net.HttpWebRequest]::Create($Uri)
+    $req.Method = $(if ($Head) { 'HEAD' } else { 'GET' })
+    $req.Timeout = $TimeoutSec * 1000
+    $req.ReadWriteTimeout = $TimeoutSec * 1000
+    $req.AutomaticDecompression = [Net.DecompressionMethods]::GZip -bor [Net.DecompressionMethods]::Deflate
+    $req.UserAgent = 'PC2GoDeploy/go'
+    foreach ($k in @($Headers.Keys)) { $req.Headers[$k] = [string]$Headers[$k] }
+    $resp = $null
+    try { $resp = $req.GetResponse() } catch {
+        # a .NET throw inside a function arrives wrapped; hand the caller the real WebException
+        $ex = $_.Exception
+        if ($ex.InnerException) { $ex = $ex.InnerException }
+        throw $ex
+    }
+    try {
+        if ($Head) { return }
+        $in = $resp.GetResponseStream()
+        $out = [IO.File]::Create($OutFile)
+        try { $in.CopyTo($out) } finally { $out.Dispose(); $in.Dispose() }
+    } finally { $resp.Close() }
 }
 
 # Hand the code to a copy of the tool that will run ELEVATED.
@@ -453,14 +603,14 @@ function Save-AccessCode {
 
 if ($needFetch) {
     [void](Invoke-WithAccess {
-        Invoke-WebRequest -Uri "$BaseUrl/AppDeploy.ps1" -OutFile $ps1 -UseBasicParsing -Headers (Get-AccessHeader)
+        Get-EdgeFile -Uri "$BaseUrl/$key" -OutFile $tool -Headers (Get-AccessHeader)
     })
-    if ($pinned) {
-        $actual = (Get-FileHash -LiteralPath $ps1 -Algorithm SHA256).Hash
-        if ($actual -ne $PinnedHash.ToUpper()) {
-            Remove-Item $ps1 -Force
+    if ($toolPinned) {
+        $actual = (Get-FileHash -LiteralPath $tool -Algorithm SHA256).Hash
+        if ($actual -ne $want.ToUpper()) {
+            Remove-Item $tool -Force
             Hide-Splash
-            throw 'AppDeploy.ps1 failed integrity check - aborting.'
+            throw "$key failed integrity check - aborting."
         }
     }
 } else {
@@ -468,7 +618,7 @@ if ($needFetch) {
     # catalog fetch inside the tool still needs it, and the tool has no console to ask on.
     # A HEAD probe against the catalog settles it here, where a prompt is possible.
     [void](Invoke-WithAccess {
-        Invoke-WebRequest -Uri "$BaseUrl/apps.json" -Method Head -UseBasicParsing -TimeoutSec 15 -Headers (Get-AccessHeader) | Out-Null
+        Get-EdgeFile -Uri "$BaseUrl/apps.json" -Head -TimeoutSec 15 -Headers (Get-AccessHeader)
     })
 }
 
@@ -481,7 +631,21 @@ if ($needFetch) {
 $extra = ''
 if ($env:PC2GO_TIMING) { $extra = ' -Timing' }
 
+$launchExe = $winPS
 $launch = "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$ps1`" -BaseUrl `"$BaseUrl`"$extra"
+if ($useExe) {
+    # The pin is the trust root either way. A signature, when there is one, has to be intact:
+    # a broken one on bytes that match the pin means the pin was moved to cover it.
+    $sig = Get-AuthenticodeSignature -LiteralPath $exe
+    if ($sig.Status -ne 'Valid' -and $sig.Status -ne 'NotSigned') {
+        Remove-Item $exe -Force
+        Hide-Splash
+        throw "PC2Go.Deploy.exe carries a broken signature ($($sig.Status)) - aborting."
+    }
+    # the exe reads the tool's own switches; there is no interpreter in between
+    $launchExe = $exe
+    $launch = "-BaseUrl `"$BaseUrl`"$extra"
+}
 
 # Decide elevation HERE rather than inside the tool.
 #
@@ -512,17 +676,19 @@ try {
 } catch { $elevate = $false }
 
 # The splash goes before the UAC prompt, not after it: a modal dialog over a window still
-# claiming to be "getting ready" reads as two things happening at once.
+# claiming to be "getting ready" reads as two things happening at once. Only on the path that
+# prompts: hidden on every launch, an already-elevated console watched it vanish for a second
+# and come back for no dialog at all (reported from the field).
 $script:SplashTimer.Stop()
-Hide-Splash
 
 if ($elevate) {
+    Hide-Splash
     try {
         # the elevated copy gets a fresh environment, so the code has to travel out-of-band
         Save-AccessCode
         # -NoSelfElevate because the decision is already made; without it the elevated copy
         # would run the same check again for nothing.
-        $child = Start-Process -FilePath $winPS -Verb RunAs -WindowStyle Hidden -PassThru `
+        $child = Start-Process -FilePath $launchExe -Verb RunAs -WindowStyle Hidden -PassThru `
                                -ArgumentList "$launch -NoSelfElevate"
         # The tool has it (through the hand-off file); this console has no further use for it,
         # and a code left in the environment is one a later command could read.
@@ -537,7 +703,7 @@ if ($elevate) {
     }
 }
 
-$child = Start-Process -FilePath $winPS -WindowStyle Hidden -PassThru -ArgumentList $launch
+$child = Start-Process -FilePath $launchExe -WindowStyle Hidden -PassThru -ArgumentList $launch
 # The launched tool inherited it a moment ago; leaving a copy behind in the technician's own
 # shell serves nothing, and the next go line asks again by design.
 $env:PC2GO_CODE = ''
