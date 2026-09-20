@@ -182,9 +182,12 @@ tool cannot be open while they run.
 | Test-GuiBatch | 205 | **2** (both pre-existing) |
 | Test-Push | 273 | 0 |
 | Test-Categories | 234 | 0 |
-| Test-CatalogEditorGui | 97 | 0 |
+| Test-CatalogEditorGui (2026-09-02: section 2c added, shows the window off-screen) | 199 | 0 |
 | Test-DirtyCleanup | 83 | 0 |
 | Test-FirewallTab (elevated; also green on the Pro VM) | 71 | 0 |
+| Test-TweakTab (elevated, Pro VM 25H2 only - wrecks the machine) | 13 | 0 |
+| Test-CleanupTab (elevated, Pro VM, interactive session via scheduled task) | 28 | 0 |
+| Test-UpdateTab (parts 1-2 on the host: 67 / 0; with -VM on Pro: 72 / 0 - winget, Store updater, Windows Update) | 67 | 0 |
 | Test-Wrangler | 75 | 0 |
 | Test-CatalogScenarios | 66 | 0 |
 | Test-AccessCode | 54 | 0 |
@@ -197,6 +200,30 @@ batch settled"* (a chain-settle timing race). Not re-run this session, unchanged
 `Test-RealUninstall` (51), `Test-DownloadResilience` (35), `Test-DeepBatch` (27), and
 `Test-Elevated` (19/19, which must be **launched from an already-elevated PowerShell** or its
 UAC prompt opens unfocused).
+
+## 2026-08-29/30 - Update tab, crash capture, and what the SketchUp field test taught
+
+- **Update tab** (first in the strip): Desktop apps via `winget upgrade`, Store apps with the
+  one bulk MDM `UpdateScanMethod` action, Windows Update with Recommended/Optional groups -
+  see README "Update". Rows share identity and icons with the Uninstall inventory; the icon
+  fallback (install folder's exe, then the Start Menu shortcut) now feeds the Uninstall list
+  too (37 of 40 rows with real icons on the workstation, up from ~half).
+- **Crash capture**: any exception in a handler or the poll timer writes
+  `%LOCALAPPDATA%\PC2GoDeploy\crash-<ts>.txt` (session header, exception, script line, last 40
+  log lines), logs it, shows one dialog, and KEEPS THE WINDOW OPEN. Identical repeats write at
+  most two files then count (`repeated N times` every 50) - learned from 99 files in 100 s on
+  the Home VM when a Windows Terminal update deleted the package folder holding Cascadia Mono
+  under the running console. The log box now uses `Consolas` (a Windows\Fonts font), and a
+  font-cache fault self-heals by re-fonting on the spot.
+- **Get-StoreApps** hides desktop programs' companion MSIX packages (sparse right-click-menu
+  packages: not Store/System-signed AND not launchable, or named `*ShellExtension*` /
+  `*ContextMenu*`) - WinRAR no longer appears on both Uninstall sub-tabs.
+- **Leftover tokens**: a registry-scanned program also searches under its name with the
+  trailing year/version/bitness stripped (`SketchUp 2026` -> `SketchUp`), 5+ characters only;
+  short derived names stay WEAK so shared folders are never pre-ticked. Found because a
+  SketchUp uninstall left 7 MB and a registry key that scanned as "already clean".
+- Also this pass: `Start-Process -PassThru` needs `$null = $p.Handle` or `ExitCode` reads
+  `$null` after a fast exit (`[int]$null` = 0 turned a failed winget into "Installed").
 
 `Test-TweakReality` is new and is deliberately **not** a pass/fail suite: it is a read-only
 reality check that extracts `Set-Reg` / `Set-RegSoft` / `Remove-RegVal` from the worker by AST
@@ -213,12 +240,890 @@ left running"* (a `Stop-ProcessTree` test) failed once in three runs, the other 
 `taskkill /T` is asynchronous and the assertion occasionally reads the child before Windows has
 finished reaping it. It is a timing race in the test, not a defect in the tree-kill.
 
+## 2026-09-02 - Catalog Editor deep review
+
+Read the whole of `tools\Catalog-Editor.ps1`, probed each suspicion against a sandbox catalog
+with the window shown off-screen, fixed what proved real, and pinned every fix in
+`Test-CatalogEditorGui` section 2c (199/199). Nothing committed.
+
+- **Click-away never shut the drawer.** The handler exempted any click with a `ContentControl`
+  ancestor - and a `Window` IS a `ContentControl`, so every click found one. Measured on HEAD:
+  the handler ran, the drawer stayed open. Only the category rail ever closed it. Now the
+  overlay is the one exemption (answering a confirm must not shut the drawer it is about).
+- **The live check could not pass the access gate.** `/apps.json` is 403 without
+  `x-pc2go-code`, and the editor never sent one - so with a code set, every card lost its live
+  chip for good, the summary said *live copy unreadable* for ever, and the id of a published app
+  stopped freezing on rename (a renamed live app orphaned its `files/<id>/` key). A session-only
+  code now lives under **Settings** (`$script:AccessCode`, never written); setting a new code
+  from the window hands it to the session on wrangler's success; a 403 says *enter it under
+  Settings* rather than quoting the status.
+- **Remove left the drawer open on the removed app** (the rebuild deselects, Update-Inspector
+  ignores that instant by design). `Close-DrawerIfGone`, called from Remove-App and
+  Complete-CategoryChange. Also *"Removed X.."* had two full stops and was level 1, so it lost
+  to a fresher result for six seconds - it is a green result now.
+- **The verify paths beyond the first ate themselves.** The merge re-read "the rest" from the
+  entry on every apply: clear the box, and each later keystroke dropped one curated path. The
+  rest is taken once at open (`$state.vpRest`).
+- **A re-fetch of the same package put the ranked guess back over a chosen setup file** -
+  Autodesk's `image\Installer.exe` became `inner\setup.exe`. Same product (settled hash, same
+  name) keeps a chosen entry that is still in the package; a different product or a missing
+  file follows the listing as before.
+- **A bulk hash that failed was silent** - "Added N", row "not hashed yet". The reason is kept
+  per app (`$script:BulkErrors`, by identity) and the card says *hash failed - ...* in red until
+  a later hash of that app succeeds; the status line counts them.
+- Smaller: an uninstall-only entry is no longer told it needs a URL; `[` in the search box or in
+  a name no longer throws out of every refresh / the fetch tick (`-like` wildcards); a
+  case-only category rename (`apps` -> `Apps`) is accepted (`-ceq`), because the client groups
+  by the exact string; a pending icon rename lands before a push plan looks for `icons\<id>.png`.
+- Suite drift found on HEAD and repaired: Test-Categories needed `Hide-AppIcon` stubbed and
+  still expected the old single-rule TitleBox; Test-CatalogScenarios needed `Get-AppLive`
+  stubbed. Both were red before this session's editor changes.
+
+## 2026-09-02 - "God mode" for silent install and uninstall
+
+Asked for: handle any exe as silently as possible. Two things built, both in the worker and
+the detector, both green.
+
+- **Eleven more installer families** in `tools\Installer-Family.ps1` (synced into
+  `AppDeploy.ps1`): Squirrel.Windows, Velopack, Advanced Installer, Wise, Setup Factory,
+  InstallAware, Qt Installer Framework, install4j, InstallBuilder (BitRock), Clickteam Install
+  Creator, IExpress. A **second pass**, run only when nothing structural, no layout and no
+  InstallShield resource matched: the loader's own identity string (or version-resource value)
+  in bounded regions - the first 128 KB, up to 256 KB of `.rsrc`, the overlay probe, the tail -
+  read as plain bytes and with NULs dropped for UTF-16. Each has its documented install switch
+  and uninstall shape; `Get-UninstallFamily` asks the uninstaller exe what built it and appends
+  the family's quiet flags (`UNWISE.EXE` is Wise by name and takes `/S` in FRONT of the log).
+  Proven on synthesised stubs only - no real installer of these families is pinned yet; the
+  read budget for a negative went from 128 KB to 512 KB.
+- **The switch ladder** (`$script:SilentSwitchLadder`, 15 rungs). When the first switch opens a
+  window, or exits having created nothing, Install-One stops it and tries the next rung under
+  the guard (45 s grace per rung, 15 min cap). A row that lands says *installed with the
+  switch '/S', found by trying - put it in the catalog as silentArgs*. Off for `.msi`,
+  `allowUi`, a timeout with no window, and any run that created a folder. Uninstall-One climbs
+  the same ladder: as registered but WATCHED first (120 s grace), then each rung appended, then
+  as registered with its window allowed - the old behaviour - as the last resort; between rungs
+  `Test-UninstallGone` asks the detect target. The knobs (`UiGraceSec`, `LadderGraceSec`,
+  `UnGraceSec`, `LadderCapSec`) restate their defaults inside the functions, so a harness that
+  lifts them without the table still runs.
+- `tests\Test-SilentLadder.ps1` (new, 75/75) compiles a real WinExe that accepts exactly one
+  switch and otherwise shows a window / exits 1 / exits 0 / creates a folder / hangs, and drives
+  the worker's own Install-One, Uninstall-One and Start-InstallerWatched through every branch
+  with the clocks shortened. `Test-InstallerFamily` gained 1b and 7b (215/215).
+
+**Icons never shipped** (reported the same day: no logos on the client). Measured: every
+`/icons/<id>.png` on the live edge is 404, and the gate is on (`/apps.json` 403). Cause: icons
+rode ONLY in `$script:PushWork` after the installers, and `Start-PushConfirm` took
+`Start-PublishOnly` whenever no installer needed uploading - which, with the hashed apps already
+in R2, was every publish. Fixed: icons alone route through `Start-Push` with an empty plan, an
+icon already in the bucket at the same size is recorded as up (so `iconUrl` is written) without
+being re-sent, a failed icon is on the status line, and the client's `.miss` expires after a
+day. Test-Push 11k. The catalog still carries hand-written `apps.example.com/icons/*.png`
+placeholders for apps with no PNG in `icons\` - those 404 on a client (harmless, one `.miss`
+each); a real PNG at `icons\<id>.png` plus one publish replaces them.
+
+**Fuzzy icons on the client** (reported after the first icon publish): `Convert-ImageToIcon`
+blew every source up to 256 px with the default filter, so a small source (sketchup-pro.png,
+visibly a ~48 px bitmap enlarged) shipped with its blur baked in, and the client's 24-DIP tile
+shrank the blur. The converter now never upscales (a smaller source keeps its own size) and
+uses the high-quality filter for its one downscale; Test-Categories 12 pins both. Already-stored
+PNGs are not re-converted - sketchup-pro needs re-picking from a larger source, and
+icons\email-migration.png is the Illustrator logo (wrong file picked). The tile then went to 36 DIP with a 32-px logo (published 2026-09-02). Second
+report: InDesign "so tiny" beside Illustrator - its source carried the mark in the middle of an
+empty canvas (opaque box 62% of the width vs 100%), and the fit honoured the empty space.
+`Convert-ImageToIcon` now trims to the opaque bounding box (`Get-ImageOpaqueBox`) before it
+fits; `icons\indesign-2026.png` was re-converted in place (158x158, edge to edge). Renaming an
+app moves its PNG to the new id but the catalog's `iconUrl` keeps the old key until the next
+push rewrites it - expected, the old object stays in the bucket.
+
+**"The app freezes 3-5 s after a click, and on the Data Backup tab"** (field report). Measured on
+the workstation with a probe that dot-sources the GUI head and times Select-Tab and the pieces of
+Start-Worker: Data Backup first visit 990 ms (the SMB module loading inside `Sync-ShareButtons`,
+AFTER the busy pill had gone - 6 ms on later visits), Update first visit 2.9 s and Firewall 1.9 s
+(both under their own spinners, winget and the Windows Update search already run off-thread),
+worker write + hash + launch 150 ms, worker start to first status 0.6 s. The real gap: `Continue`
+on the confirm overlay hid the overlay and ran the batch start in the same handler, and
+`Show-BatchStrip` set the strip visible with no render pass before the worker was written,
+hashed and elevated - so nothing painted until the launch (plus a UAC prompt when unelevated)
+had finished. Fixed: Show-BatchStrip pumps one render pass and says "Starting the elevated
+worker..." with a `$script:BatchStarting` guard that Test-BatchBusy honours (a click inside the
+pump can no longer start a second worker), the OK handler paints the dismissal and shows the wait
+cursor before the action, and the first Data Backup visit sits under one busy pill. Test-GuiBatch 5.
+Not changed: the 2.2 s the window takes to build at launch.
+
+**Second report, 2026-09-03: "Update > Windows clicked fast doesn't scan", "tabs and sub-tabs
+freeze", "Backup then Network... freezes with no indicator, then starts scanning".** All three
+confirmed before touching anything.
+
+- *The dropped scan* is a plain bug: the winget scan pumps the dispatcher while it waits, the
+  pump delivers the Windows Update click, and `Load-WinUpdates` opened with "if a scan is running,
+  return" - silently, list left stale, no log line. The reverse direction dropped the winget scan
+  the same way, and Rescan pressed mid-scan was swallowed too. Now `Request-UpdScan` queues (the
+  spinner says "Finishing the winget scan, then asking Windows Update..."), and every loader ends
+  with `Resume-UpdScan`, which starts whichever sub-tab is on screen and still stale. The hint
+  line and the empty-list label are per sub-tab (`Set-UpdWords`), so a scan ending while you are
+  elsewhere keeps its words to itself. Rescan mid-scan is ignored. Test-UpdateTab 2b (105/105).
+- *The freezes* share one cause: every wait indicator is a storyboard spinner, and a storyboard
+  only turns while the UI thread is free. Measured with a probe that records every dispatcher pump
+  and reports the longest gap (= longest stretch with no paint and no input), on this workstation:
+
+  | first visit | before | after |
+  |---|---|---|
+  | Firewall (rule read) | 1,167 ms | 93 ms |
+  | Data Backup (SMB module load, under the pill) | 674 ms | 43 ms |
+  | Uninstall > Store (Appx package list) | 665 ms | 87 ms |
+  | Uninstall (registry scan) | 482 ms | 237 ms |
+  | Network... (adapter modules, after "Checking your network...") | 770 ms | 96 ms |
+  | any second visit | under 40 ms | under 30 ms |
+
+  A client is three to five times slower, so 0.7-1.2 s here was the 3-5 s reported. The fix is
+  `Invoke-OffUi`: the read runs on one kept background runspace while the window pumps, the way
+  the Windows Update search already did. Moved: `Get-FirewallBlockMap` (both cmdlets),
+  `Get-StoreApps` (package list and Start apps), `Get-AllShares` (the SMB read; `net share`
+  stays the fallback), and a new `Get-LocalIPv4` that `Get-LocalSubnets` and `Find-NetworkHosts`
+  share (one adapter read instead of two). The registry scan and the per-package manifest loop
+  stay on the UI thread but pump every 4 keys / 3 packages instead of 12 / 10. `Load-Firewall`
+  gained the one-scan-at-a-time guard the other scans have, and so did `Load-StoreList`.
+  Test-GuiBatch 5 (269/269) proves the helper (arguments, row count and type, empty result,
+  pump, kept runspace, throw, timeout, nested call on its own runspace) and runs the real adapter
+  and share reads; Test-DataBackup, Test-LabSmb and Test-FirewallTab lift the helper alongside
+  the functions they already lifted. Green after the fix: host Test-UpdateTab 105, Test-GuiBatch
+  269, Test-DataBackup 186, Test-BackupTab 207, Test-OptimizeTab 45, Test-BackupRails 20,
+  Test-RealUninstall 62, Test-DirtyCleanup 85, Test-Categories 240; VM Test-FirewallTab 71,
+  Test-FirewallGui 91, Test-ElevatedShare 27/28 - the same 27/28 the committed HEAD scores on that
+  checkpoint (file sharing is already on in CLEAN, and one assertion each run trips on it; not
+  this change). Test-LabSmb (two VMs) was not run.
+
+Traps from this one:
+
+23. **A storyboard spinner is not an indicator while the UI thread is busy.** It is a still
+    image. Any read longer than a frame must either pump or run off-thread, or the person sees
+    a freeze with a decoration on it.
+24. **A fixed sleep in a pump loop is a floor on every call.** `Start-Sleep 100` between pumps
+    made a warm 15 ms share read cost 100 ms - the second Data Backup visit went from 6 ms to
+    132. Wait on the async handle with a short timeout instead (`WaitOne(20)`); it returns the
+    instant the read ends.
+25. **A script handed to a background runspace sees nothing of this file.** No functions, no
+    `$script:` variables, no `Add-Log`. Project CIM objects to plain fields inside the script
+    and shape them on the way back; the harnesses that lift a function by AST must lift
+    `Invoke-OffUi` (and `Get-LocalIPv4`) with it.
+26. **A fresh runspace per call is cold every time.** The point of moving a module load off the
+    UI thread is lost if the next call loads it again; keep one runspace (`$script:OffUiRunspace`)
+    and give a nested call - one the pump dispatched while the first is in flight - its own.
+27. **`return ,$res` double-wraps once the caller says `@(...)`.** The comma survives the
+    pipeline (`@(f).Count` is 1 whatever `$res` held, and `[0]` is an `Object[]`), so an empty
+    read came back as ONE row with every field blank - a phantom firewall rule, a share list
+    whose `.Name.EndsWith` threw - and the first Test-GuiBatch pins passed anyway because
+    `"$($got[0])"` stringifies a one-element array to its element. Caught only by the VM suites
+    (Test-FirewallTab 65/71, Test-FirewallGui and Test-ElevatedShare red on real data). Return
+    the array plainly; pin `Count` and the element type, never a stringified value.
+
+**Third report, 2026-09-03: "the blue strip on top, downloading, before the passcode".** The
+strip is Invoke-WebRequest's progress bar, and in Windows PowerShell 5.1 it is not decoration:
+it is redrawn per chunk received. MEASURED on the same 1 MB from the same edge: 746 ms with the
+bar, 86 ms with `$ProgressPreference` off, 70 ms through WebClient - and the gap grows with the
+chunk count on a slow link. go.ps1 also never sent Accept-Encoding, so the tool travelled at
+1,014 KB where the edge serves 251 KB gzipped the moment it is asked (checked live: `/go` came
+back `Content-Encoding: gzip`, 11.6 KB on the wire). On a run-once remote PC every launch is a
+cold launch, so this is paid every time. Fix: `Get-EdgeFile` in go.ps1 (HttpWebRequest,
+AutomaticDecompression, no bar) replaces both Invoke-WebRequest calls; the 403 with
+`x-pc2go-auth` still reaches `Invoke-WithAccess`, which now also unwraps the
+MethodInvocationException a .NET throw arrives in. The hash is taken after decompression, so
+the pin is unchanged. Test-AccessCode 8 runs the real loop against a loopback edge. Mind the
+budget: Test-Push pins go.ps1's SOURCE under 32 KB (it must stay trivial to scan), and the
+first version of the comment above took it to 32,851 bytes - trimmed to 32,270.
+Same report, second part: "the preparing window appears, is gone for a second, comes back".
+go.ps1 hid its splash before elevating so a UAC dialog would not sit on a window still
+saying "getting ready" - but it hid it on EVERY launch, prompt or no prompt, and then
+Wait-AppWindow showed it again: a blink for nothing from an already-elevated console. The
+hide now lives inside the `if ($elevate)` branch only. Test-AccessCode 8 pins it (67/67).
+
+28. **A .NET method that throws inside a PowerShell function arrives as a
+    MethodInvocationException.** The WebException - and its `.Response` with the status and the
+    auth header - is `.InnerException`. Rethrow the inner one, or every "is this a 403?" check
+    downstream quietly answers no.
+
+Also found by the probe: `Get-InstallerFamilySource` rendered the detector functions and the
+label table but NOT `$script:InstallerIdentityMarkers`, so the worker on a client recognised
+none of the eleven identity-string families while the editor recognised all of them. It renders
+the table now, and the probe proves the rendered text names a Velopack stub in a fresh runspace.
+
+**Lab runner trap (measured, not a product bug):** a suite invoked with `& 'suite.ps1'` from inside
+another script is a NESTED script, and in that shape a scriptblock made with `GetNewClosure()`
+cannot see the script's own functions - `{ F }.GetNewClosure()` throws "F is not recognized" on
+the VM while the identical file passes on the host under `-File`. Every confirm dialog's Continue
+in the client is such a closure (`{ Start-FwBatch 'fwblock' $sel }.GetNewClosure()`), so
+Test-FirewallGui died on the VM at its first Continue with "Start-FwBatch is not recognized".
+The scratchpad `Run-LabSuite.ps1` now runs the suite as `powershell.exe -File` (its own process,
+top level - exactly how go.ps1 launches the client), and the probe passes. Any future VM runner
+must do the same.
+
+Traps from this one: `Get-InstallVerdict` flags every unknown exit code Dirty, so the ladder
+must judge "created nothing" from the directory snapshot, not from the verdict; `return @()`
+from a function yields `$null` and `@($null)` inside a callee counts 1; a parameter called
+`$Args` reads back empty (the detector file already says so - it bit again in the new harness);
+`System.Windows.Forms.Timer` must be spelled out in an `Add-Type` source that also imports
+`System.Threading`.
+
+New traps (continuing the numbering):
+
+19. **A `Window` is a `ContentControl`.** Any "is there a ContentControl above this click"
+    check is always true once the tree is rendered. Name the element you mean.
+20. **`PreviewMouseLeftButtonDown` is a Direct event.** Raising it on an element reaches that
+    element only. To drive a window-level preview handler from a harness, raise
+    `Mouse.PreviewMouseDownEvent` (the tunneling one) with a `MouseButtonEventArgs`; WPF re-raises
+    the button-specific event along the route. And the visual tree does not exist until the
+    window has been shown - `$window.Show()` off-screen at (-4000,-4000), opacity 0, is enough.
+21. **Dot-sourcing the deployment tool's head redefines `$window` and `$ListApps`.** In
+    Test-CatalogEditorGui anything that drives the editor's window must run before section 4;
+    the finally block closes `$script:EditorWindow`, not `$window`.
+22. **`Set-StatusText` with the default colour is level 1 (ambient).** It loses to any result
+    still fresh (six seconds). A confirmation of something the person just did must pass the
+    green colour, or it is silently never shown.
+
+## 2026-09-04 - The compiled client, slice 1 (client\PC2Go.Deploy)
+
+Asked "what is the best practice?", then "how do we get to 10?", then "can it still run from the
+same URL? ... green light all the way". The answer to the middle question was: compile it, sign
+it, make it async - a different product built from the same catalog and the same edge. The
+answer to the last was yes, and this is the first slice of it. **Nothing is committed and
+nothing is published**; the edge still launches the script.
+
+**What exists now.** `client\PC2Go.Deploy` - a .NET Framework 4.8 WPF program (in-box on every
+Win10/11, no runtime to install, no NuGet, one exe under 600 KB) that carries the **Install tab end to
+end** and the Activity Log, with the other seven tabs as a card pointing back at the script. The
+XAML is the script's, lifted; the palette is `Theme.xaml`. It speaks the existing worker
+contract unchanged: `tools\Build-Client.ps1` lifts the `$workerScript` here-string out of
+AppDeploy.ps1 by AST, renders the three placeholders exactly as `Start-Worker` does, and embeds
+it; the exe writes it, hashes it and launches the identical `-EncodedCommand` stub. Every read is
+awaited - there is no dispatcher pump anywhere in it.
+
+**Same URL.** `go.ps1` gained `$Client` and `$ExeHash`, rewritten at the edge from `BOOT_CLIENT`
+and `CLIENT_EXE_SHA256` (both in wrangler.toml, both `script`/empty today). The exe is taken only
+with a real 64-hex pin; otherwise the script, verified as before. `/go-exe` forces the exe for one
+run, `/go-script` the script. The Worker serves `/PC2Go.Deploy.exe` behind the access code.
+`Publish-Release.ps1 -Client` uploads and pins it; `-BootClient exe` flips everyone.
+
+**Tests.** `Test-Client.ps1` 108/108 on the host: the pins are against the script's own
+definitions by AST (queue-entry keys, step keys, the stub line for line, the worker byte for
+byte, Format-Size/Eta/DiskVerdict on equal inputs, the catalog rules on the real apps.json),
+then three real launches against a loopback edge read back through the session log, then the
+bootstrap choice evaluated with go.ps1's own lines. `Test-ClientInstall.ps1` 25/25 on the lab
+VM from CLEAN: Notepad++ installed for real through the elevated worker in 8 seconds (fetch,
+download, hash, silent NSIS install, verify path, run record, queue shredded), then the
+already-installed gate on a second run.
+Test-Push 304/304 and Test-AccessCode 67/67 still pass with the go.ps1 changes; Test-Push's
+32 KB source pin became a 16 KB **shipped** pin (AMSI scans what ships, and the exe path added
+comments the publish strips).
+
+**Traps found.** (29) The XAML markup compiler needs `System.Web` referenced explicitly when
+`System.Web.Extensions` is; the error names the wrong assembly. (30) `-like` treats `[string]`
+as a character class - use `StartsWith` to pin a param block. (31) A pending
+`HttpListener.GetContextAsync()` outlives the run that created it and swallows the next run's
+request: keep ONE pending task across runs. (32) Session logs are named to the second; a harness
+launching twice inside one second appends to the previous file and never sees a new one.
+(33) The Bash tool turns `\\n` inside a heredoc into a real newline before Python sees it -
+write C# strings through the Edit tool. (34) A function parameter named `$Args` is emptied by
+PowerShell's automatic `$args` after binding: the VM suite launched the exe with no switches at
+all and sat for ten minutes looking at a loaded catalog. Never name a parameter `Args`.
+
+**To try it on a real client PC** (the user's step): `tools\Publish-Release.ps1 -Client`, then
+on the client `irm https://apps.pc2go.ca/go-exe | iex`. Then `-BootClient exe` when satisfied.
+Published once this session (pin 4F827490...); the edge still launches the script by default.
+
+### Slice 2, same day: the Uninstall tab (client 2)
+
+"coock" on the Uninstall tab. It is in: both lists as the table, the sheet in its uninstall
+wording, the vendor uninstaller through the worker, Force Remove, the leftover sweep and its
+review sheet, removers, the wipe, Cancel at every stage. The one design decision worth knowing:
+**the reads are not re-implemented.** `Build-Client.ps1` lifts the script's own
+`Get-InstalledPrograms`, `Get-UninstallFamily`, `Get-StoreApps` and `Scan-Leftovers` - the
+35-function closure found by AST, plus the tables and the `WipeItem` class - into `reader.ps1`,
+which the exe embeds and runs in a hidden `powershell.exe` per read (installed 1 s, store 1 s
+on this machine). The two clients cannot disagree about what a program, a quiet switch or a
+leftover is, and the scan cannot stall the window. Every later tab's reads follow this pattern.
+
+Test-Client 142/142 (the reader's inventory compared row for row with the same functions lifted
+in-process; a synthetic product proves the sweep's pre-tick and remover rules). Test-ClientInstall
+on the VM gained sections 3 and 4 (Notepad++ removed again through list, sheet, worker, sweep,
+wipe; then "nothing matched"). **The VM's CLEAN checkpoint disappeared during this session** -
+both lab VMs show no snapshots; nothing here deletes checkpoints. The suite now skips its install
+sections when Notepad++ is already present so the removal half still runs without a revert.
+
+Traps: (35) ConvertFrom-Json hands a top-level array back as ONE object, and `@(... | ConvertFrom-Json)`
+is a one-element array holding the array - cast `[array]` first. (36) A synthesized click from a
+background process does not reach a WPF window; the harness switches (`-StartTab Update`,
+`-AutoUninstall zzz`) are the way to open a tab for a screenshot.
+
+### Slice 3, same day: the Update tab (client 3)
+
+"keep cooking". Slice 2 was published first (pin E60D400D..., verified on `/go-exe`). Then the
+Update tab: three sub-tabs, the queued-scan rule, the three confirm sheets, the `update` /
+`storeupdate` / `winupdate` entries. The reader gained `winget` and `winupdate` ops - the
+script's own winget parser, program-match rule and Windows Update search, lifted, with the
+window's script-scope reads stubbed (no Uninstall list to borrow, so the program lookup takes
+its own registry scan; the Store lookup reads `Get-StoreApps` once). Measured here: winget 5 s,
+Windows Update 12 s, both off the window. Test-Client 142/142 on the new build. No VM run: the
+lab VM has no CLEAN checkpoint and its guest stopped answering.
+
+### Slice 4, same day: the User Accounts tab (client 4)
+
+"keep cooking you do the optimize last ! do user account". First the icon fix went out: the
+Uninstall and Update rows clipped their 36 px tiles in a 34 px column, so the column is 40 px
+in both clients (six places in AppDeploy.ps1, two in the exe) - published together with client
+3 (pin 71798B94..., verified on `/go-exe`). Then the tab: `MainWindow.Accounts.cs`,
+`Services\AccountList.cs`, the AcctRow style, PanelAccounts and the two dialogs, verbatim from
+the script. The reader gained `accounts` (Get-UserProfiles + Get-LocalAccounts + the signed-in
+name) and `migrateitems` (the safe folders under a profile, from `$script:MigrateDefs`). Every
+verb is one of the script's own queue entries, password DPAPI-protected before Start-Worker;
+Replace with a local admin is the three-step `chain`. Screenshot checked: two groups, the Windows
+one folded, badges, the hint line. Test-Client now also proves the accounts read against
+`Get-LocalAccounts` in-process (same names, same order). Optimize goes LAST by the user's order;
+Data Backup, Firewall, Toolbox come before it.
+
+### Slices 5 and 6, same day: Toolbox and Data Backup (client 6)
+
+"cook data backup and toolbox". Toolbox first (small): the two tables lifted verbatim into
+`Services\Toolbox.cs`, TweakRow and IconTile styles, the AutoLogon dialog, `fix` entries with
+`alPassword` protected, real module icons on the tiles. Then Data Backup, the largest tab in the
+script: `MainWindow.Backup.cs` (mode strip, the moving picker, source kinds, restore targets, the
+Network dialog with the lazy share tree, Share this PC, the measuring pass, every refusal, the
+confirm sheets, `migrate` and `share*` entries), `Services\BackupList.cs` (row projections, path
+rules, share naming, disk verdict) and `Services\NetShare.cs` (WNetAddConnection2 + CredUI, the
+script's connect rules). The reader gained six ops: `migratedefs`, `manifest`, `foldersize`
+(progress every 200 folders), `shares`, `netscan` (hosts streamed through the progress file),
+`hostshares`. The csproj gained `UseWindowsForms` for FolderBrowserDialog. Both tabs checked on
+screen. Not run end to end anywhere: no copy, no share, no network sign-in - the VM has no CLEAN
+checkpoint and this PC's network has no second machine sharing anything.
+
+### Slice 7, same day: Optimize - Tweaks and Cleanup (client 7)
+
+"do the optimize , do the tweaks and clenaup ! leave the gamin to the last". The table and the
+detectors are the script's own, through two reader ops (`tweakdefs`, `tweakprobe`); the three
+detector helpers are named as lift roots because the closure walk cannot see calls made from
+scriptblocks inside `$script:TweakTests`. `MainWindow.Optimize.cs` carries Detect Applied, the
+pre-apply check, the ordered `tweak` / `untweak` entries with `userSid`, the confirm sheets,
+the settings broadcast, the Explorer restart and Confirm-AppliedRows. The Gaming sub-tab is a
+note pointing at the script. Test-Client pins the table row for row and the probe's tri-state
+against the script's own detectors in-process (187/187). No tweak has been applied through the
+exe yet.
+
+### Slice 8, same day: Firewall (client 8)
+
+"firewall". The scan is one reader op (`firewall`): `Get-FirewallBlockMap` and Load-Firewall's
+loop with the script's own helpers and `$script:FwProtectedRoots`, answering the rows (program
+or stray, on/off counts, rule names) and the flattened map; `fwmap` re-reads the table at
+confirm time for the foreign-rule count. `Add-Log` joined the reader's stubs (the rule read
+logs its own failure). `MainWindow.Firewall.cs` carries the two columns, the detail view, the
+Block / Unblock / Remove ALL sheets, `Start-FwBatch`'s two entry shapes and the rule-count
+summary; `Services\FirewallList.cs` the row projection, entries, foreign count, summary parse
+and executable preview, all pinned in Test-Client against the script's literals (221/221). The
+tab, the detail view and the Block sheet were checked on screen through UI Automation. Nothing
+has been blocked through the exe yet - this machine has no outbound block rules to work with.
+
+### Client 9, same day: the Data Backup first frame
+
+"the data backup firt lunch it show on folders as back to then after whike its gone and two
+button show for network or choose file" - on a client machine the tab sat in the window's raw
+default layout (the account list in the TO column, no folder picker) for the seconds the two
+reader reads took, then flipped. `OnBackupTabShownAsync` now runs the mode sync FIRST and
+synchronously, before any await; the empty-state sentences ("No user profiles on this machine")
+and the account hint wait for `_acctReady`, set when the accounts read has answered. Every other
+tab was audited for the same shape: Uninstall, Update and Firewall paint their spinner before the
+await, User Accounts and Optimize raise the busy overlay first (Optimize also selects its sub-tab
+first), Toolbox is synchronous - none flips layout after a read. The one thing that still changes
+after a read is by design: "Share this PC" becomes "Share more..." and Stop sharing appears once
+the share list says this PC is sharing.
+
+Found on the way: `Test-Client.ps1` had never rebuilt the exe. Dot-sourcing `Build-Client.ps1
+-NoBuild` put ITS `$NoBuild` into the suite's scope, so `-not $NoBuild` was always false and every
+run tested whatever `client\dist` already held. Fixed (`$wantBuild` read before the dot-source);
+the "Build-Client returned the exe and its hash" pin now runs (222/222).
+
+### Slice 9, 2026-09-05: the download path (client 10)
+
+"check the download is this the optimzed way ? it is the fast way ? ... revit 15gb download !"
+then "go ; also confrim if internt lost or crash app or pc or reboot i dont lose the download !".
+The exe had only the single-connection fallback. `Services\SegmentedDownloader.cs` now carries
+the script's 16-connection chunk-queue download with the `.parts` journal (same shape as the
+script's), unlimited retries for the life of the batch, the adaptive worker throttle, the
+If-Range/ETag check and the launch-time resume offer; `Downloads.FetchAsync` decides between it
+and the single connection (files under 16 MB, servers without Range). `-Download` runs the same
+call headless; Test-Client 1c drives it against a loopback Range server - clean, killed mid-file
+and resumed, cut connections, a three-second outage, no Range - 22 pins, byte for byte (244/244).
+Also: the single-connection path's 60-second header timer is disarmed once headers arrive (it
+was still armed for the whole body); `.parts` joins the cache sweep; DefaultConnectionLimit 64.
+
+### Client 11, same day: the batch order
+
+"if start wity revit i will he wiating doing nothing till its finish" - `BatchPlan.Order` now
+downloads smallest first (a base still ahead of its add-on, unknown size last), and
+`BatchPlan.MissingBases` fails open on a `requires` id the catalog does not know, matching the
+script - the exe had disabled Go, which made AutoCAD Electrical (`requires: autocad`, but the id
+is `autocad-2027`) uninstallable. Both pinned through -SelfTest (248/248). Catalog data the user
+was told to fix in the editor: Electrical's requirement id, both AutoCAD verify paths ("AutoCAD
+2026" for 2027 products), Acrobat's `autoplay.exe` entry with no size and a placeholder hash.
+
+### Client 12, same day: presses that answered late, and reads during a batch
+
+"when i profrom it it took a whioe before show any indectors" - four presses did slow work
+before painting anything: Share this PC (share list read, then the dialog), Stop sharing (share
+list read, then the confirm), Unblock / Remove ALL (the live rule table, wait cursor only), Block
+Internet Access (a synchronous walk of every process's path). Each now shows the busy pill or a
+dialog note first; the process walk runs off the window. "downloading and installing while doing
+tweaks or clean up it wont crash?" - a second BATCH is refused with "Still busy" by design; READS
+in other tabs run in parallel in their own reader process. Proven with the scratchpad
+Concurrency-Probe: Detect Applied, Firewall scan, Uninstall scan, accounts, Toolbox during a 48 MB
+download - all answered, the download finished, Undo Selected refused, no crash file (248/248).
+
+### Client 13, same day: more to tweak and clean, and the Startup sub-tab
+
+"cook all !" after a list of what could still speed a machine up. In the SCRIPT (so both clients
+carry them): three pre-ticked Tweaks rows - `searchscope`, `defenderscan`, `storagesense` - with
+detectors, Apply and Undo; four Cleanup rows - `browsercache`, `crashdumps`, `docache`, and
+`shadowcap` under CAUTION - each measuring reclaimed space; a `searchrebuild` Toolbox fix;
+`Get-StartupEntries` (GUI side, lifted into the reader as `startupapps`) and the worker's
+`Set-StartupEntry` behind `startupoff` / `startupon`, which write Task Manager's own
+StartupApproved bytes. In the EXE: the Optimize > Startup sub-tab (rows grouped by verdict,
+Switch Off Ticked / Switch Back On / Rescan, list re-read after the batch), and the cleanup
+summary's reclaimed figure with the free-space line refreshed. The script client has no Startup
+UI. Test-Client pins the table rows, the reader shape against the script's own function
+in-process, the worker cases, the row projection and entries, the fix table id for id, and the
+reclaimed parse (271/271). Nothing new has been applied through the worker on a real machine
+yet - Test-TweakTab on the lab VM is the place for that, and its "47 rows" comment now says 50.
+
+Found by the suite on this pass, one run in three: the kill-and-resume pin came back with the
+wrong hash. Each download worker wrote through a 1 MB FileStream buffer while the journal
+counted a byte as done the moment its write returned - a killed process took up to a megabyte
+per worker with it, the journal said those bytes were on disk, the resume skipped them, and the
+finished file hashed wrong. The workers now write unbuffered (buffer size 1), so a byte the
+journal counts has reached the OS. The scratchpad Resume-Loop kills and resumes ten times at
+different points, hashing each result: 10 of 10 after the fix.
+
+### Client 14, same day: the Toolbox in three sub-tabs
+
+"The toolbox i want it sub tabs ... diagnose ... disk management ... shrink and extend ... when
+there is x mb in front of it you can not extend it unless you do something" then "all drivers,
+and cook". Tools / Diagnose / Disk Management. The diagnosis left the fix list for its own screen
+(`Services\Diagnosis.cs` parses the worker's report file into the seven layers). The SCRIPT gained
+`Get-DiskLayout` (GUI side, lifted into the reader as `disks`) and the worker's
+`Invoke-DiskAction` behind `diskshrink` / `diskextend` / `diskextendmove` - the last being the
+recovery-partition dance (ReAgentC disable, delete, extend less 1 GB, recreate with the recovery
+GPT type and diskpart attributes, ReAgentC enable) with rails for dynamic disks, a non-recovery
+blocker and BitLocker. The EXE draws the disks (`Services\DiskTools.cs` plans the extend and
+explains a greyed-out one) and runs the actions as Tools batches. `tests\Test-DiskTab.ps1`
+(elevated, Hyper-V module) proves all three on a throwaway VHDX; it has NOT been run yet from
+this session, which is not elevated - run it in an elevated PowerShell. The script client has no
+Disk UI. Test-Client pins the reader shape against Get-Disk, the plans on four layouts, the
+worker cases and rails, the entry, and the report parse (296/296). Both screens were checked on
+screen through UI Automation: this workstation's disk drawn as System / Reserved / C: / Recovery
+with "Extend: the recovery partition behind C: has no free space behind it either", and the
+Diagnose screen's empty state with Run Diagnosis. Gotcha met on the way: the exe and the script
+share one mutex (`Local\PC2GoAppInstaller`), so a launch while the script client is open shows
+"already running", writes no session log, and fails Test-Client's launch section - close the
+script client before running the suite.
+
+The first cut of the Diagnose screen was an explainer and a button, and the user read it as an
+empty tab - correctly. It now draws the seven layer cards from the first frame (grey, "Not read
+yet"), turns each one as the worker's `Checking: VERDICT Lk: ...` statuses arrive (blue reading,
+green OK, red finding), and fills in the lines from the report file at the end. Two bugs met
+doing it: `DiagLayer.Key` / `.Name` were public FIELDS, so WPF bound them to nothing and every
+card showed only "Not read yet" - properties now; and the Toolbox dash read "0 fixes" because it
+was computed before the rows loaded. 298/298.
+
+### Client 15, same day: a fix under every finding
+
+"for the diagnose? can we somehow add fix for the result?" - planned in plan mode, approved,
+built. The SCRIPT gained `$script:DiagRemedies` (one row per sentence Get-SlowPcReport can say:
+layer, regex, kind, target, label, note) beside `$script:FixDefs`, and a `restart` fix
+(`shutdown /r /t 60`). The reader serves it as `diagremedies`. The EXE's Diagnose cards list each
+finding with its remedy sentence and a button: one click runs a tweak (through the existing
+StartTweaksAsync rules) or a fix (Restart Now confirms first); Cleanup / Startup / Uninstall /
+Data Backup open with the rows ticked or the search filtered; hardware findings have no button.
+Test-Client parses every `$lN += ...` sentence out of the WORKER's AST (the function lives in the
+worker here-string, so the script's AST does not see it - that cost one aborted run) and pins
+both directions: every sentence has a remedy row, every remedy answers a sentence (311/311).
+Also `EnsureTweaksLoadedAsync` so a remedy can run a tweak before the Optimize tab was ever
+opened, and the startup load task is awaited before ticking rows. Same trap as the layer cards a
+slice earlier: `DiagFinding` shipped its first build with public FIELDS, so the finding blocks
+drew as empty boxes with a blank button - the on-screen check caught it, properties now. Rule for
+anything a XAML template binds: properties, never fields.
+
+Client 16 (2026-09-05): the user's "for the install I don't see the apps icons" was the SUITE's
+doing. Test-Client's section 3 closes its window a second after the catalog; the icon fetches
+died with the disposed HttpClient, and IconPump wrote a 24-hour `.miss` per logo into the icon
+cache the real client shares - four files at 13:15:30, exactly the four ids of the live catalog,
+so the technician's own launch eight minutes later drew letters. Fixed at the root: a miss only
+for a server's 404/410, believed one hour, keyed by id + URL hash; the icon folder survives the
+close (disk-first was a comment until now); old id-keyed misses are cleared once. Startup rows
+got their own style with a visible tick and the program's icon (reader field `Exe`, resolved by
+`Resolve-StartupExe`). Test-Client skips the launch section, saying why, when a client is open,
+instead of raising three "already running" boxes on the technician's screen.
+
+Client 17 (2026-09-05, "take another spin on the toolbox, diagnose and fix"): screenshots of the
+three sub-tabs plus the user's own report found the diagnosis judging every physical disk - a USB
+backup HDD produced "spinning disk" and "182 read errors - back this machine up NOW" on a machine
+that runs Windows from an NVMe SSD - and judging CPU per process, so firefox appeared twice and
+VS Code once on a workstation up for 63 hours. Now: only the boot/system disk decides "spinning
+disk", SMART sentences name their disk and soften for a non-Windows disk, CPU is summed per
+program with a 2%-of-one-core floor over the uptime, and a browser gets an advice-only remedy row
+placed before the generic one. Screen fixes: fix rows show their hints (DetailRow, shared with
+Startup), captioned panel tiles, one Run Diagnosis button greyed during a run, a dash summary
+instead of a repeated path, no Extend for a 1 MB slack gap. The probe for this kind of work is
+`Get-SlowPcReport` lifted out of the rendered worker and run unelevated on the dev machine
+(scratchpad `Run-SlowPc.ps1` pattern): SMART needs admin, everything else answers.
+
+Client 18 (2026-09-05, "no indicator on disk management; for the diagnosis, is there a
+recommendation or approach to fix what is slowing down?"): a "What to do" card on the Diagnose
+screen - the actionable findings as numbered steps in layer order with their buttons, the rest
+as things to know, and the general approach (Cleanup, Startup, Tweaks, Restart) when nothing is
+actionable; `Diagnosis.Plan` is pure and self-tested on four shapes. Disk Management shows a
+spinner beside "Reading the disks..." and greys Rescan during the read. Both came straight from
+the user looking at the screens: the remedies existed, but scattered over seven cards they did not
+read as a recommendation.
+
+Client 19 and 20 (2026-09-05): 19 was a rebuild with version metadata after Defender's cloud ML
+quarantined 18's hash (see the trap). 20: the fix and startup rows went back to one line with the
+explanation as the row tooltip - the user's decision for an audience of a few technicians - and
+a sweep of the "(s)" placeholders: `Format.Count` in the exe (106 sites, scripted rewrite, each
+replacement reviewed, fifteen sentences re-worded by hand), a nested `Plural` in the worker's
+diagnosis, and the remedy regexes moved off the counted nouns. Counts now live in the group
+headers only; the hints and dashes stopped repeating them.
+
+Client 22 (2026-09-09, "cook the gaming now"): the last slice. The Gaming sub-tab is the script's
+fourteen rows through the same machinery as Tweaks, plus the latency probe as reader op
+`gameprobe` (the script's `Measure-GamingLatency`, narrating through a stand-in `$TxtTweakHint`
+whose setter writes the progress file) and Apply Gaming's baseline / after / compare with the
+script's gate (`Optimize.CompareProbe`, pinned against `Compare-GamingProbe` on the same
+numbers). The first cut put the probe's line on the dash and the user could not read it ("think
+out loud, like the Diagnose tab"): now three cards above the rows (`Services\GameCards.cs`) -
+grey until measured, narrating as the probe runs, then the number, its meaning, a verdict in a
+colour and what to do; the after of Apply Gaming joins the before on each card under a verdict
+card; every run is written to `gameprobe-<stamp>.txt`. The session scratchpad had been wiped by Temp cleanup - every harness script was gone,
+and the Bash tool could not even spawn; the three that matter (`Shot-Uia`, `Av-Probe`,
+`Verify-Pin`) are now in `tools\dev\`. Not run end to end anywhere: an Apply Gaming batch (the
+worker's gaming cases are the script's, untouched; the before/after path is exercised only by the
+suite's pure pins and the on-screen Measure).
+
+## 2026-09-20 - Six agents, and the class of bug they finally caught
+
+The previous sweep read the whole product statically and found nothing like the bug the owner hit
+the same day: SketchUp installed while Office was still installing, MSI 1618, retry, ladder
+advance, apparent endless retrying. That is recorded as a standing lesson in memory
+(`feedback-static-review-misses-runtime`). This round briefed one agent purely on runtime
+behaviour - two things at once, exit codes that mean "try later" versus "you are wrong", work that
+outlives its owner, order-dependent damage, wall-clock assumptions - one on the client-to-worker
+contract action by action, one adversarially on the previous round's own fixes, plus data-fetch
+speed, tab-switching latency and UX. Between them they found the following, all fixed here.
+
+### The one that would have destroyed a customer's data
+
+`Get-CreatedDirs` diffs the whole of Program Files, ProgramData and AppData around an install, so a
+CONCURRENT installer's folders land in the list as this app's debris. `Select-OwnCreated` was
+written for exactly that - and was wired into only ONE of the three paths that hand the list to the
+leftover scan, which pre-ticks it for deletion. Install Office then SketchUp in one batch,
+SketchUp fails, and the preview offered `C:\Program Files\Microsoft Office` - ticked - as
+SketchUp's leftovers. All three paths now go through `Get-OfferableCreated`, which filters and
+records in the activity log how many folders it dropped. The ladder decisions still read the RAW
+list on purpose, and the comment says why: "created nothing" is what tells them the switch was
+wrong, and a concurrent installer's folders making the list non-empty STOPS the ladder, which is
+the safe direction. The catalog `id` now counts as an ownership token alongside the display name.
+
+### Two bugs in the previous round's own fixes
+
+- **`Get-SafeUserSid` called `Add-Log`, which does not exist inside the worker.** `Add-Log` is
+  defined in the GUI half of AppDeploy.ps1, outside the `$workerScript` here-string. The refusal
+  path therefore threw CommandNotFound, was caught by the queue loop, and FAILED the row - all
+  seven action types, every row of every batch, on any machine that reached it. It logs through
+  `Write-Activity` now, which the worker does have.
+- **The SID pattern was pinned to `S-1-5-21-a-b-c-RID`**, which is a local or domain account and
+  nothing else. It refused every Entra ID (Azure AD) account (`S-1-12-1-...`) and every session an
+  RMM agent started as SYSTEM - i.e. most business customers - and the fallback sent HKCU work into
+  the ELEVATING ADMIN'S hive while reporting it applied. It is a shape check now: digits and
+  hyphens, which is the whole property the guard ever needed. The seven dispatch sites also set the
+  SID unconditionally, so an entry without one no longer inherits the previous entry's.
+
+**`tools\Build-Client.ps1` now refuses to build a worker that calls a function defined only in the
+GUI half.** Proved against the pre-fix file: it names `Add-Log` and the worker line. That class of
+bug cannot ship again.
+
+### Runtime and concurrency
+
+- **The uninstall ladder had no "machine is busy" handling at all** - the exact twin of the install
+  bug fixed the day before, in the place that fix did not reach. A 1618 is neither ShowedUi nor
+  TimedOut and the product is obviously still detected, so it climbed all sixteen rungs in about
+  twenty-five seconds, relaunching the vendor uninstaller each time, and landed on a bare exit
+  code. It now stops with the same sentence the install side gives.
+- **1601 is 1618 wearing a different number** (the Installer service is not reachable yet - the
+  Windows Update reset fix stops `msiserver`). It was in the default branch, so it climbed the
+  ladder too. It is `Retry` now. 1639, 1633, 1610 and 1612 are refusals made before a byte is
+  written and are no longer marked dirty - they were sending technicians into a leftover scan of a
+  product that was never touched.
+- **"Restart Now" fired sixty seconds before the rest of its own batch.** It runs `shutdown /r /t
+  60` and RETURNS; the worker carries straight on. Ticking it with Windows Update - Reset and
+  WinGet - Reinstall rebooted the machine mid-`Add-AppxPackage` with the update store already
+  renamed away. `Start-FixBatch` sorts it last, the same way `Start-TweakBatch` sorts the restore
+  point first.
+
+### The tool telling the truth about its own work
+
+- **Wipe reported a green, counted-as-done "Cleaned" when every target had been refused.**
+  `Cleaned` is in the client's DoneRx, so nothing was removed, nothing failed, the strip folded
+  itself away. Removing nothing is `Failed` now; removing some of it is `Skipped`.
+- **Cancelling a backup reported Failed** - an action the confirm sheet explicitly invites. Every
+  cancel path incremented `$failed`, so `Failed` was the only branch it could reach. A separate
+  `$cancelled` count now distinguishes it, and only a problem BESIDES the cancel makes the run a
+  failure.
+- **A complete Network Reset reported "Skipped"**, which the client renders as "with warnings" -
+  amber dot, strip held open, "check the details". It has no failure path at all. It is `Applied`.
+- **The Cleanup confirm sheet was hard-coded for Windows.old** although there are TWO caution rows.
+  Ticking only "System Restore Space - Cap at 5%" produced a sheet naming an action that was not
+  ticked while saying nothing about the one that was - which discards the restore point a tweak
+  batch made minutes earlier. The sheet is built from the rows actually ticked now
+  (`Optimize.CleanupCost`).
+- `gamebaroff` undo removed one of the two values its apply writes, and the detector only looks at
+  the other, so the controller chord stayed off for good. `visualeffects` undo never restored
+  `FontSmoothing`. Both are now the inverse of their apply.
+
+### Client-side
+
+- **Select All / Clear All acted on the filtered view while Apply and Undo read the whole backing
+  collection.** Filter the list, press Clear All, tick one row, press Apply - and six invisible
+  rows ran. Apply, Undo and the dash count all read `GetOptVisible()` now; with an empty search box
+  nothing changes.
+- **The overall bar strobed.** `measurable` was gated on `Progress > 0`, but the worker sends pct 0
+  as a real reading at the start of every folder it copies, so a migrate batch flipped between the
+  indeterminate sweep and the bar - and between two differently worded captions - several times a
+  second. Zero is a reading now, and a latch (`_overallLatched`, reset with the strip) stops the
+  bar ever going back to the sweep.
+- **A declined UAC prompt raised a second one immediately.** `FinishBatch` dropped the queued-next
+  batch only when `_cancelRequested` was set, so a refused elevation - and a worker the watchdog
+  condemned - followed straight into a fresh elevation request. The drop now covers any batch that
+  did not end cleanly, and sits below the point where `_hadFailures` is computed.
+- **The first Data Backup click fired five hidden powershell.exe reads, three of them the same
+  `shares` op** at about 0.7 s each, two of whose results were discarded. `SyncBackupMode` no
+  longer refreshes the share buttons; the awaited read at the end of `OnBackupTabShownAsync` owns
+  them. Switching mode cannot change what this PC shares.
+
+### Reported, measured, NOT yet acted on
+
+The tab-switching and data-fetch agents produced a costed list. The three cheapest are under ten
+lines together: gate the reader's two unconditional `Add-Type` blocks behind the two ops that need
+them (~125 ms off EVERY read, 19 of 21 ops pay for something they never touch); a `-NoFamily`
+switch on `Get-InstalledPrograms` for the firewall op, which never reads `Family`/`Args`/`Silent`
+(measured 2469 -> 1655 ms); and caching the `store` JSON, read separately by the Uninstall and
+Update tabs behind two independent flags. Beyond those: no virtualization on any list, the Forever
+spinners that never stop, `AllowsTransparency` forcing a layered window, and `Reader.RunAsync`'s
+UI-thread prelude. Also still open from the end-to-end audit: Force Remove paints every row green
+"Uninstalled" before any work happens (two paths never correct it); `diskextendmove` can skip
+creating the replacement recovery partition and still report Applied; `shareon` sends a share name
+the worker never reads and may not match what it creates; every deadline in the product is
+wall-clock `Get-Date`, so a laptop lid closed mid-install reads as a timeout on wake.
+
+### Test baseline after this round
+
+`Test-Client` 368/368, `Test-DirtyCleanup` 85/85, `Test-DataBackup` 186/186,
+`Test-CatalogScenarios` 66/66. `Test-GuiBatch` could not run - the owner's own client holds the
+single-instance mutex, which the harness shares; same reason `Test-Client`'s launch section
+skipped. Nothing was committed and nothing was published: Cloudflare still rejects the upload
+because the wrangler OAuth token expired on 2026-09-19 and `CLOUDFLARE_API_TOKEN` is not set.
+
+
+### Published 2026-09-20 07:38 UTC - build 54 / client 23
+
+`Publish-Release.ps1 -Client`. Script pin `A752AC93...`, exe pin `2A8CCD7C...`, `BOOT_CLIENT` still
+`script`, so `/go` is the script and `/go-exe` is client 23. Verified by fetching both back off the
+live edge.
+
+**The banner names the release now, not the clock.** It used to end with `Get-Date`, i.e. "now",
+which read as a login time and told a technician nothing about whether the tool in front of him was
+current. `go.ps1` carries two stamped values (`$Release`, `$Released`) that
+`tools\Publish-Release.ps1` rewrites at publish time - the version read from AppDeploy's `$BuildTag`
+plus the client's `BuildTag` when `-Client` actually uploads a new exe, and the publish moment in
+UTC because the people running this are not in one timezone. Both are in the anchor-survival list,
+so stripping cannot silently drop them, and the publish refuses if either line is missing rather
+than shipping a banner that misdates itself. The line reads:
+`node apps.pc2go.ca   version build 54 / client 23   updated 2026-09-20 07:38 UTC   pin a752ac931ae8`
+
+**The execution bar was rebuilt around what the owner asked for.** It had no figure at all for a
+tweak, fix or account batch - it went indeterminate, and an indeterminate bar on a template that
+does not animate it renders as a frozen solid line. Now every ticked row is one share: settled rows
+have all of it, a row reporting a real figure has that fraction, a row that is RUNNING but reports
+nothing (every tweak, every fix, every account action) has half, a queued row has none. So the bar
+steps twice per row - once when it starts, once when it finishes - and the caption carries the
+percentage and the exact count in the download bar's shape: `58%   -   7 of 12 finished`. There is
+no indeterminate case left. The auto-fold was also too strict: it keyed on `_hadFailures`, which
+counts `Skipped`, and "already applied" is the normal outcome of half a tweak batch - only a Failed
+row or a cancel keeps the strip open now.
+
+Suites after this: `Test-Client` 382/382 (the launch section ran this time), `Test-Push` 306/306,
+`Test-AccessCode` 67/67, `Test-DirtyCleanup` 85/85, `Test-DataBackup` 186/186,
+`Test-CatalogScenarios` 66/66. Test-Push gained two assertions: the verify-verdict section now
+LIFTS `Select-OwnCreated` and `Get-OfferableCreated` out of the worker instead of stubbing them,
+because that section exists to run shipping code and the created list now passes through the filter
+on its way to the leftover scan.
+
+Still open: Smart App Control is enforcing on the dev box, so the exe cannot be launched or
+self-tested there - `/go` is the fallback and the overseas client machine is the real test. Nothing
+is committed to git.
+
+### 2026-09-20, later - twelve agents, and what they found in the fixes
+
+Two more rounds after the six above: five on the Catalog Editor, then seven briefed to attack
+everything including the morning's own work. The pattern held from the first round - the agents
+that found the worst things were the ones told to run something or to attack a specific change,
+not the ones told to read.
+
+**The one that would have destroyed customer data.** `Copy-ProfileData` set `/XO` only when
+`$dstKind` was neither `folder` nor `paths` - and `paths` is what BOTH restore destinations use,
+"restore to where it came from" and "choose a folder". So a restore overwrote files the customer
+had edited since the backup, while the confirm sheet on screen promised *"a file the account has
+changed since the backup is kept rather than rolled back"*. Restore `D:\Photos` over `D:\Photos`
+after they kept working and the newer copies were gone. The comment above the line described the
+correct behaviour; the condition did the opposite. It is `-ne 'folder'` now: a folder destination
+is a backup being written and still takes everything; every live destination is protected.
+
+**A suite had been dead and still printed passes.** `Test-SilentLadder` - the only coverage of the
+switch ladder, which decides whether a vendor installer runs unattended or opens a dialog on a
+customer PC - died at assertion 21 with `Wait-InstallerQuiet is not recognized` and exited quietly.
+The morning's own `Wait-InstallerQuiet` caused it: a function lifted by AST calling something the
+suite does not lift. Identical shape to the `Add-Log` bug. It lifts the dependency now, and runs
+78/78. `Get-FreshCatalogUrl` in `Test-DownloadResilience` is the same shape and is still open - the
+general guard worth adding to every lifting suite is: walk the lifted function's `CommandAst` nodes
+and assert every name resolves.
+
+**Four bugs in the morning's fixes**, found by the agent whose whole brief was to attack them:
+- the click-away rewrite walked the VISUAL tree, which stops at a `PopupRoot` - so clicking an item
+  in any of the drawer's five dropdowns would have closed the drawer and thrown the pick away. The
+  logical tree crosses that boundary; it is asked first now.
+- the "atomic" catalog write was `Move-Item -Force`, which deletes the destination and then moves -
+  a real window with no `apps.json`, which is the failure it was added to remove. `File::Replace`
+  now, with `[NullString]::Value` for the backup argument (a bare `$null` binds as `""` and throws
+  "The path is not of a legal form" - that one took three suites down before it was caught).
+- the settle wait wrote **"Installing"** onto uninstall rows.
+- the overall bar could read 100% with a row still running.
+
+**The disk tab was resolving partitions by number with no identity check.** `DiskTools.Entry`'s
+comment claimed "the disk and partition numbers, never a drive letter - letters move, numbers do
+not". Disk numbers come from enumeration order: unplug a USB disk, plug in another, and it takes
+the free number while the panel is still showing the cached card. "Shrink E: by 200 GB" then
+resolved, correctly, to somebody else's drive. The entry carries the partition's **offset and
+size** now and the worker refuses when they do not match, naming what changed. Still no drive
+letter on the wire - that pin was right and it stays.
+
+**`diskextendmove` could delete a live WinRE partition on a second disk and report Applied.**
+Every ReAgentC step was gated on `$d.IsBoot`, but WinRE does not have to live on the boot disk.
+`Get-DiskLayout` already parses `reagentc /info` and emits `IsWinRE` per partition - and nothing
+anywhere read it. The worker now asks `reagentc` directly whether THIS disk carries WinRE. A failed
+extend also re-enables WinRE instead of leaving the machine with none and a red row that says
+nothing about it.
+
+**The tool was computing the right verdict and writing the wrong word, in five places.** This is
+the single highest-leverage class in the product and the codebase had already won the argument
+three times elsewhere:
+- `Get-InstallVerdict` classified `Blocked` / `Cancelled` / `Killed` and `Install-One` wrote
+  `'Failed'` for all of them. 1223 is now `Cancelled` in the table (somebody clicked No) and only a
+  human decision becomes a cancellation; a policy block stays a failure, because that one needs
+  acting on.
+- declining the UAC prompt was `"Failed: elevation declined"` on every row, red, counted in
+  "N failed", cache kept - for a batch in which nothing was attempted. `Abort-Batch` takes a kind
+  now and says **"Not run"**; 21 call sites across both clients.
+- Cancel rewrote rows that had already succeeded: `Applied`, `Reverted` and `Cleaned` were missing
+  from the do-not-touch guard, so cancelling ten tweaks in flipped all ten to "Cancelled" and the
+  summary read "0 completed, 0 failed, 10 cancelled" for a machine with ten tweaks on it.
+- `"Applied - could not confirm on this machine"` was truncated by `Set-Status` to the single word
+  `Applied` and counted as completed. That check exists because 25H2 moved five settings and the
+  writes silently stopped taking; the truncation and the count between them erased it.
+- the search-indexer undo left behind the value its apply wrote.
+
+### The antivirus question, answered with a measurement
+
+The owner's history: the script got flagged, we moved to the exe, Smart App Control blocked that.
+The obvious reading is "sign it". The measurement says something more useful.
+
+`ChrisTitusTech/winutil` is the closest comparable - `irm christitus.com/win | iex`, same delivery,
+same kind of tool, no antivirus problem. It was downloaded and compared behaviour for behaviour.
+**It is not signed either** (730 KB, `Get-AuthenticodeSignature` = NotSigned). And it does MORE of
+the dangerous things: 91 registry writes to our 6, 23 service reconfigurations to our 4, 19
+partition/boot operations to our 9, 24 recursive force-deletes to our 20.
+
+Two rows were inverted, and they are the finding:
+
+```
+                                        WinUtil    PC2Go
+Add-Type (compiles C# at run time)            6       27
+hidden window                                 0       21
+```
+
+A script that self-elevates and then launches hidden processes is the literal signature of a
+dropper, and it is the one heuristic this tool leaned on 21 times.
+
+**Eleven were swapped to `-NoNewWindow` and nine had to be put back.** That swap is not free: the
+child then inherits the PARENT'S standard handles instead of getting a console of its own, and
+when the parent's stdout is a pipe nobody is draining - a test harness, a redirected launch, the
+GUI - the child blocks for ever on its first write past the buffer. Measured the hard way:
+Test-DirtyCleanup deadlocked on `cmd /c fake-liar.cmd`, eleven minutes into a two-minute suite,
+with the sandbox untouched throughout. **The rule that survives: `-NoNewWindow` only where BOTH
+standard streams are redirected to files.** That is true of the two winget launches and nothing
+else, so two are swapped and the rest are hidden windows again.
+
+Of the nineteen that remain, the eight that were never candidates are load-bearing anyway: six
+launch the WPF GUI itself (a console would stay on screen for the session), one is the elevated
+worker (a window the customer could close mid-batch), one is the detached cache cleanup that has
+to outlive the parent.
+
+**`-EncodedCommand` on the elevated worker stays.** It carries a stub that re-hashes the worker
+before running it, with the expected hash in argv where nothing on disk can reach it. Writing that
+stub to a file would make the check tamperable. It is the most malware-shaped line in the product
+and it is doing real work; that trade is deliberate, not an oversight.
+
+What is left is prevalence and hosting. WinUtil serves identical bytes from `github.com` release
+assets to millions of machines, so Defender's cloud has a reputation for the hash. This tool serves
+NEW bytes from a low-traffic domain behind an access gate on every publish. The cheap moves, in
+order: mirror `AppDeploy.ps1` on a GitHub release (free, no certificate, borrows GitHub's
+reputation), submit each build to the Microsoft WDSI false-positive portal, and republish less -
+every build is a fresh unknown hash, and a day of republishing works against you.
+
+### Still open
+
+Ranked, from the twelve reports, none of it started:
+- the GUI keeps no handle on the elevated worker it launches (`Start-Process ... | Out-Null`), so a
+  worker killed by antivirus hangs the window for ever and Cancel makes it permanent. The compiled
+  client already has `CheckWorkerAlive`; the script half has no equivalent.
+- closing the window does not stop the worker - every queued application finishes installing,
+  elevated and invisible, after the window is gone. There is no `Add_Closing` handler at all.
+- `setpassword` is the one account action with no `Test-AccountActionSafe` gate, and the ADSI
+  fallback can break a Microsoft account's Hello/PIN link while reporting "password set".
+- Firewall "already blocked" ignores rule scope, so a program with a Public-profile-only block is
+  counted as covered and the row reports nothing to do.
+- AutoLogon writes an unvalidated cleartext password and has no undo case at all.
+- Force Remove paints every row green "Uninstalled" before any work; five paths never correct it.
+- the compiled client raises the UAC prompt on the UI thread, so the window greys out as Not
+  Responding while the technician decides.
+- measured and unapplied: gate the reader's two `Add-Type` blocks (119 ms off every read, 18 of 21
+  ops use neither), `-NoFamily` for the firewall read (927 ms), cache the Store list the Uninstall
+  and Update tabs each fetch separately (1164 ms), bulk `Get-AppxPackage` instead of 24 filtered
+  calls (970 ms off the Optimize tab), and an id index in `Test-App` (O(n^2) today - 1.8 s per
+  refresh at 200 apps).
 ## Next, in order
 
+0. **The compiled client**: `/go-exe` serves client 22 - every tab, Gaming included since 2026-09-09
+   (`client\README.md`, client 22). Was: client 21 (everything but the Gaming sub-tab of
+   Optimize). Port Gaming last (`client\README.md`, "The path to 10"). Recreate the lab VM's
+   CLEAN checkpoint, then run a firewall block/unblock, a tweak batch, a backup-to-folder, a
+   restore, a share and an account action through the exe - none of those has been exercised
+   end to end.
 1. **git remote + push.** Fourth handover saying it. 29 commits, one disk.
+1b. **A code-signing certificate for the exe.** Client 18's file was quarantined by Defender's
+   cloud ML (`Bearfoos.B!ml`); a rebuild with one string changed passed (see the trap below and
+   `client\README.md`, client 19). Signing is the only durable answer: `Build-Client
+   -SignThumbprint` and go.ps1's signature check already exist; wire the thumbprint into
+   `Publish-Release -Client`. OV builds reputation over weeks, EV gets it at once. Until then run
+   the scratchpad `Av-Probe.ps1` (plain and `-Motw`) on every build before publishing.
 2. **Re-home S0 Sleep Network Connectivity in Tools > Fixes** - approved, dropped, never
    rebuilt. The only agreed item this session left undone.
-3. Wire the slow-PC verdicts to the rows that fix them.
+3. ~~Wire the slow-PC verdicts to the rows that fix them.~~ Done in client 15: a remedy row per
+   diagnosis sentence (`$script:DiagRemedies`), a button under every finding on the Diagnose
+   screen, the two lists held in step by Test-Client.
 4. Cloudflare **rate-limit rule on 403s**: the access gate can be brute-forced at line rate
    (measured 5 attempts in 0 s, unthrottled). A dashboard setting, not code.
 5. Multi-code access audit - named codes plus per-code usage counts, so one leaked code can be
@@ -670,6 +1575,13 @@ the catalog has no switch and `silentSource` is not `typed`; `Get-InstalledProgr
 (fixtures via `Get-InstallerFixtures.ps1`), `Test-Push` 11j, `Test-RealUninstall` product D,
 `Test-CatalogEditorGui` 2b, `Test-AfterInstallList` 16.
 
+InstallShield **Suite/Advanced UI** is recognised by `InternalName = SetupSuite` in the version
+resource (the company name is the vendor's, e.g. Trimble for SketchUp 2026) and gets `/silent`;
+its uninstall is `-remove -runfromtemp` (`-silent` for quiet), distinct from InstallScript's
+`-removeonly`. Found from a SketchUp Pro install that ran bare for 90 minutes on the Home VM
+because the dialog belonged to the bootstrapper's `-runfromtemp` CHILD - `Start-InstallerWatched`
+now checks the whole process tree for a window every 5 s, not only the launched stub.
+
 Second pass not built: Squirrel/Velopack, Advanced Installer, Wise, Setup Factory.
 
 ## BUILT: the batch strip
@@ -888,6 +1800,18 @@ before, without a line written for it.
   through: the speed sample only fires after a full second, so a fast local transfer never
   reaches the line and the harness stays green while a real download on a slow link is the only
   thing that breaks. The lift list is now an exact-count check that names what is missing.
+- **Defender's cloud can condemn one build's hash, and it looks like the change did it.** Client
+  18 was quarantined as `Trojan:Win32/Bearfoos.B!ml` twenty seconds after starting, on the first
+  machine that ran it; client 17 had run clean an hour earlier. Nothing in the diff was the
+  cause: the same source with one string changed passed every probe. The verdict is per file
+  hash and per unknown unsigned binary. Do not chase the diff; rebuild, probe (`Av-Probe.ps1`),
+  republish, and get the exe signed. The script client is the fallback while an exe is blocked.
+- **A harness that shares the product's cache can poison it.** The exe's icon cache is
+  `%LOCALAPPDATA%\PC2GoDeploy\icons` for a test launch and for the technician's launch alike. A
+  `.miss` written by a test window that closed before its logos arrived hid four logos from the
+  real client for a day (client 15, 2026-09-05). Whatever a harness writes where the product
+  reads must be keyed by what was actually asked (id + URL), and a failure to get an answer must
+  never be remembered as an answer.
 - **A harness failing at "this instance holds the single-instance lock" is not a code failure,
   and it happens often.** Three times in one session, on `Test-GuiBatch` twice and on
   `Export-UiSnapshots` once Ã¢â‚¬â€ every time, a plain re-run passed and the mutex probed free

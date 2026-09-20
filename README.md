@@ -81,6 +81,14 @@ The GUI never runs elevated. One elevated worker starts the moment the **first**
 finishes and handles the whole batch, so there is exactly one UAC prompt and it appears
 early rather than after 30 GB of downloading.
 
+Every wait indicator in the window is a WPF storyboard spinner, and a storyboard only turns
+while the UI thread is free. The reads that used to stand it still - the firewall rules, the
+Store package list, the SMB share list behind Data Backup, the adapter tables behind
+**Network...** - run on one kept background runspace through `Invoke-OffUi` while the window
+pumps; winget and the Windows Update search were already off-thread. Anything new that takes
+longer than a frame belongs there too. The script it runs sees none of the tool's functions or
+variables (only `$args`) and returns plain objects the caller shapes.
+
 ### Install flow
 
 1. Select apps (grouped by section, live search across all tabs)
@@ -287,6 +295,39 @@ preview also grew **Select all / Clear all** (suite-shared components and hidden
 guesses are excluded from bulk-tick), name-only matches on short tokens are graded, dimmed and
 folded behind a "Show N possible matches" toggle, and the scan itself now runs off-thread —
 the window stays live and Cancel stops it, showing what was found so far.
+
+### Update
+
+First tab in the strip, **three sub-tabs**, all drawn as the Uninstall table (same row shape,
+same icons, sortable columns) and all run through the same elevated worker batch:
+
+- **Desktop apps** — what `winget upgrade` can bring current, one tickable row per program
+  with *installed → available* versions. Rows are matched by name to the Uninstall tab's
+  inventory so they carry the same publisher and icon (registry `DisplayIcon`, the install
+  folder's own exe, or the Start Menu shortcut — whichever exists); unmatched rows group under
+  *Components and runtimes*. Nothing is ticked by default; **Update Selected** confirms with
+  names, then runs `winget upgrade --id <Id> --exact --silent` per row with live progress, a
+  30-minute cap per app, and winget's hex exit code in any failure. winget's path is resolved
+  as the technician and re-resolved inside the worker (the per-user alias does not exist for a
+  different elevating admin).
+- **Microsoft Store apps** — a list to look at, not to tick: Windows only updates Store apps as
+  a set, so the one action, **Update all Store apps**, asks the Store's own updater (the MDM
+  `UpdateScanMethod`) and the Store installs in the background. Companion packages a desktop
+  program registers for its right-click menu (`WinRAR.ShellExtension` and the like) are hidden
+  here — they are not apps and their own installer removes them.
+- **Windows Update** — the Windows Update Agent's list, **Recommended** and **Optional**
+  (`BrowseOnly`: drivers, previews) grouped apart, `driver`/`optional` pills, a RESTART column.
+  Install downloads and installs the ticked updates and **reports** a needed restart — it never
+  reboots for you.
+
+Batches file in Activity as kind **Update**; after one, both lists are marked stale and the
+hint says to press Rescan (winget takes 10-20 s, so it is never re-run behind the summary).
+
+A sub-tab pressed while the other one is still scanning is **queued, not dropped**: the spinner
+says *Finishing the winget scan, then asking Windows Update...* and the second scan starts on its
+own the moment the first ends. Rescan pressed mid-scan is ignored (that scan is already running).
+Each sub-tab keeps its own hint line and empty-list words, so a scan that ends while you are on
+another sub-tab does not write over what you are looking at.
 
 ### Optimize
 
@@ -746,6 +787,33 @@ installers themselves. Pin the hashes, and protect that host and its DNS accordi
 
 ---
 
+## The compiled client
+
+`client\PC2Go.Deploy` is the same tool as a compiled .NET Framework 4.8 program - one exe under 1 MB,
+nothing to install on the client, every read awaited instead of pumped. It runs from **the same
+go line**: the Worker rewrites `$Client` and `$ExeHash` into `go.ps1` from `BOOT_CLIENT` and
+`CLIENT_EXE_SHA256` in `wrangler.toml`, and `go.ps1` fetches, pins, caches and launches the exe
+exactly as it does the script. It drives the **same elevated worker**, lifted out of
+`AppDeploy.ps1` at build time and embedded, and its Uninstall reads (the Control Panel inventory,
+the Store list, the leftover sweep) are the script's own functions lifted the same way and run
+in a hidden PowerShell, as are the Update tab's (winget, the Store list, Windows Update), the
+User Accounts tab's (the profile list, the local accounts) and the Data Backup tab's (folder
+sizes, this PC's shares, the network sweep), the Optimize tab's (the tweak table and its
+detectors) and the Firewall tab's (the rule map and the program match). This build carries
+Install, Uninstall, Update, Optimize (Tweaks and Cleanup), User Accounts, Data Backup, Firewall,
+Toolbox and the Activity Log; the Gaming sub-tab still lives in the script and says so.
+
+```
+tools\Build-Client.ps1                            # client\dist\PC2Go.Deploy.exe + SHA-256
+tools\Publish-Release.ps1 -Client                 # upload it and pin CLIENT_EXE_SHA256
+irm https://apps.pc2go.ca/go-exe | iex            # try it on one machine (/go-script forces the script)
+tools\Publish-Release.ps1 -Client -BootClient exe # make /go launch it for everyone
+```
+
+An empty pin never launches an unverified exe: `BOOT_CLIENT = "exe"` with no `CLIENT_EXE_SHA256`
+launches the script. Tests: `tests\Test-Client.ps1` on the host, `tests\Test-ClientInstall.ps1`
+on the lab VM. Design, slices and the path to a full port: `client\README.md`.
+
 ## Server setup
 
 Any static HTTPS host (nginx, IIS, S3/CloudFront). Must support HTTP **Range** requests so
@@ -807,6 +875,15 @@ so the ACL *is* the control, and the creator is on it because a filtered-token a
 write to an Administrators-only file). It is a hand-off token, not storage: anything older
 than two minutes is ignored and deleted rather than trusted, and it is shredded once the
 catalog loads and again on window close. `tests\Test-AccessCode.ps1` pins all of it.
+
+The fetch itself is `Get-EdgeFile`, not `Invoke-WebRequest`. In Windows PowerShell 5.1 that
+cmdlet's progress bar - the blue strip a technician watches while the tool downloads - is
+redrawn for every chunk received, and it costs real time: the same 1 MB from the same edge took
+746 ms with the bar and 86 ms without, and on a slow remote link the gap grows with the chunk
+count. It also never asked the edge to compress, so the tool went over the wire at 1,014 KB
+where gzip makes it 251 KB. `Get-EdgeFile` asks for gzip, shows no bar, and hands a 403 to the
+passcode loop in the same shape as before; the integrity hash is taken on the decompressed file,
+so the pin is unchanged.
 
 Set or rotate it from the Management Console (**Access code…**), or by hand with
 `wrangler secret put ACCESS_CODE`.
@@ -872,15 +949,25 @@ computing it at the edge would make the check worthless.
 | `tests\Test-AfterInstallList.ps1` | Asserts the editor's after-install list — order, steps it cannot edit, and its output run by the real worker |
 | `tests\Test-CatalogScenarios.ps1` | Whole journeys: real zip → real dialog → real `apps.json` → re-edit → the real worker installing it |
 | `tests\Test-RealUninstall.ps1` | Installs three real per-user products on this machine, removes them with the tool, deep-cleans, and cleans up after itself |
+| `tests\Test-SilentLadder.ps1` | Compiles a real installer that understands exactly one switch and drives the worker's own `Install-One` / `Uninstall-One` through the switch ladder: a window or an empty exit climbs to the next rung, the catalog switch goes first, `allowUi`, a timeout and a partial install stay off it, and uninstall climbs watched, then with each rung, then with its window |
+| `tests\Test-InstallerFamily.ps1` | The installer-family detector against synthesised stubs for every family (structural and identity-string), real pinned installers when downloaded, the registry-side uninstall recognition, and the one-copy rule with `AppDeploy.ps1` |
 | `tests\Test-FirewallTab.ps1` | Elevated. Blocks, unblocks and re-blocks a throwaway program folder through the real worker against the real Windows firewall - same rule names each time - plus disabled, foreign and `%ENV%`-form rules and every refusal rail. Removes everything it made |
-| `tests\Test-GuiBatch.ps1` | Clicks the real Install and Uninstall tab buttons — the pre-flight sheet and its disk check, batch, Add to Queue, Cancel, the leftover preview and the wipe, the run record a finished batch writes, and the uninstall table's sorting |
+| `tests\Test-FirewallGui.ps1` | Elevated. The Firewall TAB itself on the real window: the scan lists a planted program as Not blocked, the detail view previews its exes, Block Internet Access runs a real batch through the worker and the summary counts the new rules, the tab re-scans itself, a netsh stray shows as an Unmatched row that Block refuses and Unblock clears (saying it was foreign), Remove ALL's confirm is opened and cancelled, and the profile-root rails (`C:\Users`, `Public`, any profile and its AppData roots) are refused. Removes everything it made |
+| `tests\Test-WipeRails.ps1` | Elevated. The branches of the wipe and the uninstall no other suite reaches, through the real worker: Remove-Stubborn's ladder (a locked file's holder is closed, an admin-denied folder is taken over, a folder pinned as another process's working directory is scheduled for the next restart and then UNscheduled by the harness), Wipe-One's elevated-side refusals with their reasons in the activity log, Uninstall-One's bare-name pinning, 1641 and non-zero-exit-but-gone verdicts, and Test-UnRowGone. Removes everything it made |
+| `tests\Test-AccountRails.ps1` | Elevated. The account actions no other suite runs, on a throwaway account through the real worker: promote, demote (still in Users afterwards), reset password, disable, enable, each checked on the machine; the elevated-side refusals (the signed-in account shipped as techUser, the account that elevated the tool, a built-in account, a missing account); the chain stopping at a step pulled out of the batch and at a copy that finished with a caveat; and the account dialog's own password and replacement-name boxes. Removes the account, its profile and its ProfileList entry |
+| `tests\Test-BackupRails.ps1` | The copy engine's rails through the real worker: a junction in the source is skipped by the copy AND the verify, files that exist only at the destination are not counted as copied, a second backup into the same folder merges the manifest, Public ticked with the backup folder under C:\Users\Public is refused rather than recursed, a folders-and-drives backup to `\\localhost\C$` succeeds (elevated only), and a restore into a live account keeps the file the account changed since the backup |
+| `tests\Test-OptimizeTab.ps1` | Unelevated, any machine, changes nothing. The Optimize tab's Tweaks and Cleanup sub-tabs: every row has its Apply clause and every reversible row an Undo clause that puts back what Apply wrote (checked from the worker's text), Write-HostsFile keeps a read-only attribute and accented comments, and the tab on the real window with the worker stubbed: the pre-apply check, debloat rows never pre-skipped, restore point queued first with the technician's SID, the nothing-to-do path, a second press during the check refused rather than nested, Detect, a declined batch not restarting Explorer, and "not run" rows counted apart from warnings |
+| `tests\Test-TweakTab.ps1` | Elevated, LAB VM ONLY (refuses other host names). Applies all 47 Optimize > Tweaks rows through the real worker, proves every Detect probe and every literal registry write, applies again, undoes all 47 and proves every reversible row went back. Wrecks the machine it runs on - reset the VM afterwards |
+| `tests\Test-UpdateTab.ps1` | The Update tab: the winget table parser against captured output (agreement preamble, explicit-targeting table, truncated ids), the real GUI headless (all three sub-tabs, the table header and sorting, Select All / Clear All, confirm dialogs, search counts, identity/icon sharing with the Uninstall tab, a sub-tab clicked while the other scan runs - queued, not dropped, each tab's words kept apart), and with `-VM` on a lab VM the elevated worker updating a real winget package, asking the Store updater, and installing a real Windows update when one is offered |
+| `tests\Test-CleanupTab.ps1` | Elevated, LAB VM ONLY, and it must run in the INTERACTIVE session (cleanmgr hangs in session 0 - launch it through a scheduled task, not PowerShell Direct). Plants temp junk, a binned file, a fake Windows.old and a Downloads marker, runs the five Cleanup rows, and proves what went and what survived |
+| `tests\Test-GuiBatch.ps1` | Clicks the real Install and Uninstall tab buttons — the pre-flight sheet and its disk check, batch, Add to Queue, Cancel, the leftover preview and the wipe, the run record a finished batch writes, and the uninstall table's sorting; section 5 proves every click paints before its work and that the first-visit reads run off the UI thread through `Invoke-OffUi` (kept runspace, timeout, nested call, the real adapter and share reads) |
 | `tests\Test-DeepBatch.ps1` | A real BITS download over loopback HTTP, Pause/Resume, the full exit-code matrix, and elevation declined |
 | `tests\Test-Elevated.ps1` | **Run this elevated, by hand.** The real elevated worker, HKLM products, hosts lines, services, tasks, other profiles |
-| `tests\Test-CatalogEditorGui.ps1` | The editor's main window, a real HTTP fetch, `Publish-Release` validation, and a BOM'd catalog |
+| `tests\Test-CatalogEditorGui.ps1` | The editor's main window, a real HTTP fetch, `Publish-Release` validation, a BOM'd catalog, and the review's findings: click-away and Remove shutting the drawer, the verify paths beyond the first surviving, bulk hash failures on the card, a chosen setup file surviving a re-fetch, and the live check through the access gate with a session-only code |
 | `tools\Export-UiSnapshots.ps1` | Renders the real windows to PNG offscreen, so a person can see clipping and contrast that property tests miss |
 | `tests\Test-Categories.ps1` | The category model and the window it lives in — seeding, rename, reorder, that deleting a category can never silently delete an app, that the drawer floats and shuts, that the id is an editable field whose icon follows a rename, and that any picture you pick becomes a 256×256 PNG |
 | `tests\Test-Worker.mjs` | Imports the real `worker.js` and asserts the catalog filter, the URL signing, the `/files` gate and the access-code gate. `node tests\Test-Worker.mjs`, no wrangler and no network |
-| `tests\Test-AccessCode.ps1` | The access-code hand-off: that the DPAPI token is written unreadable by other accounts **from the first byte**, that a stale token is ignored rather than trusted, and that it is shredded after use. Lifts the real functions out of `go.ps1` and `AppDeploy.ps1` by AST, so the two copies cannot drift |
+| `tests\Test-AccessCode.ps1` | The access-code hand-off: that the DPAPI token is written unreadable by other accounts **from the first byte**, that a stale token is ignored rather than trusted, and that it is shredded after use. Lifts the real functions out of `go.ps1` and `AppDeploy.ps1` by AST, so the two copies cannot drift. Section 8 runs the real fetch and passcode loop against a loopback edge: 403 reaches the prompt, gzip is asked for and undone byte for byte, the HEAD probe, three wrong codes end in a denial |
 | `tests\Test-Wrangler.ps1` | The hidden `wrangler` call: that it never passes `-Wait`, that its exit code is a real integer rather than empty, that a Cloudflare sign-in prompt is recognised from wrangler's own output, both give-up clocks, the tree-kill, and a secret file that never exists readable and does not survive the call |
 | `tests\Test-TweakReality.ps1` | **Not a pass/fail suite.** A read-only reality check: it lifts every `Set-Reg` / `Set-RegSoft` / `Remove-RegVal` out of the worker by AST and reports, value by value, whether this machine currently matches. Before a run, a MISMATCH just means "not applied yet"; **after** a run that reported Applied, every MISMATCH is a tweak that did not take |
 
@@ -1009,6 +1096,31 @@ and preserves fields it has no UI for (`uninstall`, `iconUrl`, `_installNote`) b
 parsed JSON in place rather than rebuilding it. Saving an incomplete entry only warns —
 `Publish-Release.ps1` is the gate that refuses.
 
+**Icons are trimmed, then never upscaled.** The drawer converts whatever picture you pick to a
+PNG of at most 256 pixels. Transparent margins are cut off first, so a logo drawn in the middle
+of an empty canvas fills the tile exactly like one drawn edge to edge (InDesign's source filled
+62 percent of its canvas beside Illustrator's 100, and looked tiny on the client for it). Then a
+bigger source is brought down with the high-quality filter, a smaller one keeps its own pixels. A small source blown up to 256 bakes its blur into the file, and the client
+tile, drawn at 24 device-independent pixels, then shrinks the blur; that is what a fuzzy logo
+on a client is. Pick a source of at least 128 pixels - the vendor's own PNG or SVG export - and
+the tile is crisp at any scaling.
+
+**Icons ship on every publish.** Whatever sits at `icons\<id>.png` is checked against the
+bucket and uploaded if it is not there, and the catalog gets `iconUrl` for every icon the
+bucket holds. This used to happen only alongside an installer upload, so a catalog whose
+installers were already in R2 published its icons never - measured on the live edge, every
+`/icons/<id>.png` answered 404. A publish with nothing but icons to send now goes through the
+push, and a failed icon is said on the status line. The client remembers an icon it could not
+fetch for one day, not for ever.
+
+**The live chips need the access code.** Every card compares its entry with what the edge is
+serving (*live*, *not uploaded*, *not published*, *not live*), and that read goes through the
+same `/apps.json` gate the clients do. Once a code is set, the editor cannot read the edge
+without it: the summary says *live copy unreadable* with the reason on its tooltip, and the
+id of a published app stops freezing on rename. Type the current code under **Settings** —
+it is held for that session only and never written anywhere — and the check runs again at
+once. Setting a new code from the same window hands it to the session automatically.
+
 **AFTER INSTALLATION is a list**, because `postInstall` always was one. Each row is an action —
 *move a file in* or *run a file*, both taking their file out of the package — and rows are
 added, removed and reordered on screen, so *two files into two different directories* is
@@ -1087,7 +1199,14 @@ reads bounded regions of the ranked setup file - the PE section table, the versi
 first megabyte and last 64 KB of the overlay, the resource leaves, the file names beside it - and
 names the family **only from a positive signature at a stated offset** (MSI, Inno Setup, NSIS,
 WiX Burn, 7-Zip and WinRAR SFX, InstallShield, Autodesk ODIS, Adobe Admin Console, Office ODT,
-Acrobat, MSIX). A family it does not recognise gets no switch; nothing is ever inferred from what
+Acrobat, MSIX). A second pass, run only when none of those matched, recognises the loaders that
+name themselves in their own image - Squirrel.Windows and Velopack (`--silent`), Advanced
+Installer (`/exenoui /qn`), Wise (`/s`), Setup Factory (`/S`), InstallAware (`/s`), Qt Installer
+Framework (`--accept-licenses --default-answer --confirm-command install`), install4j (`-q`),
+InstallBuilder (`--mode unattended`), Clickteam (`/S`) and IExpress (`/Q`) - each from a marker
+string or version-resource value at a stated place, with its uninstaller shape (`Update.exe
+--uninstall`, `UNWISE.EXE /S log`, `maintenancetool.exe --confirm-command purge`, and so on).
+A family it does not recognise gets no switch; nothing is ever inferred from what
 was not seen, which is what sank the first detector (it sampled 3 MB of a 1 GB file). The editor
 runs it at fetch time and writes `silentArgs` + `silentSource: detected` + an `installer` block
 (family, evidence, the hash the answer belongs to); a switch you type is `typed` and is never
@@ -1098,6 +1217,25 @@ not already quiet - an Inno `unins000.exe` gets `/VERYSILENT /SUPPRESSMSGBOXES /
 gets `/S _?=<folder>`, Burn gets `/uninstall /quiet /norestart`. Every decision is written to
 the activity log with the evidence. The installer guard is unchanged and still the safety net: a
 window that opens is stopped, bounded by a timeout, and the switch and its origin are named.
+
+**The switch ladder** is what makes "handle any exe" more than a wish. When the first switch -
+the catalog's, or the detected one, or none - opens a window, or exits having created nothing on
+disk, the worker stops it and tries the common silent switches in turn: `/S`, Inno's trio,
+`/silent`, `/quiet /norestart`, `/s`, `-s`, `/q`, `--silent`, `-q`, `/exenoui /qn`, `--mode
+unattended`, `-y`, `/qn`, `/verysilent`, `/SILENT`. Each rung runs under the guard with a
+45-second grace (a wrong switch shows its wizard within seconds), every attempt is written to
+the activity log, and the whole ladder is capped at fifteen minutes. A rung that installs is
+named on the row - *installed with the switch '/S', found by trying - put it in the catalog as
+silentArgs* - so the second machine never climbs at all. The ladder never runs for an `.msi`
+(`/qn` is the answer), never for an app that declares `allowUi`, never after a timeout with no
+window (the installer may be working), and never over a run that created something (a partial
+install is not covered by another attempt on top). **Uninstall climbs the same ladder**: an
+uninstall string that is not provably silent used to run with its window allowed from the
+start; it now runs watched first (many are silent in fact), then with each rung appended, and
+only then - as the last resort - with its window, for the technician to click through. Between
+rungs the detect target is asked whether the product is already gone, so a removal that worked
+is never re-run. `tests\Test-SilentLadder.ps1` compiles a real installer that understands exactly
+one switch and proves every branch of this against the worker's own code.
 
 `Publish-Release.ps1` refuses to publish a catalog whose **servable** apps carry a
 `postInstall` `run` step with no `sha256`, the same installer under two ids, or an
@@ -1144,9 +1282,11 @@ installer yet.
    vc_redist = Burn) and synthesised fixtures. What is not done: a VM run of every catalog
    entry with `silentArgs` cleared, to confirm the family's switch is the one *this* vendor
    honours (InstallShield in particular proposes nothing unless a `.msi` or `.iss` sits beside
-   `setup.exe`). Squirrel/Velopack, Advanced Installer, Wise and Setup Factory are not
-   recognised yet. The installer guard remains the catch for a wrong switch: it stops a window
-   that opens, bounds it with a timeout, and names the switch and where it came from.
+   `setup.exe`). Squirrel/Velopack, Advanced Installer, Wise, Setup Factory, InstallAware, Qt
+   IFW, install4j, InstallBuilder, Clickteam and IExpress are recognised from their identity
+   strings, proven on synthesised stubs only - no real installer of those families is pinned
+   yet. The installer guard remains the catch for a wrong switch, and the switch ladder now
+   tries the common ones before a row is failed.
 2. **FloorGenerator has no installer.** It ships as a `.dlm` plugin copied into the 3ds Max
    plugins folder. Either wrap it in a self-extractor, or add a `copy` action to the tool
    (cleaner, and reusable for any future plugin).
